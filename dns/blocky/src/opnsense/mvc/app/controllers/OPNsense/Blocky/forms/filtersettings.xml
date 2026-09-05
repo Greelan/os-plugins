@@ -1,0 +1,101 @@
+<form>
+    <field>
+        <id>blocky.general.blockType</id>
+        <label>Block type</label>
+        <type>text</type>
+        <hint>zeroIP</hint>
+        <help>Response returned for blocked queries: "zeroIP" answers with 0.0.0.0/::, "nxDomain" answers with NXDOMAIN, "refused" answers with REFUSED for every query type (note: some clients treat REFUSED as a server failure and fall back to another DNS server, bypassing blocking), or enter a comma separated list of destination IP addresses (include both an IPv4 and an IPv6 to cover all query types) to point blocked names at your own "blocked" web server.</help>
+    </field>
+    <field>
+        <id>blocky.general.blockTTL</id>
+        <label>Block TTL</label>
+        <type>text</type>
+        <hint>6h</hint>
+        <help>TTL returned for blocked queries, e.g. 6h.</help>
+    </field>
+    <field>
+        <id>blocky.general.refreshPeriod</id>
+        <label>List refresh period</label>
+        <type>text</type>
+        <hint>4h</hint>
+        <help>Interval at which deny/allow lists are refreshed from their sources, e.g. 4h. Set to 0 to disable periodic refresh.</help>
+    </field>
+    <field>
+        <id>blocky.general.loadingStrategy</id>
+        <label>List loading strategy</label>
+        <type>dropdown</type>
+        <help>How lists load at startup: blocking waits for all of them before serving, failOnError aborts startup if one fails to load, fast serves immediately and loads them in the background.</help>
+    </field>
+    <field>
+        <id>blocky.general.maxErrorsPerSource</id>
+        <label>Max errors per source</label>
+        <type>text</type>
+        <hint>5</hint>
+        <advanced>true</advanced>
+        <help>Number of parse errors tolerated in a single list before it is treated as invalid. Use -1 to disable the limit.</help>
+    </field>
+    <field>
+        <id>blocky.general.loadingConcurrency</id>
+        <label>Load concurrency</label>
+        <type>text</type>
+        <hint>4</hint>
+        <advanced>true</advanced>
+        <help>Maximum number of lists processed in parallel.</help>
+    </field>
+    <field>
+        <id>blocky.general.downloadTimeout</id>
+        <label>Download timeout</label>
+        <type>text</type>
+        <hint>5s</hint>
+        <advanced>true</advanced>
+        <help>Timeout for downloading each list URL. Increase for large files or slow links, e.g. 60s.</help>
+    </field>
+    <field>
+        <id>blocky.general.downloadAttempts</id>
+        <label>Download attempts</label>
+        <type>text</type>
+        <hint>3</hint>
+        <advanced>true</advanced>
+        <help>Maximum number of download attempts for each list URL (including the first attempt).</help>
+    </field>
+    <field>
+        <id>blocky.general.downloadCooldown</id>
+        <label>Download cooldown</label>
+        <type>text</type>
+        <hint>500ms</hint>
+        <advanced>true</advanced>
+        <help>Wait time between failed download attempts.</help>
+    </field>
+    <field>
+        <id>blocky.general.downloadWriteTimeout</id>
+        <label>Download write timeout</label>
+        <type>text</type>
+        <hint>20s</hint>
+        <advanced>true</advanced>
+        <help>Write timeout of Blocky's own HTTP server (REST API, metrics, DoH). Blocky reads it from here, it does not apply to list downloads.</help>
+    </field>
+    <field>
+        <id>blocky.general.downloadReadTimeout</id>
+        <label>Download read timeout</label>
+        <type>text</type>
+        <hint>20s</hint>
+        <advanced>true</advanced>
+        <help>Read timeout of Blocky's own HTTP server (REST API, metrics, DoH). Blocky reads it from here, it does not apply to list downloads. Use 0 to disable.</help>
+    </field>
+    <field>
+        <id>blocky.general.downloadReadHeaderTimeout</id>
+        <label>Download header timeout</label>
+        <type>text</type>
+        <hint>20s</hint>
+        <advanced>true</advanced>
+        <help>Header read timeout of Blocky's own HTTP server (REST API, metrics, DoH). Blocky reads it from here, it does not apply to list downloads. Use -1 to disable.</help>
+    </field>
+    <field>
+        <id>blocky.general.downloadCachePath</id>
+        <label>Download cache path</label>
+        <type>text</type>
+        <hint>/var/cache/blocky/lists</hint>
+        <advanced>true</advanced>
+        <help>Optional directory for an on-disk cache of downloaded lists. When set, Blocky uses HTTP conditional requests to skip re-downloading unchanged lists, and can serve a list from disk when its source is temporarily unreachable. When empty (default), downloads are stateless and nothing is written to disk.</help>
+    </field>
+</form>

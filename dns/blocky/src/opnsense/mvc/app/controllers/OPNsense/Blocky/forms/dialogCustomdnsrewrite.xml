@@ -1,0 +1,36 @@
+<form>
+    <field>
+        <id>customdnsrewrite.enabled</id>
+        <label>Enabled</label>
+        <type>checkbox</type>
+        <help>Enable this rewrite.</help>
+        <grid_view>
+            <width>6em</width>
+            <type>boolean</type>
+            <formatter>rowtoggle</formatter>
+        </grid_view>
+    </field>
+    <field>
+        <id>customdnsrewrite.fromDomain</id>
+        <label>From</label>
+        <type>text</type>
+        <help>Suffix of the queried name to replace. Only names below it are rewritten, so home rewrites printer.home but leaves a query for home alone.</help>
+        <grid_view/>
+    </field>
+    <field>
+        <id>customdnsrewrite.toDomain</id>
+        <label>To</label>
+        <type>text</type>
+        <help>
+            <![CDATA[Replacement domain looked up in the entries on the <a href="/ui/blocky/settings/customdns#overridestab">Host Overrides</a> tab. The part in front is kept, so with From home and To lan a query for printer.home is looked up as printer.lan.]]>
+        </help>
+        <grid_view/>
+    </field>
+    <field>
+        <id>customdnsrewrite.description</id>
+        <label>Description</label>
+        <type>text</type>
+        <help>Optional description for your reference.</help>
+        <grid_view/>
+    </field>
+</form>

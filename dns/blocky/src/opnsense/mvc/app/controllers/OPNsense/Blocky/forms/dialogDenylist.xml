@@ -1,0 +1,36 @@
+<form>
+    <field>
+        <id>denylist.enabled</id>
+        <label>Enabled</label>
+        <type>checkbox</type>
+        <help>Enable this deny list.</help>
+        <grid_view>
+            <width>6em</width>
+            <type>boolean</type>
+            <formatter>rowtoggle</formatter>
+        </grid_view>
+    </field>
+    <field>
+        <id>denylist.group</id>
+        <label>List group</label>
+        <type>text</type>
+        <help>
+            <![CDATA[The list group this deny list belongs to. The list takes effect only for clients assigned this group under <a href="/ui/blocky/settings/clients#clientgroupstab">Clients</a>.]]>
+        </help>
+        <grid_view/>
+    </field>
+    <field>
+        <id>denylist.source</id>
+        <label>Source</label>
+        <type>text</type>
+        <help>An http or https URL to a hosts/domain list, an absolute file path (a file:// prefix is accepted), or a single inline entry. Anything that is not a URL or an absolute path is written into Blocky's configuration as an inline entry, so a relative path is read as a domain, not as a file. An entry is a domain (ads.example.com), which also covers its subdomains, a wildcard (*.ads.example.com), or a regular expression between slashes (/^ad[sx]?\./). Blocky warns when a group holds many regular expressions, as they are slow to search.</help>
+        <grid_view/>
+    </field>
+    <field>
+        <id>denylist.description</id>
+        <label>Description</label>
+        <type>text</type>
+        <help>Optional description for your reference.</help>
+        <grid_view/>
+    </field>
+</form>

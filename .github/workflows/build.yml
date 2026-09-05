@@ -1,0 +1,219 @@
+name: build
+
+# Build plugins + blocky per ABI and publish a pkg repo to Cloudflare R2.
+
+on:
+  # push to main auto-ships prod; schedule builds nightly (no deploy) + emails on new blocky
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Deploy channel"
+        type: choice
+        options: [dev, prod]
+        default: dev
+      blocky_version:
+        description: "Blocky version to build (blank = latest release)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    # syntax gate: the build VM has no php
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install checkers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y php-cli libxml2-utils
+      - name: PHP syntax
+        run: find . -name '*.php' -o -name '*.inc' -print0 | xargs -0 -r -n1 php -l
+      - name: XML well formed
+        run: find . -name '*.xml' -print0 | xargs -0 -r -n1 xmllint --noout
+      - name: Python syntax (excluding vendored libraries)
+        run: |
+          find . -name '*.py' -not -path '*/scripts/*/lib/*' -print0 |
+            xargs -0 -r -n1 python3 -m py_compile
+      - name: Shell syntax
+        run: find . -name '*.sh' -print0 | xargs -0 -r -n1 sh -n
+
+  build:
+    # the nightly (schedule) only runs the notify version-check; build on push/dispatch
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["14", "15"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve blocky release
+        id: blocky
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BLOCKY_VERSION_INPUT: ${{ github.event.inputs.blocky_version }}
+        run: |
+          ver="${BLOCKY_VERSION_INPUT#v}"
+          if [ -z "${ver}" ]; then
+            ver=$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
+                  https://api.github.com/repos/0xERR0R/blocky/releases/latest \
+                  | sed -n 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/p' | head -1)
+          fi
+          [ -n "${ver}" ] || { echo "could not resolve blocky version" >&2; exit 1; }
+          echo "version=${ver}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache blocky package
+        id: blockycache
+        uses: actions/cache@v5
+        with:
+          path: blocky-pkg
+          key: blocky-${{ steps.blocky.outputs.version }}-${{ hashFiles('tools/build-blocky-port.sh') }}-fbsd${{ matrix.release }}
+
+      - name: Build in FreeBSD ${{ matrix.release }} VM
+        uses: vmactions/freebsd-vm@v1
+        env:
+          BLOCKY_VERSION: ${{ steps.blocky.outputs.version }}
+          BLOCKY_CACHED: ${{ steps.blockycache.outputs.cache-hit }}
+        with:
+          envs: 'BLOCKY_VERSION BLOCKY_CACHED'
+          release: ${{ matrix.release }}
+          usesh: true
+          prepare: pkg install -y git gmake go
+          run: |
+            set -e
+            # ports tree: mounted on the FreeBSD 15 image, absent on 14 (never remove it)
+            if [ ! -e /usr/ports/Mk/bsd.port.mk ]; then
+              git clone --depth 1 https://git.FreeBSD.org/ports.git /usr/ports
+            fi
+            if [ "${BLOCKY_CACHED:-}" != "true" ]; then
+              sh tools/build-blocky-port.sh "${BLOCKY_VERSION}" "$(pwd)/blocky-pkg"
+            fi
+            BLOCKY_PKG_DIR="$(pwd)/blocky-pkg" sh tools/build-repo.sh
+
+      - name: Summarize built packages
+        run: |
+          {
+            echo "## Built packages (release ${{ matrix.release }})"
+            for d in repo/*/; do
+              [ -d "$d" ] || continue
+              echo "### $(basename "$d")"
+              ( cd "$d" && ls -1 *.pkg 2>/dev/null | sort | sed 's/^/- /' )
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+      # upload-artifact rejects ':' in paths, but ABI dirs are e.g. FreeBSD:15:amd64
+      - name: Bundle repo for transfer
+        run: tar -cf "repo-${{ matrix.release }}.tar" -C repo .
+      - uses: actions/upload-artifact@v7
+        with:
+          name: repo-${{ matrix.release }}
+          path: repo-${{ matrix.release }}.tar
+
+  deploy:
+    needs: [build, lint]
+    # deploy on manual dispatch (dev/prod) or a push to main (prod); scheduled runs don't deploy
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    env:
+      R2_BUCKET: os-plugins-pkg
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download per-ABI bundles
+        uses: actions/download-artifact@v8
+        with:
+          pattern: repo-*
+          path: _bundles
+          merge-multiple: true
+      - name: Reassemble repo
+        run: |
+          mkdir repo
+          for t in _bundles/*.tar; do tar -xf "$t" -C repo; done
+      - name: Render landing page + changelog
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y python3-markdown
+          sh tools/build-site.sh
+      - name: Sync to R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          CHANNEL: ${{ github.event_name == 'push' && 'prod' || github.event.inputs.channel }}
+        run: |
+          # everything revalidates: pages and repo metadata both keep their names
+          CACHE="public, max-age=60, must-revalidate"
+          if [ "${CHANNEL}" = "dev" ]; then
+            # dev channel = package dirs only (site files live at the prod root)
+            aws s3 sync repo/ "s3://${R2_BUCKET}/dev/" \
+              --endpoint-url "${R2_ENDPOINT}" --delete \
+              --exclude "index.html" --exclude "changelog/*" --exclude "*.conf" \
+              --cache-control "${CACHE}" --no-progress
+          else
+            # prod root; keep --delete out of the dev/ prefix
+            aws s3 sync repo/ "s3://${R2_BUCKET}/" \
+              --endpoint-url "${R2_ENDPOINT}" --delete --exclude "dev/*" \
+              --cache-control "${CACHE}" --no-progress
+          fi
+
+  notify:
+    # nightly: version check only (no build); email once per new blocky release
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve latest blocky version
+        id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ver=$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
+                https://api.github.com/repos/0xERR0R/blocky/releases/latest \
+                | sed -n 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/p' | head -1)
+          [ -n "${ver}" ] || exit 0
+          echo "version=${ver}" >> "$GITHUB_OUTPUT"
+      - name: Have we notified before?
+        id: init
+        if: steps.v.outputs.version != ''
+        uses: actions/cache@v5
+        with:
+          path: .init
+          key: blocky-notify-init
+      - name: Already emailed this version?
+        id: seen
+        if: steps.v.outputs.version != ''
+        uses: actions/cache@v5
+        with:
+          path: .notified
+          key: blocky-notified-${{ steps.v.outputs.version }}
+      - name: Email the maintainer
+        # only a genuinely new version, and never on the first-ever run (just seed then)
+        if: steps.v.outputs.version != '' && steps.init.outputs.cache-hit == 'true' && steps.seen.outputs.cache-hit != 'true'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.MAIL_SERVER }}
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          from: ${{ secrets.MAIL_FROM }}
+          to: ${{ secrets.MAIL_TO }}
+          subject: "New blocky release: v${{ steps.v.outputs.version }}"
+          body: |
+            blocky v${{ steps.v.outputs.version }}: https://github.com/0xERR0R/blocky/releases/tag/v${{ steps.v.outputs.version }}
+      # persist state after a successful send (transient failures retry next run):
+      # mark this version handled and that notify has now run at least once
+      - name: Record state
+        if: steps.v.outputs.version != '' && steps.seen.outputs.cache-hit != 'true'
+        run: touch .notified .init

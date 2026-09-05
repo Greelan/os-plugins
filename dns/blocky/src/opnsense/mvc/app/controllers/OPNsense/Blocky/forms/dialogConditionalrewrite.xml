@@ -1,0 +1,36 @@
+<form>
+    <field>
+        <id>conditionalrewrite.enabled</id>
+        <label>Enabled</label>
+        <type>checkbox</type>
+        <help>Enable this rewrite.</help>
+        <grid_view>
+            <width>6em</width>
+            <type>boolean</type>
+            <formatter>rowtoggle</formatter>
+        </grid_view>
+    </field>
+    <field>
+        <id>conditionalrewrite.fromDomain</id>
+        <label>From</label>
+        <type>text</type>
+        <help>Suffix of the queried name to replace. Only names below it are rewritten, so home rewrites printer.home but leaves a query for home alone.</help>
+        <grid_view/>
+    </field>
+    <field>
+        <id>conditionalrewrite.toDomain</id>
+        <label>To</label>
+        <type>text</type>
+        <help>
+            <![CDATA[Replacement domain forwarded to the resolver mapped on the <a href="/ui/blocky/settings/conditional#overridestab">Domain Overrides</a> tab. The part in front is kept, so with From home and To fritz.box a query for printer.home is forwarded as printer.fritz.box.]]>
+        </help>
+        <grid_view/>
+    </field>
+    <field>
+        <id>conditionalrewrite.description</id>
+        <label>Description</label>
+        <type>text</type>
+        <help>Optional description for your reference.</help>
+        <grid_view/>
+    </field>
+</form>

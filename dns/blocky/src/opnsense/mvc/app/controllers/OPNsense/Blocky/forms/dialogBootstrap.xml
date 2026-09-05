@@ -1,0 +1,46 @@
+<form>
+    <field>
+        <id>bootstrap.enabled</id>
+        <label>Enabled</label>
+        <type>checkbox</type>
+        <help>Enable this bootstrap resolver.</help>
+        <grid_view>
+            <width>6em</width>
+            <type>boolean</type>
+            <formatter>rowtoggle</formatter>
+        </grid_view>
+    </field>
+    <field>
+        <id>bootstrap.type</id>
+        <label>Type</label>
+        <type>dropdown</type>
+        <help>A resolver entered here, or the nameservers read from a resolv.conf-style file.</help>
+        <grid_view>
+            <width>8em</width>
+        </grid_view>
+    </field>
+    <field>
+        <id>bootstrap.content</id>
+        <label>Content</label>
+        <type>text</type>
+        <help>For a resolver: e.g. 1.1.1.1, tcp+udp:9.9.9.9, tcp-tls:dns.quad9.net or https://dns.quad9.net/dns-query. A plain resolver must be an IP address, because Blocky rejects a host name it would have to resolve first; a DoT, DoH or DoQ resolver may use a host name if its addresses are pinned below. For a resolv file: the absolute path to a resolv.conf-style file, e.g. /etc/resolv.conf, which must list at least one nameserver Blocky can reach and must not point back at Blocky.</help>
+        <grid_view/>
+    </field>
+    <field>
+        <id>bootstrap.ips</id>
+        <label>Pinned IPs</label>
+        <type>select_multiple</type>
+        <style>tokenize</style>
+        <allownew>true</allownew>
+        <hint>e.g. 1.1.1.1</hint>
+        <help>Addresses of the resolver above, needed whenever it is given as a host name so it can be reached without a lookup. Leave empty when the resolver is an IP address. Blocky refuses to start if a host name has no addresses here.</help>
+        <grid_view/>
+    </field>
+    <field>
+        <id>bootstrap.description</id>
+        <label>Description</label>
+        <type>text</type>
+        <help>Optional description for your reference.</help>
+        <grid_view/>
+    </field>
+</form>

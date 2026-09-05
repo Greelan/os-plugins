@@ -1,0 +1,9 @@
+# build output
+/repo/
+work/
+*.pkg
+*.txz
+
+# editor / OS cruft
+*.swp
+.DS_Store

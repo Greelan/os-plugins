@@ -1,0 +1,37 @@
+<form>
+    <field>
+        <id>conditional.enabled</id>
+        <label>Enabled</label>
+        <type>checkbox</type>
+        <help>Enable this domain override.</help>
+        <grid_view>
+            <width>6em</width>
+            <type>boolean</type>
+            <formatter>rowtoggle</formatter>
+        </grid_view>
+    </field>
+    <field>
+        <id>conditional.domain</id>
+        <label>Domain</label>
+        <type>text</type>
+        <help>Domain whose queries are forwarded to the resolvers below, subdomains included, e.g. fritz.box also covers printer.fritz.box. Reverse lookups work the same way, e.g. 178.168.192.in-addr.arpa. A name with no dot at all, such as printer on its own, is only matched by an entry of . which acts as the catch-all for unqualified names.</help>
+        <grid_view/>
+    </field>
+    <field>
+        <id>conditional.resolver</id>
+        <label>Resolver</label>
+        <type>select_multiple</type>
+        <style>tokenize</style>
+        <allownew>true</allownew>
+        <hint>192.168.1.1</hint>
+        <help>One or more resolvers for this domain, in the same formats as upstream servers (plain IP, tcp-tls:, https://, quic:, sdns://). Several are raced two at a time, or queried one at a time when the resolver strategy is random; strict order is not applied here, because Blocky always builds a domain override group the parallel way. These groups also start with the blocking startup strategy, whatever the general setting says.</help>
+        <grid_view/>
+    </field>
+    <field>
+        <id>conditional.description</id>
+        <label>Description</label>
+        <type>text</type>
+        <help>Optional description for your reference.</help>
+        <grid_view/>
+    </field>
+</form>

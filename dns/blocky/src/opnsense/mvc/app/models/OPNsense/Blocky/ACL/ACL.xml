@@ -1,0 +1,11 @@
+<acl>
+    <page-services-blocky>
+        <name>Services: Blocky DNS proxy</name>
+        <patterns>
+            <pattern>ui/blocky/*</pattern>
+            <pattern>api/blocky/*</pattern>
+            <pattern>ui/diagnostics/log/core/blocky/*</pattern>
+            <pattern>api/diagnostics/log/core/blocky/*</pattern>
+        </patterns>
+    </page-services-blocky>
+</acl>

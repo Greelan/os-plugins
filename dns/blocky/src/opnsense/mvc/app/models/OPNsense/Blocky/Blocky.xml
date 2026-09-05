@@ -1,0 +1,783 @@
+<model>
+    <mount>//OPNsense/blocky</mount>
+    <description>Blocky DNS proxy</description>
+    <version>1.0.0</version>
+    <items>
+        <general>
+            <enabled type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </enabled>
+            <dnsPort type="CSVListField">
+                <Default>53</Default>
+                <AsList>Y</AsList>
+                <FieldSeparator>,</FieldSeparator>
+                <Mask>/^(\[[0-9A-Fa-f:]+\]:[0-9]{1,5}|[0-9A-Za-z._-]+:[0-9]{1,5}|:?[0-9]{1,5})$/</Mask>
+                <MaskPerItem>Y</MaskPerItem>
+                <ValidationMessage>Enter one or more listeners as port, :port, ip:port or [ipv6]:port. Examples: 53, :53, 127.0.0.1:53, [::1]:53.</ValidationMessage>
+            </dnsPort>
+            <httpPort type="CSVListField">
+                <Default>4000</Default>
+                <AsList>Y</AsList>
+                <FieldSeparator>,</FieldSeparator>
+                <Mask>/^(\[[0-9A-Fa-f:]+\]:[0-9]{1,5}|[0-9A-Za-z._-]+:[0-9]{1,5}|:?[0-9]{1,5})$/</Mask>
+                <MaskPerItem>Y</MaskPerItem>
+                <ValidationMessage>Enter one or more listeners as port, :port, ip:port or [ipv6]:port. Examples: 4000, :4000, 127.0.0.1:4000, [::1]:4000. Leave empty to disable.</ValidationMessage>
+            </httpPort>
+            <logLevel type="OptionField">
+                <Default>info</Default>
+                <Required>Y</Required>
+                <OptionValues>
+                    <error>error</error>
+                    <warn>warn</warn>
+                    <info>info</info>
+                    <debug>debug</debug>
+                    <trace>trace</trace>
+                </OptionValues>
+            </logLevel>
+            <logPrivacy type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </logPrivacy>
+            <connectIPVersion type="OptionField">
+                <Default>dual</Default>
+                <Required>Y</Required>
+                <OptionValues>
+                    <dual>dual</dual>
+                    <v4>v4</v4>
+                    <v6>v6</v6>
+                </OptionValues>
+            </connectIPVersion>
+            <tlsPort type="CSVListField">
+                <AsList>Y</AsList>
+                <FieldSeparator>,</FieldSeparator>
+                <Mask>/^(\[[0-9A-Fa-f:]+\]:[0-9]{1,5}|[0-9A-Za-z._-]+:[0-9]{1,5}|:?[0-9]{1,5})$/</Mask>
+                <MaskPerItem>Y</MaskPerItem>
+                <ValidationMessage>Enter one or more listeners as port, :port, ip:port or [ipv6]:port. Examples: 853, :853, 127.0.0.1:853, [::1]:853.</ValidationMessage>
+            </tlsPort>
+            <httpsPort type="CSVListField">
+                <AsList>Y</AsList>
+                <FieldSeparator>,</FieldSeparator>
+                <Mask>/^(\[[0-9A-Fa-f:]+\]:[0-9]{1,5}|[0-9A-Za-z._-]+:[0-9]{1,5}|:?[0-9]{1,5})$/</Mask>
+                <MaskPerItem>Y</MaskPerItem>
+                <ValidationMessage>Enter one or more listeners as port, :port, ip:port or [ipv6]:port. Examples: 443, :443, 127.0.0.1:443, [::1]:443.</ValidationMessage>
+            </httpsPort>
+            <dohPath type="TextField">
+                <Default>/dns-query</Default>
+                <Mask>/^\/[\w\/.-]*$/</Mask>
+                <ValidationMessage>Enter a URL path beginning with a slash, e.g. /dns-query.</ValidationMessage>
+            </dohPath>
+            <minTlsServeVersion type="TextField">
+                <Mask>/^1\.[23]$/</Mask>
+                <ValidationMessage>Enter 1.2 or 1.3.</ValidationMessage>
+            </minTlsServeVersion>
+            <certFile type="TextField">
+                <ValidationMessage>Enter the path to the TLS certificate file.</ValidationMessage>
+            </certFile>
+            <keyFile type="TextField">
+                <ValidationMessage>Enter the path to the TLS key file.</ValidationMessage>
+            </keyFile>
+            <http3 type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </http3>
+            <strategy type="OptionField">
+                <Default>parallel_best</Default>
+                <Required>Y</Required>
+                <OptionValues>
+                    <parallel_best>parallel_best</parallel_best>
+                    <random>random</random>
+                    <strict>strict</strict>
+                </OptionValues>
+            </strategy>
+            <timeout type="TextField">
+                <Default>2s</Default>
+                <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
+                <ValidationMessage>Enter a duration such as 500ms, 2s or 1m. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
+            </timeout>
+            <initStrategy type="OptionField">
+                <Default>blocking</Default>
+                <Required>Y</Required>
+                <OptionValues>
+                    <blocking>blocking</blocking>
+                    <failOnError>failOnError</failOnError>
+                    <fast>fast</fast>
+                </OptionValues>
+            </initStrategy>
+            <userAgent type="TextField"/>
+            <quicMaxIdleTimeout type="TextField">
+                <Default>30s</Default>
+                <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
+                <ValidationMessage>Enter a duration such as 30s. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
+            </quicMaxIdleTimeout>
+            <quicKeepAlivePeriod type="TextField">
+                <Default>15s</Default>
+                <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
+                <ValidationMessage>Enter a duration such as 15s. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
+            </quicKeepAlivePeriod>
+            <blockType type="TextField">
+                <Default>zeroIP</Default>
+                <Required>Y</Required>
+                <Mask>/^(zeroIP|nxDomain|refused|(([0-9]{1,3}\.){3}[0-9]{1,3}|[0-9A-Fa-f:]+)(\s*,\s*(([0-9]{1,3}\.){3}[0-9]{1,3}|[0-9A-Fa-f:]+))*)$/i</Mask>
+                <ValidationMessage>Enter zeroIP, nxDomain, refused, or a comma separated list of IPv4/IPv6 addresses.</ValidationMessage>
+            </blockType>
+            <blockTTL type="TextField">
+                <Default>6h</Default>
+                <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
+                <ValidationMessage>Enter a duration such as 30m, 6h or 1h30m. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
+            </blockTTL>
+            <refreshPeriod type="TextField">
+                <Default>4h</Default>
+                <Mask>/^(0|([0-9]+(ns|us|ms|s|m|h))+)$/</Mask>
+                <ValidationMessage>Enter a duration such as 4h or 30m (0 to disable). Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
+            </refreshPeriod>
+            <loadingStrategy type="OptionField">
+                <Default>blocking</Default>
+                <Required>Y</Required>
+                <OptionValues>
+                    <blocking>blocking</blocking>
+                    <failOnError>failOnError</failOnError>
+                    <fast>fast</fast>
+                </OptionValues>
+            </loadingStrategy>
+            <maxErrorsPerSource type="IntegerField">
+                <Default>5</Default>
+                <MinimumValue>-1</MinimumValue>
+                <Required>Y</Required>
+            </maxErrorsPerSource>
+            <downloadTimeout type="TextField">
+                <Default>5s</Default>
+                <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
+                <ValidationMessage>Enter a duration such as 5s or 60s. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
+            </downloadTimeout>
+            <downloadAttempts type="IntegerField">
+                <Default>3</Default>
+                <MinimumValue>1</MinimumValue>
+                <Required>Y</Required>
+            </downloadAttempts>
+            <downloadCooldown type="TextField">
+                <Default>500ms</Default>
+                <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
+                <ValidationMessage>Enter a duration such as 500ms. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
+            </downloadCooldown>
+            <downloadWriteTimeout type="TextField">
+                <Default>20s</Default>
+                <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
+                <ValidationMessage>Enter a duration such as 20s. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
+            </downloadWriteTimeout>
+            <downloadReadTimeout type="TextField">
+                <Default>20s</Default>
+                <Mask>/^(0|([0-9]+(ns|us|ms|s|m|h))+)$/</Mask>
+                <ValidationMessage>Enter a duration such as 20s (0 to disable). Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
+            </downloadReadTimeout>
+            <downloadReadHeaderTimeout type="TextField">
+                <Default>20s</Default>
+                <Mask>/^(-1|([0-9]+(ns|us|ms|s|m|h))+)$/</Mask>
+                <ValidationMessage>Enter a duration such as 20s (-1 to disable). Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
+            </downloadReadHeaderTimeout>
+            <loadingConcurrency type="IntegerField">
+                <Default>4</Default>
+                <MinimumValue>1</MinimumValue>
+                <Required>Y</Required>
+            </loadingConcurrency>
+            <cacheMinTime type="TextField">
+                <Default>0</Default>
+                <Mask>/^(0|-[0-9]+|([0-9]+(ns|us|ms|s|m|h))+)$/</Mask>
+                <ValidationMessage>Enter a duration such as 5m or 1h, or 0 (and below) to fall back to the record TTL. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
+            </cacheMinTime>
+            <cacheMaxTime type="TextField">
+                <Default>0</Default>
+                <Mask>/^(0|-[0-9]+|([0-9]+(ns|us|ms|s|m|h))+)$/</Mask>
+                <ValidationMessage>Enter a duration such as 30m or 1h; 0 falls back to the record TTL, a negative value (e.g. -1) disables caching. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
+            </cacheMaxTime>
+            <prefetching type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </prefetching>
+            <cacheTimeNegative type="TextField">
+                <Default>30m</Default>
+                <Mask>/^(-1|([0-9]+(ns|us|ms|s|m|h))+)$/</Mask>
+                <ValidationMessage>Enter a duration such as 30m (use -1 to disable negative caching). Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
+            </cacheTimeNegative>
+            <maxItemsCount type="IntegerField">
+                <Default>0</Default>
+                <MinimumValue>0</MinimumValue>
+            </maxItemsCount>
+            <prefetchExpires type="TextField">
+                <Default>2h</Default>
+                <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
+                <ValidationMessage>Enter a duration such as 2h. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
+            </prefetchExpires>
+            <prefetchThreshold type="IntegerField">
+                <Default>5</Default>
+                <MinimumValue>0</MinimumValue>
+            </prefetchThreshold>
+            <prefetchMaxItemsCount type="IntegerField">
+                <Default>0</Default>
+                <MinimumValue>0</MinimumValue>
+            </prefetchMaxItemsCount>
+            <cacheExclude type="CSVListField">
+                <AsList>Y</AsList>
+                <FieldSeparator>,</FieldSeparator>
+                <Mask>/^\/.*\/$/</Mask>
+                <MaskPerItem>Y</MaskPerItem>
+                <ValidationMessage>Enter each pattern between slashes, e.g. /\.example\.com$/.</ValidationMessage>
+            </cacheExclude>
+            <customTTL type="TextField">
+                <Default>1h</Default>
+                <Mask>/^([0-9]+|([0-9]+(ns|us|ms|s|m|h))+)$/</Mask>
+                <ValidationMessage>Enter a duration such as 1h, or a plain number (minutes). Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
+            </customTTL>
+            <filterUnmappedTypes type="BooleanField">
+                <Default>1</Default>
+                <Required>Y</Required>
+            </filterUnmappedTypes>
+            <customZone type="TextField"/>
+            <conditionalFallback type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </conditionalFallback>
+            <clientLookupUpstream type="TextField"/>
+            <clientLookupOrder type="CSVListField">
+                <AsList>Y</AsList>
+                <Mask>/^[1-9][0-9]*$/</Mask>
+                <MaskPerItem>Y</MaskPerItem>
+                <ValidationMessage>Enter positions counting from 1, e.g. 2,1.</ValidationMessage>
+            </clientLookupOrder>
+            <prometheus type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </prometheus>
+            <prometheusPath type="TextField">
+                <Default>/metrics</Default>
+                <Mask>/^\/[\w\/.-]*$/</Mask>
+                <ValidationMessage>Enter a URL path beginning with a slash, e.g. /metrics.</ValidationMessage>
+            </prometheusPath>
+            <logFormat type="OptionField">
+                <Default>text</Default>
+                <Required>Y</Required>
+                <OptionValues>
+                    <text>text</text>
+                    <json>json</json>
+                </OptionValues>
+            </logFormat>
+            <proxyProtocol type="OptionField">
+                <Multiple>Y</Multiple>
+                <OptionValues>
+                    <dns>dns</dns>
+                    <http>http</http>
+                    <https>https</https>
+                    <tls>tls</tls>
+                </OptionValues>
+            </proxyProtocol>
+            <downloadCachePath type="TextField">
+                <ValidationMessage>Enter a directory path where downloaded lists are cached.</ValidationMessage>
+            </downloadCachePath>
+        </general>
+        <upstreams type="ArrayField">
+            <enabled type="BooleanField">
+                <Default>1</Default>
+                <Required>Y</Required>
+            </enabled>
+            <group type="TextField">
+                <Default>default</Default>
+                <Required>Y</Required>
+                <Mask>/^[0-9A-Za-z_.:*\/\[\]-]{1,128}$/u</Mask>
+                <ValidationMessage>Enter "default" (all clients), or a client name (wildcards * and [0-9] ranges allowed), an IP address or a CIDR subnet to give matching clients these resolvers.</ValidationMessage>
+            </group>
+            <server type="TextField">
+                <Required>Y</Required>
+                <Mask>/^[^\s'"]+$/</Mask>
+                <ValidationMessage>Enter an upstream resolver, e.g. 1.1.1.1, tcp-tls:1.1.1.1:853 or https://dns.google/dns-query.</ValidationMessage>
+            </server>
+            <description type="DescriptionField"/>
+        </upstreams>
+        <bootstrap type="ArrayField">
+            <enabled type="BooleanField">
+                <Default>1</Default>
+                <Required>Y</Required>
+            </enabled>
+            <type type="OptionField">
+                <Default>resolver</Default>
+                <Required>Y</Required>
+                <OptionValues>
+                    <resolver>Resolver</resolver>
+                    <resolvfile>Resolv file</resolvfile>
+                </OptionValues>
+            </type>
+            <content type=".\BootstrapContentField">
+                <Required>Y</Required>
+            </content>
+            <ips type="NetworkField">
+                <NetMaskAllowed>N</NetMaskAllowed>
+                <AsList>Y</AsList>
+            </ips>
+            <description type="DescriptionField"/>
+        </bootstrap>
+        <denylists type="ArrayField">
+            <enabled type="BooleanField">
+                <Default>1</Default>
+                <Required>Y</Required>
+            </enabled>
+            <group type="TextField">
+                <Default>default</Default>
+                <Required>Y</Required>
+                <Mask>/^[0-9a-zA-Z_.-]{1,64}$/u</Mask>
+                <ValidationMessage>Group names may contain letters, digits, dot, dash and underscore.</ValidationMessage>
+            </group>
+            <source type="TextField">
+                <Required>Y</Required>
+                <Mask>/^[^\x00-\x1f]+$/</Mask>
+                <ValidationMessage>Enter a URL, a local file path or an inline list entry.</ValidationMessage>
+            </source>
+            <description type="DescriptionField"/>
+        </denylists>
+        <allowlists type="ArrayField">
+            <enabled type="BooleanField">
+                <Default>1</Default>
+                <Required>Y</Required>
+            </enabled>
+            <group type="TextField">
+                <Default>default</Default>
+                <Required>Y</Required>
+                <Mask>/^[0-9a-zA-Z_.-]{1,64}$/u</Mask>
+                <ValidationMessage>Group names may contain letters, digits, dot, dash and underscore.</ValidationMessage>
+            </group>
+            <source type="TextField">
+                <Required>Y</Required>
+                <Mask>/^[^\x00-\x1f]+$/</Mask>
+                <ValidationMessage>Enter a URL, a local file path or an inline list entry.</ValidationMessage>
+            </source>
+            <description type="DescriptionField"/>
+        </allowlists>
+        <customdns type="ArrayField">
+            <enabled type="BooleanField">
+                <Default>1</Default>
+                <Required>Y</Required>
+            </enabled>
+            <domain type="HostnameField">
+                <Required>Y</Required>
+            </domain>
+            <ip type="NetworkField">
+                <Required>Y</Required>
+                <NetMaskAllowed>N</NetMaskAllowed>
+                <AsList>Y</AsList>
+            </ip>
+            <description type="DescriptionField"/>
+        </customdns>
+        <conditional type="ArrayField">
+            <enabled type="BooleanField">
+                <Default>1</Default>
+                <Required>Y</Required>
+            </enabled>
+            <domain type=".\ConditionalDomainField">
+                <Required>Y</Required>
+            </domain>
+            <resolver type="CSVListField">
+                <Required>Y</Required>
+                <AsList>Y</AsList>
+                <FieldSeparator>,</FieldSeparator>
+                <ValidationMessage>Enter one or more upstream resolvers for this domain, e.g. 192.168.1.1.</ValidationMessage>
+            </resolver>
+            <description type="DescriptionField"/>
+        </conditional>
+        <customdnsrewrite type="ArrayField">
+            <enabled type="BooleanField">
+                <Default>1</Default>
+                <Required>Y</Required>
+            </enabled>
+            <fromDomain type="HostnameField">
+                <Required>Y</Required>
+                <ValidationMessage>Enter the domain to match, e.g. example.com.</ValidationMessage>
+            </fromDomain>
+            <toDomain type="HostnameField">
+                <Required>Y</Required>
+                <ValidationMessage>Enter the replacement domain, e.g. printer.lan.</ValidationMessage>
+            </toDomain>
+            <description type="DescriptionField"/>
+        </customdnsrewrite>
+        <conditionalrewrite type="ArrayField">
+            <enabled type="BooleanField">
+                <Default>1</Default>
+                <Required>Y</Required>
+            </enabled>
+            <fromDomain type="HostnameField">
+                <Required>Y</Required>
+                <ValidationMessage>Enter the domain to match, e.g. example.com.</ValidationMessage>
+            </fromDomain>
+            <toDomain type="HostnameField">
+                <Required>Y</Required>
+                <ValidationMessage>Enter the replacement domain, e.g. fritz.box.</ValidationMessage>
+            </toDomain>
+            <description type="DescriptionField"/>
+        </conditionalrewrite>
+        <clientgroups type="ArrayField">
+            <enabled type="BooleanField">
+                <Default>1</Default>
+                <Required>Y</Required>
+            </enabled>
+            <client type="TextField">
+                <Required>Y</Required>
+                <Mask>/^[^\s'"]+$/</Mask>
+                <ValidationMessage>Enter a client IP, CIDR, client name or wildcard (use "default" for all clients).</ValidationMessage>
+            </client>
+            <groups type="TextField">
+                <Default>default</Default>
+                <Required>Y</Required>
+                <Mask>/^[0-9a-zA-Z_.-]+(,[0-9a-zA-Z_.-]+)*$/u</Mask>
+                <ValidationMessage>Enter one or more group names, comma separated.</ValidationMessage>
+            </groups>
+            <description type="DescriptionField"/>
+        </clientgroups>
+        <clientlookupclients type="ArrayField">
+            <enabled type="BooleanField">
+                <Default>1</Default>
+                <Required>Y</Required>
+            </enabled>
+            <name type="TextField">
+                <Required>Y</Required>
+                <Mask>/^[0-9a-zA-Z_.-]{1,255}$/u</Mask>
+                <ValidationMessage>Enter the client name to map, e.g. laptop.</ValidationMessage>
+            </name>
+            <ips type="NetworkField">
+                <Required>Y</Required>
+                <NetMaskAllowed>N</NetMaskAllowed>
+                <AsList>Y</AsList>
+            </ips>
+            <description type="DescriptionField"/>
+        </clientlookupclients>
+        <schedules type="ArrayField">
+            <enabled type="BooleanField">
+                <Default>1</Default>
+                <Required>Y</Required>
+            </enabled>
+            <name type="TextField">
+                <Required>Y</Required>
+                <Mask>/^[0-9a-zA-Z_.\- ]{1,64}$/</Mask>
+                <ValidationMessage>Enter a name (letters, numbers, spaces, . _ -).</ValidationMessage>
+            </name>
+            <groups type="TextField">
+                <Required>Y</Required>
+                <Mask>/^[0-9a-zA-Z_.-]+(,[0-9a-zA-Z_.-]+)*$/u</Mask>
+                <ValidationMessage>Enter one or more group names, comma separated.</ValidationMessage>
+            </groups>
+            <weekdays type="OptionField">
+                <Required>Y</Required>
+                <Multiple>Y</Multiple>
+                <OptionValues>
+                    <mon>Monday</mon>
+                    <tue>Tuesday</tue>
+                    <wed>Wednesday</wed>
+                    <thu>Thursday</thu>
+                    <fri>Friday</fri>
+                    <sat>Saturday</sat>
+                    <sun>Sunday</sun>
+                </OptionValues>
+            </weekdays>
+            <start type="TextField">
+                <Mask>/^([01][0-9]|2[0-3]):[0-5][0-9]$/</Mask>
+                <ValidationMessage>Enter a time as HH:MM (24-hour).</ValidationMessage>
+            </start>
+            <end type="TextField">
+                <Mask>/^([01][0-9]|2[0-3]):[0-5][0-9]$/</Mask>
+                <ValidationMessage>Enter a time as HH:MM (24-hour).</ValidationMessage>
+            </end>
+            <description type="DescriptionField"/>
+        </schedules>
+        <dnssec>
+            <validate type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </validate>
+            <maxChainDepth type="IntegerField">
+                <Default>10</Default>
+                <MinimumValue>1</MinimumValue>
+                <Required>Y</Required>
+            </maxChainDepth>
+            <cacheExpirationHours type="IntegerField">
+                <Default>1</Default>
+                <MinimumValue>0</MinimumValue>
+                <Required>Y</Required>
+            </cacheExpirationHours>
+            <maxUpstreamQueries type="IntegerField">
+                <Default>30</Default>
+                <MinimumValue>1</MinimumValue>
+                <Required>Y</Required>
+            </maxUpstreamQueries>
+            <maxNSEC3Iterations type="IntegerField">
+                <Default>150</Default>
+                <MinimumValue>0</MinimumValue>
+                <Required>Y</Required>
+            </maxNSEC3Iterations>
+            <clockSkewToleranceSec type="IntegerField">
+                <Default>3600</Default>
+                <MinimumValue>0</MinimumValue>
+                <Required>Y</Required>
+            </clockSkewToleranceSec>
+            <trustAnchors type="CSVListField">
+                <AsList>Y</AsList>
+                <FieldSeparator>,</FieldSeparator>
+            </trustAnchors>
+        </dnssec>
+        <rebindingProtection>
+            <enable type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </enable>
+            <allowedDomains type="HostnameField">
+                <IsDNSName>Y</IsDNSName>
+                <AsList>Y</AsList>
+            </allowedDomains>
+        </rebindingProtection>
+        <rateLimit>
+            <enable type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </enable>
+            <rate type="IntegerField">
+                <Default>0</Default>
+                <MinimumValue>0</MinimumValue>
+                <Required>Y</Required>
+            </rate>
+            <burst type="IntegerField">
+                <Default>0</Default>
+                <MinimumValue>0</MinimumValue>
+                <Required>Y</Required>
+            </burst>
+            <ipv4Prefix type="IntegerField">
+                <Default>32</Default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>32</MaximumValue>
+                <Required>Y</Required>
+            </ipv4Prefix>
+            <ipv6Prefix type="IntegerField">
+                <Default>64</Default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>128</MaximumValue>
+                <Required>Y</Required>
+            </ipv6Prefix>
+            <allowlist type="NetworkField">
+                <NetMaskAllowed>Y</NetMaskAllowed>
+                <AsList>Y</AsList>
+            </allowlist>
+        </rateLimit>
+        <fqdnOnly>
+            <enable type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </enable>
+        </fqdnOnly>
+        <ede>
+            <enable type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </enable>
+        </ede>
+        <specialUseDomains>
+            <enable type="BooleanField">
+                <Default>1</Default>
+                <Required>Y</Required>
+            </enable>
+            <rfc6762 type="BooleanField">
+                <Default>1</Default>
+                <Required>Y</Required>
+            </rfc6762>
+        </specialUseDomains>
+        <statistics>
+            <enable type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </enable>
+        </statistics>
+        <queryLog>
+            <type type="OptionField">
+                <Default>none</Default>
+                <Required>Y</Required>
+                <OptionValues>
+                    <none>Disabled (default)</none>
+                    <console>Console (Blocky log)</console>
+                    <csv>CSV files</csv>
+                    <csv-client>CSV files (per client)</csv-client>
+                    <sqlite>SQLite</sqlite>
+                    <mysql>MySQL / MariaDB</mysql>
+                    <postgresql>PostgreSQL</postgresql>
+                    <timescale>TimescaleDB</timescale>
+                    <dnstap>dnstap</dnstap>
+                </OptionValues>
+            </type>
+            <target type="TextField"/>
+            <logRetentionDays type="IntegerField">
+                <Default>0</Default>
+                <MinimumValue>0</MinimumValue>
+                <Required>Y</Required>
+            </logRetentionDays>
+            <creationAttempts type="IntegerField">
+                <Default>3</Default>
+                <MinimumValue>1</MinimumValue>
+                <Required>Y</Required>
+            </creationAttempts>
+            <creationCooldown type="TextField">
+                <Default>2s</Default>
+                <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
+                <ValidationMessage>Enter a duration such as 2s. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
+            </creationCooldown>
+            <flushInterval type="TextField">
+                <Default>30s</Default>
+                <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
+                <ValidationMessage>Enter a duration such as 30s. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
+            </flushInterval>
+            <fields type="OptionField">
+                <Multiple>Y</Multiple>
+                <OptionValues>
+                    <clientIP>clientIP</clientIP>
+                    <clientName>clientName</clientName>
+                    <responseReason>responseReason</responseReason>
+                    <responseAnswer>responseAnswer</responseAnswer>
+                    <question>question</question>
+                    <duration>duration</duration>
+                </OptionValues>
+            </fields>
+            <ignoreSudn type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </ignoreSudn>
+            <ignoreDomains type="CSVListField">
+                <AsList>Y</AsList>
+                <FieldSeparator>,</FieldSeparator>
+            </ignoreDomains>
+        </queryLog>
+        <filtering>
+            <queryTypes type="CSVListField">
+                <AsList>Y</AsList>
+                <Mask>/^[A-Z][A-Z0-9-]*$/</Mask>
+                <MaskPerItem>Y</MaskPerItem>
+                <ValidationMessage>Enter DNS type names in upper case, e.g. AAAA or HTTPS.</ValidationMessage>
+            </queryTypes>
+        </filtering>
+        <hostsFile>
+            <sources type="CSVListField">
+                <AsList>Y</AsList>
+            </sources>
+            <hostsTTL type="TextField">
+                <Default>1h</Default>
+                <Mask>/^([0-9]+|([0-9]+(ns|us|ms|s|m|h))+)$/</Mask>
+                <ValidationMessage>Enter a duration such as 1h, or a plain number (minutes). Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
+            </hostsTTL>
+            <filterLoopback type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </filterLoopback>
+            <refreshPeriod type="TextField">
+                <Default>4h</Default>
+                <Mask>/^(0|([0-9]+(ns|us|ms|s|m|h))+)$/</Mask>
+                <ValidationMessage>Enter a duration such as 4h or 30m (0 to disable). Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
+            </refreshPeriod>
+            <downloadTimeout type="TextField">
+                <Default>5s</Default>
+                <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
+                <ValidationMessage>Enter a duration such as 5s. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
+            </downloadTimeout>
+            <downloadAttempts type="IntegerField">
+                <Default>3</Default>
+                <MinimumValue>1</MinimumValue>
+                <Required>Y</Required>
+            </downloadAttempts>
+            <downloadCooldown type="TextField">
+                <Default>500ms</Default>
+                <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
+                <ValidationMessage>Enter a duration such as 500ms. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
+            </downloadCooldown>
+            <downloadCachePath type="TextField">
+                <ValidationMessage>Enter a directory path where downloaded hosts files are cached.</ValidationMessage>
+            </downloadCachePath>
+            <concurrency type="IntegerField">
+                <Default>4</Default>
+                <MinimumValue>1</MinimumValue>
+                <Required>Y</Required>
+            </concurrency>
+            <loadingStrategy type="OptionField">
+                <Default>blocking</Default>
+                <Required>Y</Required>
+                <OptionValues>
+                    <blocking>blocking</blocking>
+                    <failOnError>failOnError</failOnError>
+                    <fast>fast</fast>
+                </OptionValues>
+            </loadingStrategy>
+            <maxErrorsPerSource type="IntegerField">
+                <Default>5</Default>
+                <MinimumValue>-1</MinimumValue>
+                <Required>Y</Required>
+            </maxErrorsPerSource>
+        </hostsFile>
+        <ecs>
+            <useAsClient type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </useAsClient>
+            <forward type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </forward>
+            <ipv4Mask type="IntegerField">
+                <Default>0</Default>
+                <MinimumValue>0</MinimumValue>
+                <MaximumValue>32</MaximumValue>
+                <Required>Y</Required>
+            </ipv4Mask>
+            <ipv6Mask type="IntegerField">
+                <Default>0</Default>
+                <MinimumValue>0</MinimumValue>
+                <MaximumValue>128</MaximumValue>
+                <Required>Y</Required>
+            </ipv6Mask>
+        </ecs>
+        <dns64>
+            <enable type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </enable>
+            <prefix type="NetworkField">
+                <Default>64:ff9b::/96</Default>
+                <NetMaskRequired>Y</NetMaskRequired>
+                <AddressFamily>ipv6</AddressFamily>
+                <AsList>Y</AsList>
+            </prefix>
+            <exclusionSet type="NetworkField">
+                <NetMaskRequired>Y</NetMaskRequired>
+                <AddressFamily>ipv6</AddressFamily>
+                <AsList>Y</AsList>
+            </exclusionSet>
+        </dns64>
+        <redis>
+            <address type="TextField"/>
+            <username type="TextField"/>
+            <password type="TextField"/>
+            <database type="IntegerField">
+                <Default>0</Default>
+                <MinimumValue>0</MinimumValue>
+                <Required>Y</Required>
+            </database>
+            <required type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </required>
+            <connectionAttempts type="IntegerField">
+                <Default>3</Default>
+                <MinimumValue>1</MinimumValue>
+                <Required>Y</Required>
+            </connectionAttempts>
+            <connectionCooldown type="TextField">
+                <Default>1s</Default>
+                <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
+                <ValidationMessage>Enter a duration such as 1s. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
+            </connectionCooldown>
+            <sentinelUsername type="TextField"/>
+            <sentinelPassword type="TextField"/>
+            <sentinelAddresses type="CSVListField">
+                <AsList>Y</AsList>
+                <FieldSeparator>,</FieldSeparator>
+            </sentinelAddresses>
+        </redis>
+    </items>
+</model>

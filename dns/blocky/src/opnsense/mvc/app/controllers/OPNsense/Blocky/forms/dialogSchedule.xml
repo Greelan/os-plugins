@@ -1,0 +1,57 @@
+<form>
+    <field>
+        <id>schedule.enabled</id>
+        <label>Enabled</label>
+        <type>checkbox</type>
+        <help>Enable this schedule.</help>
+        <grid_view>
+            <width>6em</width>
+            <type>boolean</type>
+            <formatter>rowtoggle</formatter>
+        </grid_view>
+    </field>
+    <field>
+        <id>schedule.name</id>
+        <label>Name</label>
+        <type>text</type>
+        <help>Unique name for this schedule.</help>
+        <grid_view/>
+    </field>
+    <field>
+        <id>schedule.groups</id>
+        <label>List groups</label>
+        <type>text</type>
+        <help>Comma separated list group names this schedule applies to. Those groups are only active during the window below; outside it they are inactive (not blocking).</help>
+        <grid_view/>
+    </field>
+    <field>
+        <id>schedule.weekdays</id>
+        <label>Weekdays</label>
+        <type>select_multiple</type>
+        <help>Days of the week the window applies to.</help>
+        <grid_view/>
+    </field>
+    <field>
+        <id>schedule.start</id>
+        <label>Start</label>
+        <type>text</type>
+        <hint>00:00</hint>
+        <help>Start of the window (24-hour HH:MM). Leave both Start and End empty for an all-day schedule (the selected weekdays only).</help>
+        <grid_view/>
+    </field>
+    <field>
+        <id>schedule.end</id>
+        <label>End</label>
+        <type>text</type>
+        <hint>23:59</hint>
+        <help>End of the window (24-hour HH:MM). If Start is later than End, the window spans midnight (overnight). Must be set together with Start.</help>
+        <grid_view/>
+    </field>
+    <field>
+        <id>schedule.description</id>
+        <label>Description</label>
+        <type>text</type>
+        <help>Optional description for your reference.</help>
+        <grid_view/>
+    </field>
+</form>

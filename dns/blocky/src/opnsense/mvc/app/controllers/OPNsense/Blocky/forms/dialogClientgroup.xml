@@ -1,0 +1,36 @@
+<form>
+    <field>
+        <id>clientgroup.enabled</id>
+        <label>Enabled</label>
+        <type>checkbox</type>
+        <help>Enable this client-to-group mapping.</help>
+        <grid_view>
+            <width>6em</width>
+            <type>boolean</type>
+            <formatter>rowtoggle</formatter>
+        </grid_view>
+    </field>
+    <field>
+        <id>clientgroup.client</id>
+        <label>Client</label>
+        <type>text</type>
+        <help>The client this mapping applies to: a client name (wildcards * and [0-9] supported), an IP address, an FQDN, or a CIDR subnet. Use "default" for clients that match no other entry.</help>
+        <grid_view/>
+    </field>
+    <field>
+        <id>clientgroup.groups</id>
+        <label>List groups</label>
+        <type>text</type>
+        <help>
+            <![CDATA[Comma separated list group names applied to this client. These must match the group values on the deny and allow lists under <a href="/ui/blocky/settings/filterlists">Filter Lists</a>. Use "default" for the group applied to clients with no explicit mapping.]]>
+        </help>
+        <grid_view/>
+    </field>
+    <field>
+        <id>clientgroup.description</id>
+        <label>Description</label>
+        <type>text</type>
+        <help>Optional description for your reference.</help>
+        <grid_view/>
+    </field>
+</form>

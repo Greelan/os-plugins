@@ -1,0 +1,68 @@
+<form>
+    <field>
+        <id>blocky.queryLog.type</id>
+        <label>Log type</label>
+        <type>dropdown</type>
+        <help><![CDATA[Where query logs are written. Disabled (the default) turns query logging off; Console writes each query to the Blocky log (viewable under <a href="/ui/blocky/settings/log">Log File</a>); CSV and CSV per-client write daily .csv files to the Target directory; SQLite, MySQL/MariaDB, PostgreSQL and TimescaleDB write to a database using the connection string in Target; dnstap streams to the dnstap socket set in Target. Console is high-volume (one line per query); use CSV or a database for long-term logs.]]></help>
+    </field>
+    <field>
+        <id>blocky.queryLog.target</id>
+        <label>Target</label>
+        <type>text</type>
+        <help>Where the log goes, by type. CSV: an existing directory, not a file name; Blocky writes 2026-09-14_ALL.log per day, or one file per client. SQLite: a file path, created with its parent, on local storage only. MySQL/MariaDB, PostgreSQL, TimescaleDB: a connection string, e.g. postgres://user:password@host:5432/blocky. dnstap: unix:/var/run/dnstap.sock, tcp://127.0.0.1:6000, or a bare socket path. Unused for Console. A file:/path value reads the target from that file, keeping credentials out of the configuration, but not for SQLite, where the prefix is taken literally.</help>
+    </field>
+    <field>
+        <id>blocky.queryLog.logRetentionDays</id>
+        <label>Retention (days)</label>
+        <type>text</type>
+        <hint>0</hint>
+        <help>Delete query logs older than this many days. 0 keeps them indefinitely. Applies to CSV and the database types; dnstap streams rather than stores.</help>
+    </field>
+    <field>
+        <id>blocky.queryLog.fields</id>
+        <label>Logged fields</label>
+        <type>select_multiple</type>
+        <help>Which fields to record per query. Leave empty to log all fields. Not used by dnstap, which exports the full DNS messages, and log privacy does not obfuscate those payloads.</help>
+    </field>
+    <field>
+        <id>blocky.queryLog.flushInterval</id>
+        <label>Flush interval</label>
+        <type>text</type>
+        <hint>30s</hint>
+        <advanced>true</advanced>
+        <help>How often buffered entries are written to the target. Used by the database types and dnstap; CSV writes each entry as it arrives.</help>
+    </field>
+    <field>
+        <id>blocky.queryLog.creationAttempts</id>
+        <label>Creation attempts</label>
+        <type>text</type>
+        <hint>3</hint>
+        <advanced>true</advanced>
+        <help>Number of attempts to open the log target (file or database) before giving up.</help>
+    </field>
+    <field>
+        <id>blocky.queryLog.creationCooldown</id>
+        <label>Creation cooldown</label>
+        <type>text</type>
+        <hint>2s</hint>
+        <advanced>true</advanced>
+        <help>Wait time between attempts to open the log target.</help>
+    </field>
+    <field>
+        <id>blocky.queryLog.ignoreSudn</id>
+        <label>Ignore SUDN queries</label>
+        <type>checkbox</type>
+        <advanced>true</advanced>
+        <help>Do not log queries answered as Special Use Domain Names (SUDN).</help>
+    </field>
+    <field>
+        <id>blocky.queryLog.ignoreDomains</id>
+        <label>Ignore domains</label>
+        <type>select_multiple</type>
+        <style>tokenize</style>
+        <allownew>true</allownew>
+        <advanced>true</advanced>
+        <hint>example.com</hint>
+        <help>Domains excluded from the query log. Each entry matches the query name as an exact domain, a *.wildcard, or a /regex/.</help>
+    </field>
+</form>

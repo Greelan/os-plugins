@@ -1,0 +1,243 @@
+<form>
+    <field>
+        <type>header</type>
+        <label>Query type filtering</label>
+    </field>
+    <field>
+        <id>blocky.filtering.queryTypes</id>
+        <label>Drop query types</label>
+        <type>select_multiple</type>
+        <style>tokenize</style>
+        <allownew>true</allownew>
+        <hint>AAAA</hint>
+        <help>Record types Blocky answers with an empty response instead of forwarding, e.g. AAAA to suppress IPv6 answers on an IPv4-only network.</help>
+    </field>
+    <field>
+        <type>header</type>
+        <label>Hosts file</label>
+    </field>
+    <field>
+        <id>blocky.hostsFile.sources</id>
+        <label>Sources</label>
+        <type>select_multiple</type>
+        <style>tokenize</style>
+        <allownew>true</allownew>
+        <hint>/etc/hosts or https://...</hint>
+        <help>Hosts files used for name resolution: an http or https URL, an absolute path (e.g. /etc/hosts), or inline content. Anything else is written as an inline entry rather than a file name. Entries are answered directly by Blocky.</help>
+    </field>
+    <field>
+        <id>blocky.hostsFile.hostsTTL</id>
+        <label>Hosts TTL</label>
+        <type>text</type>
+        <hint>1h</hint>
+        <help>TTL returned for answers coming from the hosts files.</help>
+    </field>
+    <field>
+        <id>blocky.hostsFile.filterLoopback</id>
+        <label>Filter loopback</label>
+        <type>checkbox</type>
+        <help>Ignore loopback addresses (127.0.0.0/8 and ::1) in the hosts files.</help>
+    </field>
+    <field>
+        <id>blocky.hostsFile.refreshPeriod</id>
+        <label>Refresh period</label>
+        <type>text</type>
+        <hint>4h</hint>
+        <advanced>true</advanced>
+        <help>Interval at which hosts files are refreshed from their sources, e.g. 4h. Set to 0 to disable periodic refresh.</help>
+    </field>
+    <field>
+        <id>blocky.hostsFile.loadingStrategy</id>
+        <label>Loading strategy</label>
+        <type>dropdown</type>
+        <advanced>true</advanced>
+        <help>How hosts files load at startup: blocking waits for all of them before serving, failOnError aborts startup if one fails to load, fast serves immediately and loads them in the background.</help>
+    </field>
+    <field>
+        <id>blocky.hostsFile.maxErrorsPerSource</id>
+        <label>Max errors per source</label>
+        <type>text</type>
+        <hint>5</hint>
+        <advanced>true</advanced>
+        <help>Number of parse errors tolerated in a single hosts file before it is treated as invalid. Use -1 to disable the limit.</help>
+    </field>
+    <field>
+        <id>blocky.hostsFile.concurrency</id>
+        <label>Load concurrency</label>
+        <type>text</type>
+        <hint>4</hint>
+        <advanced>true</advanced>
+        <help>Maximum number of hosts files processed in parallel.</help>
+    </field>
+    <field>
+        <id>blocky.hostsFile.downloadTimeout</id>
+        <label>Download timeout</label>
+        <type>text</type>
+        <hint>5s</hint>
+        <advanced>true</advanced>
+        <help>Timeout for downloading each hosts file URL. Increase for large files or slow links, e.g. 60s.</help>
+    </field>
+    <field>
+        <id>blocky.hostsFile.downloadAttempts</id>
+        <label>Download attempts</label>
+        <type>text</type>
+        <hint>3</hint>
+        <advanced>true</advanced>
+        <help>Maximum number of download attempts for each hosts file URL (including the first attempt).</help>
+    </field>
+    <field>
+        <id>blocky.hostsFile.downloadCooldown</id>
+        <label>Download cooldown</label>
+        <type>text</type>
+        <hint>500ms</hint>
+        <advanced>true</advanced>
+        <help>Wait time between failed download attempts.</help>
+    </field>
+    <field>
+        <id>blocky.hostsFile.downloadCachePath</id>
+        <label>Download cache path</label>
+        <type>text</type>
+        <hint>/var/cache/blocky/lists</hint>
+        <advanced>true</advanced>
+        <help>Optional directory for an on-disk cache of downloaded hosts files. When set, Blocky uses HTTP conditional requests to skip re-downloading unchanged files, and can serve a hosts file from disk when its source is temporarily unreachable. When empty (default), downloads are stateless and nothing is written to disk.</help>
+    </field>
+    <field>
+        <type>header</type>
+        <label>EDNS Client Subnet (ECS)</label>
+    </field>
+    <field>
+        <id>blocky.ecs.useAsClient</id>
+        <label>Use ECS as client</label>
+        <type>checkbox</type>
+        <help>Take the client address from the query's EDNS Client Subnet option instead of the sender's address, so a forwarder or proxy in front of Blocky does not appear as the client. Only a single-address option counts, /32 for IPv4 or /128 for IPv6; anything wider is ignored. The address is then used for client groups, client names and the query log.</help>
+    </field>
+    <field>
+        <id>blocky.ecs.forward</id>
+        <label>Forward ECS</label>
+        <type>checkbox</type>
+        <help>Forward the EDNS Client Subnet option to upstream resolvers.</help>
+    </field>
+    <field>
+        <id>blocky.ecs.ipv4Mask</id>
+        <label>IPv4 mask</label>
+        <type>text</type>
+        <hint>0</hint>
+        <advanced>true</advanced>
+        <help>Add an ECS option to IPv4 queries with this prefix length. 0 disables; maximum 32.</help>
+    </field>
+    <field>
+        <id>blocky.ecs.ipv6Mask</id>
+        <label>IPv6 mask</label>
+        <type>text</type>
+        <hint>0</hint>
+        <advanced>true</advanced>
+        <help>Add an ECS option to IPv6 queries with this prefix length. 0 disables; maximum 128.</help>
+    </field>
+    <field>
+        <type>header</type>
+        <label>DNS64</label>
+    </field>
+    <field>
+        <id>blocky.dns64.enable</id>
+        <label>Enable DNS64</label>
+        <type>checkbox</type>
+        <help>Synthesize AAAA records from A records for IPv6-only clients behind a NAT64 gateway. Cannot be combined with AAAA in Drop query types above: those queries never reach DNS64, and Blocky exits at startup on that combination.</help>
+    </field>
+    <field>
+        <id>blocky.dns64.prefix</id>
+        <label>NAT64 prefixes</label>
+        <type>select_multiple</type>
+        <style>tokenize</style>
+        <allownew>true</allownew>
+        <hint>64:ff9b::/96</hint>
+        <help>IPv6 prefixes used to synthesize AAAA records; empty uses the well-known 64:ff9b::/96. Lengths must be /32, /40, /48, /56, /64 or /96, and prefixes must not overlap, or Blocky exits at startup.</help>
+    </field>
+    <field>
+        <id>blocky.dns64.exclusionSet</id>
+        <label>Exclusion set</label>
+        <type>select_multiple</type>
+        <style>tokenize</style>
+        <allownew>true</allownew>
+        <advanced>true</advanced>
+        <hint>::1/128</hint>
+        <help>IPv6 ranges that do not count as a real AAAA answer, so a response holding only these still gets synthesized. Empty uses the default set: IPv4-mapped ::ffff:0:0/96, loopback ::1/128, link-local fe80::/10, plus the prefixes above. A custom set replaces all of that, including the prefixes above, which must then be listed here to avoid synthesizing from an already synthesized address.</help>
+    </field>
+    <field>
+        <type>header</type>
+        <label>Redis (shared cache)</label>
+    </field>
+    <field>
+        <id>blocky.redis.address</id>
+        <label>Address</label>
+        <type>text</type>
+        <help>Redis server as host:port, a unix socket path (starting with /), or (when using Sentinel) the master name. Lets multiple Blocky instances synchronize their cache and blocking state. Leave empty to disable Redis.</help>
+    </field>
+    <field>
+        <id>blocky.redis.username</id>
+        <label>Username</label>
+        <type>text</type>
+        <advanced>true</advanced>
+        <help>Redis username (ACL), if required.</help>
+    </field>
+    <field>
+        <id>blocky.redis.password</id>
+        <label>Password</label>
+        <type>password</type>
+        <help>Redis password, if required. A value of file:/path or file:///path reads the password from that file instead, keeping it out of the OPNsense configuration; Blocky strips one trailing newline.</help>
+    </field>
+    <field>
+        <id>blocky.redis.database</id>
+        <label>Database</label>
+        <type>text</type>
+        <hint>0</hint>
+        <advanced>true</advanced>
+        <help>Redis database index.</help>
+    </field>
+    <field>
+        <id>blocky.redis.required</id>
+        <label>Required</label>
+        <type>checkbox</type>
+        <advanced>true</advanced>
+        <help>If enabled, Blocky refuses to start when the Redis connection cannot be established.</help>
+    </field>
+    <field>
+        <id>blocky.redis.connectionAttempts</id>
+        <label>Connection attempts</label>
+        <type>text</type>
+        <hint>3</hint>
+        <advanced>true</advanced>
+        <help>Number of attempts to connect to Redis before giving up.</help>
+    </field>
+    <field>
+        <id>blocky.redis.connectionCooldown</id>
+        <label>Connection cooldown</label>
+        <type>text</type>
+        <hint>1s</hint>
+        <advanced>true</advanced>
+        <help>Wait time between Redis connection attempts.</help>
+    </field>
+    <field>
+        <id>blocky.redis.sentinelAddresses</id>
+        <label>Sentinel addresses</label>
+        <type>select_multiple</type>
+        <style>tokenize</style>
+        <allownew>true</allownew>
+        <advanced>true</advanced>
+        <hint>redis-sentinel1:26379</hint>
+        <help>Redis Sentinel host:port entries for a high-availability setup. When at least one is set, the Address field above is treated as the Sentinel master name.</help>
+    </field>
+    <field>
+        <id>blocky.redis.sentinelUsername</id>
+        <label>Sentinel username</label>
+        <type>text</type>
+        <advanced>true</advanced>
+        <help>Username used to authenticate to the Redis Sentinel hosts, if required.</help>
+    </field>
+    <field>
+        <id>blocky.redis.sentinelPassword</id>
+        <label>Sentinel password</label>
+        <type>password</type>
+        <advanced>true</advanced>
+        <help>Password used to authenticate to the Redis Sentinel hosts, if required. A value of file:/path or file:///path reads it from that file instead.</help>
+    </field>
+</form>

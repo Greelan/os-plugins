@@ -1,0 +1,43 @@
+<form>
+    <field>
+        <id>blocky.general.strategy</id>
+        <label>Resolver strategy</label>
+        <type>dropdown</type>
+        <help>How the resolvers in an upstream group are queried. parallel_best races two resolvers and takes the fastest answer. random picks one and asks a second if it does not respond, which is slower but sends each query to a single upstream. Both pick at random, weighted so a resolver that failed within the last hour is less likely to be chosen. strict tries them in order, moving on only when one does not respond.</help>
+    </field>
+    <field>
+        <id>blocky.general.timeout</id>
+        <label>Upstream timeout</label>
+        <type>text</type>
+        <hint>2s</hint>
+        <help>Time to wait for an upstream resolver before giving up, e.g. 2s or 500ms.</help>
+    </field>
+    <field>
+        <id>blocky.general.initStrategy</id>
+        <label>Startup strategy</label>
+        <type>dropdown</type>
+        <help>Behavior when connecting to upstreams at startup: blocking waits, failOnError aborts startup on failure, fast starts immediately.</help>
+    </field>
+    <field>
+        <id>blocky.general.userAgent</id>
+        <label>HTTP User-Agent</label>
+        <type>text</type>
+        <help>HTTP User-Agent header sent to DoH upstreams only. Plain DNS, DoT and DoQ upstreams are not HTTP and ignore it, as do list downloads. Leave empty to send no User-Agent header.</help>
+    </field>
+    <field>
+        <id>blocky.general.quicMaxIdleTimeout</id>
+        <label>QUIC max idle timeout</label>
+        <type>text</type>
+        <hint>30s</hint>
+        <advanced>true</advanced>
+        <help>Maximum idle time before closing a QUIC connection. Only relevant when QUIC (quic:) upstreams are configured.</help>
+    </field>
+    <field>
+        <id>blocky.general.quicKeepAlivePeriod</id>
+        <label>QUIC keep-alive period</label>
+        <type>text</type>
+        <hint>15s</hint>
+        <advanced>true</advanced>
+        <help>Keep-alive interval to maintain a QUIC connection. Only relevant when QUIC (quic:) upstreams are configured.</help>
+    </field>
+</form>

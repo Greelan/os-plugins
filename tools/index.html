@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="OPNsense plugin packages maintained by Greelan, installable as a pkg repository.">
+<title>%%TITLE%%</title>
+<link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNyIgZmlsbD0iIzI1NjNlYiIvPjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDQgNCkiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxwYXRoIGQ9Im03LjUgNC4yNyA5IDUuMTUiLz48cGF0aCBkPSJNMjEgOGEyIDIgMCAwIDAtMS0xLjczbC03LTRhMiAyIDAgMCAwLTIgMGwtNyA0QTIgMiAwIDAgMCAzIDh2OGEyIDIgMCAwIDAgMSAxLjczbDcgNGEyIDIgMCAwIDAgMiAwbDctNEEyIDIgMCAwIDAgMjEgMTZaIi8+PHBhdGggZD0iTTMuMyA3IDEyIDEybDguNy01Ii8+PHBhdGggZD0iTTEyIDIyVjEyIi8+PC9nPjwvc3ZnPg==">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f8fa;
+    --surface: #ffffff;
+    --text: #1f2328;
+    --muted: #656d76;
+    --accent: #2563eb;
+    --accent-soft: rgba(37, 99, 235, .1);
+    --border: #d0d7de;
+    --code-bg: #f6f8fa;
+    --shadow: 0 1px 3px rgba(31, 35, 40, .08), 0 8px 24px rgba(31, 35, 40, .06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --accent-soft: rgba(88, 166, 255, .12);
+      --border: #30363d;
+      --code-bg: #0d1117;
+      --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  @media (prefers-reduced-motion: no-preference) {
+    html { scroll-behavior: smooth; }
+  }
+  body {
+    margin: 0;
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--text);
+    background: var(--bg);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* sticky top bar */
+  .topbar {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 1rem; padding: .75rem 1.25rem;
+    background: var(--bg);
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    -webkit-backdrop-filter: saturate(180%) blur(10px);
+    backdrop-filter: saturate(180%) blur(10px);
+    border-bottom: 1px solid var(--border);
+  }
+  .topbar .brand {
+    font-weight: 650; font-size: .95rem; letter-spacing: -.01em;
+    color: var(--text); text-decoration: none;
+  }
+  .topbar nav { display: flex; gap: .25rem; }
+  .topbar nav a {
+    padding: .35rem .7rem; border-radius: 7px; font-size: .9rem;
+    color: var(--muted); text-decoration: none; font-weight: 550;
+  }
+  .topbar nav a:hover { color: var(--text); background: var(--accent-soft); }
+
+  /* content */
+  main { max-width: 48rem; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; box-shadow: var(--shadow);
+    padding: 1.75rem 2rem;
+  }
+  @media (max-width: 34rem) { .card { padding: 1.25rem 1.1rem; } }
+
+  h1, h2, h3, h4 { line-height: 1.25; letter-spacing: -.02em; scroll-margin-top: 4.5rem; }
+  h1 { font-size: 1.8rem; margin: .2rem 0 1rem; }
+  h2 { font-size: 1.3rem; margin: 2.2rem 0 .8rem; padding-bottom: .3rem; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 1.08rem; margin: 1.6rem 0 .5rem; }
+  .cl-link { font-size: .72rem; font-weight: 400; margin-left: .4rem; white-space: nowrap; }
+  /* packages under a plugin heading */
+  .pkgs { list-style: none; padding: 0; margin: .4rem 0 .9rem; font-size: .9rem; }
+  .pkgs li { margin: .15rem 0; }
+  .pkgs .abi { color: var(--muted); font-size: .82rem; margin-left: .35rem; }
+  p { margin: .7rem 0; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  ul, ol { padding-left: 1.3rem; }
+  li { margin: .35rem 0; }
+  li::marker { color: var(--muted); }
+  img { max-width: 100%; vertical-align: middle; }
+  hr { border: 0; border-top: 1px solid var(--border); margin: 2rem 0; }
+  blockquote {
+    margin: 1rem 0; padding: .5rem 1rem; color: var(--muted);
+    border-left: 3px solid var(--border); background: var(--accent-soft);
+    border-radius: 0 6px 6px 0;
+  }
+
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: .875em; background: var(--code-bg);
+    border: 1px solid var(--border); border-radius: 5px; padding: .1rem .35rem;
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 10px;
+    padding: .9rem 1.1rem; overflow-x: auto; margin: 1rem 0;
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: .875rem; }
+  .code-wrap { position: relative; }
+  .copy {
+    position: absolute; top: .45rem; right: .45rem;
+    padding: .2rem .5rem; font: inherit; font-size: 1rem; line-height: 1;
+    color: var(--muted); background: var(--surface);
+    border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
+  }
+  .copy:hover { color: var(--text); border-color: var(--accent); }
+  .copy[data-copied] { color: var(--accent); border-color: var(--accent); }
+
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; display: block; overflow-x: auto; }
+  th, td { border: 1px solid var(--border); padding: .5rem .75rem; text-align: left; }
+  th { background: var(--accent-soft); font-weight: 600; }
+  tbody tr:nth-child(even) { background: var(--code-bg); }
+  tbody tr:nth-child(even) { background: color-mix(in srgb, var(--text) 3%, transparent); }
+
+  section { margin-top: 1.5rem; }
+
+  footer {
+    max-width: 48rem; margin: 0 auto; padding: 1.5rem 1.25rem 2.5rem;
+    color: var(--muted); font-size: .85rem; text-align: center;
+  }
+  footer a { color: var(--muted); text-decoration: underline; }
+  footer a:hover { color: var(--accent); }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">Greelan pkg repository</a>
+  <nav aria-label="Site"><a href="/">Home</a></nav>
+</header>
+<main>
+<article class="card">
+%%CONTENT%%
+</article>
+</main>
+<footer>
+  <a href="https://github.com/Greelan/os-plugins" target="_blank" rel="noopener noreferrer">GitHub</a>
+  <div>Last built %%BUILT%%</div>
+</footer>
+<script>
+  /* no clipboard outside a secure context */
+  if (navigator.clipboard) {
+    document.querySelectorAll('pre').forEach(function (pre) {
+      var wrapper = document.createElement('div');
+      wrapper.className = 'code-wrap';
+      pre.parentNode.insertBefore(wrapper, pre);
+      wrapper.appendChild(pre);
+      var button = document.createElement('button');
+      button.className = 'copy';
+      button.type = 'button';
+      button.textContent = '⧉';
+      button.setAttribute('aria-label', 'Copy code');
+      button.addEventListener('click', function () {
+        navigator.clipboard.writeText(pre.querySelector('code').textContent.replace(/\n$/, ''))
+          .then(function () {
+            button.textContent = '✓';
+            button.setAttribute('aria-label', 'Copied');
+            button.dataset.copied = '';
+            setTimeout(function () {
+              button.textContent = '⧉';
+              button.setAttribute('aria-label', 'Copy code');
+              delete button.dataset.copied;
+            }, 1500);
+          });
+      });
+      wrapper.appendChild(button);
+    });
+  }
+</script>
+</body>
+</html>
