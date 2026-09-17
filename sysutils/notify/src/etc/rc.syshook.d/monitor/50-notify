@@ -1,0 +1,4 @@
+#!/bin/sh
+
+# gateway alarm: poll now instead of on the next minute
+configctl -dq notify check
