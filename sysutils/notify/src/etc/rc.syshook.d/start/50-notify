@@ -1,0 +1,4 @@
+#!/bin/sh
+
+# report that the firewall is up, for channels that want it
+configctl -dq notify boot

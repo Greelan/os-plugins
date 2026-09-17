@@ -1,0 +1,139 @@
+<model>
+    <mount>//OPNsense/notify</mount>
+    <description>Notify</description>
+    <version>1.0.0</version>
+    <items>
+        <general>
+            <enabled type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </enabled>
+            <interval type="OptionField">
+                <Default>1</Default>
+                <Required>Y</Required>
+                <OptionValues>
+                    <_1 value="1">Every minute</_1>
+                    <_2 value="2">Every 2 minutes</_2>
+                    <_5 value="5">Every 5 minutes</_5>
+                    <_10 value="10">Every 10 minutes</_10>
+                </OptionValues>
+            </interval>
+            <carpMasterOnly type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </carpMasterOnly>
+            <digestFrom type="IntegerField">
+                <Default>5</Default>
+                <Required>Y</Required>
+                <MinimumValue>0</MinimumValue>
+                <MaximumValue>50</MaximumValue>
+                <ValidationMessage>Enter 0 to always send separate notifications, or a number up to 50.</ValidationMessage>
+            </digestFrom>
+            <gatewayDegraded type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </gatewayDegraded>
+            <gatewayHold type="OptionField">
+                <Default>0</Default>
+                <Required>Y</Required>
+                <OptionValues>
+                    <_0 value="0">No hold</_0>
+                    <_60 value="60">After 1 minute</_60>
+                    <_180 value="180">After 3 minutes</_180>
+                    <_300 value="300">After 5 minutes</_300>
+                </OptionValues>
+            </gatewayHold>
+            <authLogins type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </authLogins>
+            <idsSeverity type="OptionField">
+                <Default>1</Default>
+                <Required>Y</Required>
+                <OptionValues>
+                    <_1 value="1">High only</_1>
+                    <_2 value="2">High and medium</_2>
+                    <_3 value="3">All severities</_3>
+                </OptionValues>
+            </idsSeverity>
+            <certDays type="IntegerField">
+                <Default>14</Default>
+                <Required>Y</Required>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>365</MaximumValue>
+                <ValidationMessage>Enter a number of days between 1 and 365.</ValidationMessage>
+            </certDays>
+            <statusLevel type="OptionField">
+                <Default>warning</Default>
+                <Required>Y</Required>
+                <OptionValues>
+                    <error>Error</error>
+                    <warning>Warning</warning>
+                    <notice>Notice</notice>
+                </OptionValues>
+            </statusLevel>
+            <titlePrefix type="OptionField">
+                <Default>hostname</Default>
+                <Required>Y</Required>
+                <OptionValues>
+                    <hostname>Host name</hostname>
+                    <custom>Custom text</custom>
+                    <none>None</none>
+                </OptionValues>
+            </titlePrefix>
+            <titleText type="TextField">
+                <Mask>/^[^\x00-\x1f]{0,64}$/u</Mask>
+                <ValidationMessage>Enter up to 64 characters.</ValidationMessage>
+            </titleText>
+            <firmwareCheck type="BooleanField">
+                <Default>1</Default>
+                <Required>Y</Required>
+            </firmwareCheck>
+        </general>
+        <channels type="ArrayField">
+            <enabled type="BooleanField">
+                <Default>1</Default>
+                <Required>Y</Required>
+            </enabled>
+            <description type="DescriptionField">
+                <Required>Y</Required>
+            </description>
+            <url type="UpdateOnlyTextField">
+                <Required>Y</Required>
+            </url>
+            <!-- set from the URL on save, for display without the secrets -->
+            <service type="TextField"/>
+            <target type="TextField"/>
+            <monitServices type="ModelRelationField">
+                <Model>
+                    <services>
+                        <source>OPNsense.Monit.Monit</source>
+                        <items>service</items>
+                        <display>name</display>
+                    </services>
+                </Model>
+                <Multiple>Y</Multiple>
+                <ValidationMessage>Related item not found.</ValidationMessage>
+            </monitServices>
+            <events type="OptionField">
+                <Default>gateway,config,auth,firmware,certificate,monit,status</Default>
+                <Required>Y</Required>
+                <Multiple>Y</Multiple>
+                <OptionValues>
+                    <gateway>Gateway status</gateway>
+                    <config>Configuration changes</config>
+                    <auth>Logins</auth>
+                    <vpn>VPN peers</vpn>
+                    <device>New devices</device>
+                    <ids>Intrusion detection alerts</ids>
+                    <firmware>Firmware updates</firmware>
+                    <certificate>Certificate expiry</certificate>
+                    <monit>Monit alerts</monit>
+                    <status>System Status</status>
+                    <carp>CARP state</carp>
+                    <boot>Firewall started</boot>
+                </OptionValues>
+            </events>
+        </channels>
+    </items>
+</model>

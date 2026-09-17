@@ -26,3 +26,9 @@ Plugins are then installed from the web UI under **System > Firmware > Plugins**
 This plugin provides a fully featured OPNsense UI, including log viewer, settings validation, and config.yml importer.
 
 Blocky answers on the DNS port (53 by default); disable the built-in Unbound/Dnsmasq resolver or run Blocky on another port.
+
+### os-notify-greelan
+
+Push notifications for OPNsense system events, sent through [Apprise](https://github.com/caronc/apprise) to Telegram, Pushover, ntfy, Gotify, Discord, Slack, Matrix, email and many other services. Channels are built from a service picker, and each one chooses which events it receives.
+
+Events: configuration changes, logins and lockouts, gateway down and recovery (with outage duration), VPN peers, new devices, intrusion detection alerts, Monit checks, firmware updates, certificate expiry, System Status entries, CARP state changes and firewall startup. Undelivered notifications are retried with a backoff for up to 24 hours.

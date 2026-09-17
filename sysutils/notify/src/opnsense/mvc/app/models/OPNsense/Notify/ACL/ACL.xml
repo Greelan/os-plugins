@@ -1,0 +1,11 @@
+<acl>
+    <page-services-notify>
+        <name>Services: Notify</name>
+        <patterns>
+            <pattern>ui/notify/*</pattern>
+            <pattern>api/notify/*</pattern>
+            <pattern>ui/diagnostics/log/core/notify/*</pattern>
+            <pattern>api/diagnostics/log/core/notify/*</pattern>
+        </patterns>
+    </page-services-notify>
+</acl>

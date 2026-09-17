@@ -75,6 +75,15 @@ jobs:
           printf 'upstreams:\n  groups:\n    default:\n      - 1.1.1.1\n' > "${RUNNER_TEMP}/config.yml"
           python dns/blocky/src/opnsense/scripts/OPNsense/Blocky/import_config.py "${RUNNER_TEMP}/config.yml" |
             python -c 'import json, sys; d = json.load(sys.stdin); assert "error" not in d, d'
+      - name: Notify (Apprise, Markdown)
+        working-directory: sysutils/notify/src/opnsense/scripts/OPNsense/Notify
+        run: |
+          python notify.py services | python -c 'import json, sys; assert len(json.load(sys.stdin)) > 100'
+          printf '{"service": "tgram", "fields": {"bot_token": "123456789:abcdefg_hijklmnop", "changed": "1"}}' \
+            > "${RUNNER_TEMP}/build.json"
+          python notify.py build "${RUNNER_TEMP}/build.json" |
+            python -c 'import json, sys; d = json.load(sys.stdin); assert d.get("service") == "Telegram", d'
+          python -c 'import sys; sys.path.insert(0, "lib"); import markdown; assert "<em>" in markdown.markdown("*ok*")'
 
   build:
     # the nightly (schedule) only runs the notify version-check; build on push/dispatch

@@ -1,0 +1,60 @@
+<form>
+    <field>
+        <id>channel.enabled</id>
+        <label>Enabled</label>
+        <type>checkbox</type>
+        <help>Enable this channel.</help>
+        <grid_view>
+            <width>6em</width>
+            <type>boolean</type>
+            <formatter>rowtoggle</formatter>
+        </grid_view>
+    </field>
+    <field>
+        <id>channel.description</id>
+        <label>Description</label>
+        <type>text</type>
+        <help>Name shown in the log.</help>
+        <grid_view/>
+    </field>
+    <field>
+        <id>channel.url</id>
+        <label>Apprise URL</label>
+        <type>password</type>
+        <help><![CDATA[Where to send notifications, used when Service is set to Custom URL. An Apprise URL, e.g. tgram://bottoken/chatid, pover://userkey@apptoken or ntfys://topic. See the <a href="https://appriseit.com/services/" target="_blank" rel="noopener noreferrer">Apprise services</a> for every supported service, its URL format and the options a URL can carry, or build one with the <a href="https://appriseit.com/tools/url-builder/" target="_blank" rel="noopener noreferrer">Apprise URL builder</a>. The URL holds credentials, so it is never shown again; leave it empty to keep the saved URL.]]></help>
+        <grid_view>
+            <ignore>true</ignore>
+        </grid_view>
+    </field>
+    <field>
+        <id>channel.service</id>
+        <label>Service</label>
+        <type>hidden</type>
+        <grid_view/>
+    </field>
+    <field>
+        <id>channel.target</id>
+        <label>Saved URL</label>
+        <type>info</type>
+        <help>The saved URL with its credentials masked.</help>
+        <grid_view/>
+    </field>
+    <field>
+        <id>channel.events</id>
+        <label>Events</label>
+        <type>select_multiple</type>
+        <help><![CDATA[Events sent to this channel. Configuration changes, logins and intrusion detection alerts come from the firewall's own logs and audit trail; new devices come from <a href="/ui/hostdiscovery/settings#hosts">Interfaces: Neighbors: Automatic Discovery</a>. Monit alerts come from the services set up under <a href="/ui/monit#services">Services: Monit</a>, filtered by Monit services below; their state is read straight from the Monit daemon, so nothing needs changing there. System Status entries are the alerts behind the bell icon in the menu bar.]]></help>
+        <grid_view/>
+    </field>
+    <field>
+        <id>channel.monitServices</id>
+        <label>Monit services</label>
+        <type>select_multiple</type>
+        <style>tokenize</style>
+        <hint>All Monit services</hint>
+        <help>Which Monit services this channel reports, when Monit alerts are among its events. Leave empty for all of them.</help>
+        <grid_view>
+            <ignore>true</ignore>
+        </grid_view>
+    </field>
+</form>

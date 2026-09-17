@@ -1,0 +1,17 @@
+Sends push notifications about system events to Telegram, Pushover,
+ntfy, Gotify, Discord, Slack, Matrix, email, webhooks and the many other
+services supported by Apprise. Channels are built from a service picker,
+or from an Apprise URL you enter yourself, and each channel chooses which
+events it receives.
+
+Events: configuration changes (who changed what), logins and lockouts,
+gateway down and recovery (with outage duration), VPN peers connecting
+and disconnecting, new devices on the network, intrusion detection
+alerts, Monit checks failing and recovering, firmware updates,
+certificates nearing expiry, System Status notices, CARP state changes
+and firewall startup.
+
+Notifications that cannot be delivered, for example while the only WAN
+is down, are retried with a backoff for up to 24 hours.
+
+WWW: https://github.com/caronc/apprise
