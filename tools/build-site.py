@@ -21,7 +21,9 @@ BUILT = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
 
 def render(md):
     # toc adds heading ids, which the stylesheet's scroll offsets rely on
-    return markdown.markdown(md, extensions=["fenced_code", "tables", "toc"])
+    body = markdown.markdown(md, extensions=["fenced_code", "tables", "toc"])
+    # external links open in a new tab
+    return re.sub(r'<a href="(https?://)', r'<a target="_blank" rel="noopener noreferrer" href="\1', body)
 
 
 def page(body, title=None):
