@@ -50,7 +50,7 @@ import os
 import re
 import sys
 
-# PyYAML is vendored under lib/ (pure-Python), so no pkg dependency is needed.
+# PyYAML is vendored under lib/ (pure-Python, pinned in lib/VENDOR), so no pkg dependency is needed.
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
 try:
     import yaml

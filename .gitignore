@@ -7,3 +7,7 @@ work/
 # editor / OS cruft
 *.swp
 .DS_Store
+
+# vendored libraries, fetched from each lib/VENDOR by tools/vendor.py
+/*/*/src/opnsense/scripts/*/*/lib/*
+!/*/*/src/opnsense/scripts/*/*/lib/VENDOR
