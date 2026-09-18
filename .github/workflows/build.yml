@@ -16,7 +16,7 @@ on:
         options: [dev, prod]
         default: dev
       blocky_version:
-        description: "Blocky version to build (blank = latest release)"
+        description: "Blocky version to build (blank = pinned in dns/blocky/BLOCKY_VERSION)"
         type: string
         default: ""
 
@@ -34,6 +34,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # full history for the version bump check
+          fetch-depth: 0
+      - name: Plugin changes carry a version bump
+        if: github.event_name == 'push'
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: sh tools/check-versions.sh "${BEFORE}" "${GITHUB_SHA}"
       - name: Install checkers
         run: |
           sudo apt-get update -qq
@@ -49,6 +57,29 @@ jobs:
       - name: Shell syntax
         run: find . -name '*.sh' -print0 | xargs -0 -r -n1 sh -n
 
+  vendored:
+    # vendored pure-Python libraries must run on every Python an OPNsense series ships
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install what OPNsense ships
+        run: pip install requests
+      - name: Fetch vendored libraries
+        run: python tools/vendor.py update
+      - name: Blocky importer (PyYAML)
+        run: |
+          printf 'upstreams:\n  groups:\n    default:\n      - 1.1.1.1\n' > "${RUNNER_TEMP}/config.yml"
+          python dns/blocky/src/opnsense/scripts/OPNsense/Blocky/import_config.py "${RUNNER_TEMP}/config.yml" |
+            python -c 'import json, sys; d = json.load(sys.stdin); assert "error" not in d, d'
+
   build:
     # the nightly (schedule) only runs the notify version-check; build on push/dispatch
     if: github.event_name != 'schedule'
@@ -60,18 +91,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # pinned, so a push for another plugin never ships a newer blocky
       - name: Resolve blocky release
         id: blocky
         env:
-          GH_TOKEN: ${{ github.token }}
           BLOCKY_VERSION_INPUT: ${{ github.event.inputs.blocky_version }}
         run: |
           ver="${BLOCKY_VERSION_INPUT#v}"
-          if [ -z "${ver}" ]; then
-            ver=$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
-                  https://api.github.com/repos/0xERR0R/blocky/releases/latest \
-                  | sed -n 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/p' | head -1)
-          fi
+          [ -n "${ver}" ] || ver=$(tr -d ' \n' < dns/blocky/BLOCKY_VERSION)
           [ -n "${ver}" ] || { echo "could not resolve blocky version" >&2; exit 1; }
           echo "version=${ver}" >> "$GITHUB_OUTPUT"
 
@@ -81,6 +108,10 @@ jobs:
         with:
           path: blocky-pkg
           key: blocky-${{ steps.blocky.outputs.version }}-${{ hashFiles('tools/build-blocky-port.sh') }}-fbsd${{ matrix.release }}
+
+      # pinned in each lib/VENDOR; the VM builds from this checkout
+      - name: Fetch vendored libraries
+        run: python3 tools/vendor.py update
 
       - name: Build in FreeBSD ${{ matrix.release }} VM
         uses: vmactions/freebsd-vm@v1
@@ -122,7 +153,7 @@ jobs:
           path: repo-${{ matrix.release }}.tar
 
   deploy:
-    needs: [build, lint]
+    needs: [build, lint, vendored]
     # deploy on manual dispatch (dev/prod) or a push to main (prod); scheduled runs don't deploy
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
     runs-on: ubuntu-latest
@@ -169,7 +200,8 @@ jobs:
           fi
 
   notify:
-    # nightly: version check only (no build); email once per new blocky release
+    # nightly: version check only (no build); email once per new blocky release and once per
+    # set of newer vendored libraries
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
     steps:
@@ -212,8 +244,44 @@ jobs:
           subject: "New blocky release: v${{ steps.v.outputs.version }}"
           body: |
             blocky v${{ steps.v.outputs.version }}: https://github.com/0xERR0R/blocky/releases/tag/v${{ steps.v.outputs.version }}
+
+            To ship it, update dns/blocky/BLOCKY_VERSION.
       # persist state after a successful send (transient failures retry next run):
       # mark this version handled and that notify has now run at least once
       - name: Record state
         if: steps.v.outputs.version != '' && steps.seen.outputs.cache-hit != 'true'
         run: touch .notified .init
+      - uses: actions/checkout@v7
+      - name: Check vendored libraries
+        id: vendored
+        run: |
+          out=$(python3 tools/vendor.py check) || exit 0
+          [ -n "${out}" ] || exit 0
+          { echo "list<<EOF"; echo "${out}"; echo "EOF"; } >> "$GITHUB_OUTPUT"
+          echo "key=$(printf '%s' "${out}" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - name: Already emailed these vendored versions?
+        id: vendoredseen
+        if: steps.vendored.outputs.key != ''
+        uses: actions/cache@v5
+        with:
+          path: .vendored-notified
+          key: vendored-notified-${{ steps.vendored.outputs.key }}
+      - name: Email the maintainer about vendored libraries
+        if: steps.vendored.outputs.key != '' && steps.vendoredseen.outputs.cache-hit != 'true'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.MAIL_SERVER }}
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          from: ${{ secrets.MAIL_FROM }}
+          to: ${{ secrets.MAIL_TO }}
+          subject: "Vendored library updates available"
+          body: |
+            ${{ steps.vendored.outputs.list }}
+
+            Run tools/vendor.py update --latest, then bump PLUGIN_REVISION and the changelog of each plugin that changed.
+      - name: Record vendored state
+        if: steps.vendored.outputs.key != '' && steps.vendoredseen.outputs.cache-hit != 'true'
+        run: touch .vendored-notified
