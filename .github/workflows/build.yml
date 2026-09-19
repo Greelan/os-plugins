@@ -15,10 +15,6 @@ on:
         type: choice
         options: [dev, prod]
         default: dev
-      blocky_version:
-        description: "Blocky version to build (blank = pinned in dns/blocky/BLOCKY_VERSION)"
-        type: string
-        default: ""
 
 permissions:
   contents: read
@@ -91,15 +87,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # pinned, so a push for another plugin never ships a newer blocky
-      - name: Resolve blocky release
+      - name: Read the pinned blocky version
         id: blocky
-        env:
-          BLOCKY_VERSION_INPUT: ${{ github.event.inputs.blocky_version }}
         run: |
-          ver="${BLOCKY_VERSION_INPUT#v}"
-          [ -n "${ver}" ] || ver=$(tr -d ' \n' < dns/blocky/BLOCKY_VERSION)
-          [ -n "${ver}" ] || { echo "could not resolve blocky version" >&2; exit 1; }
+          ver=$(tr -d ' \n' < dns/blocky/BLOCKY_VERSION)
+          [ -n "${ver}" ] || { echo "dns/blocky/BLOCKY_VERSION is empty" >&2; exit 1; }
           echo "version=${ver}" >> "$GITHUB_OUTPUT"
 
       - name: Cache blocky package
