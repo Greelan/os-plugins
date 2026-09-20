@@ -1,0 +1,6 @@
+# generated config, the exported certificate and its key, and the rc switch are
+# ours alone; the settings stay in config.xml, so a reinstall rebuilds them
+if [ "${PKG_UPGRADE}" != "true" ]; then
+	rm -rf /usr/local/etc/blocky
+	rm -f /etc/rc.conf.d/blocky
+fi

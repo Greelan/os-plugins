@@ -31,6 +31,7 @@ namespace OPNsense\Blocky;
 use OPNsense\Base\BaseModel;
 use OPNsense\Base\Messages\Message;
 use OPNsense\Core\Backend;
+use OPNsense\Core\Config;
 
 /**
  * Class Blocky
@@ -299,10 +300,24 @@ class Blocky extends BaseModel
             }
         }
 
-        /* one of cert/key alone stops DoT/DoH, both empty means self-signed */
+        /* Blocky exits when it cannot read the certificate it is pointed at */
+        if ($validateFullModel || $this->general->certificate->isFieldChanged()) {
+            $refid = (string)$this->general->certificate;
+            if ($refid != '' && !$this->hasPrivateKey($refid)) {
+                $messages->appendMessage(new Message(
+                    gettext('This certificate is missing or has no private key.'),
+                    'general.certificate'
+                ));
+            }
+        }
+
+        /* one of cert/key alone stops DoT/DoH, both empty means self-signed; a selected
+         * certificate wins, so the paths are not used either way */
         if (
-            $validateFullModel || $this->general->certFile->isFieldChanged() ||
-            $this->general->keyFile->isFieldChanged()
+            (string)$this->general->certificate == '' && (
+                $validateFullModel || $this->general->certFile->isFieldChanged() ||
+                $this->general->keyFile->isFieldChanged()
+            )
         ) {
             $cert = trim((string)$this->general->certFile);
             $key = trim((string)$this->general->keyFile);
@@ -315,6 +330,19 @@ class Blocky extends BaseModel
         }
 
         return $messages;
+    }
+
+    /**
+     * Is this certificate in the trust store, with a private key to serve it?
+     */
+    private function hasPrivateKey($refid)
+    {
+        foreach (Config::getInstance()->object()->cert ?? [] as $cert) {
+            if ((string)$cert->refid == $refid) {
+                return !empty((string)$cert->prv);
+            }
+        }
+        return false;
     }
 
     /**

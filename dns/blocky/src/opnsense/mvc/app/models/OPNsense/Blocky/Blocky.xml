@@ -71,6 +71,9 @@
                 <Mask>/^1\.[23]$/</Mask>
                 <ValidationMessage>Enter 1.2 or 1.3.</ValidationMessage>
             </minTlsServeVersion>
+            <certificate type="CertificateField">
+                <Type>cert</Type>
+            </certificate>
             <certFile type="TextField">
                 <ValidationMessage>Enter the path to the TLS certificate file.</ValidationMessage>
             </certFile>
