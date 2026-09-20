@@ -110,8 +110,10 @@ jobs:
         env:
           BLOCKY_VERSION: ${{ steps.blocky.outputs.version }}
           BLOCKY_CACHED: ${{ steps.blockycache.outputs.cache-hit }}
+          # dev builds add to the channel instead of replacing it, so two branches can be tested together
+          MERGE_REPO_URL: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.channel == 'dev' && 'https://pkg.greelan.net/dev' || '' }}
         with:
-          envs: 'BLOCKY_VERSION BLOCKY_CACHED'
+          envs: 'BLOCKY_VERSION BLOCKY_CACHED MERGE_REPO_URL'
           release: ${{ matrix.release }}
           usesh: true
           prepare: pkg install -y git gmake go

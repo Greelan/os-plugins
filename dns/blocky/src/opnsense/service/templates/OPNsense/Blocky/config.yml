@@ -304,11 +304,16 @@ redis:
 {% if OPNsense.blocky.general.minTlsServeVersion %}
 minTlsServeVersion: "{{ OPNsense.blocky.general.minTlsServeVersion }}"
 {% endif %}
+{% if OPNsense.blocky.general.certificate %}
+certFile: "/usr/local/etc/blocky/cert.pem"
+keyFile: "/usr/local/etc/blocky/key.pem"
+{% else %}
 {% if OPNsense.blocky.general.certFile %}
 certFile: {{ q(OPNsense.blocky.general.certFile) }}
 {% endif %}
 {% if OPNsense.blocky.general.keyFile %}
 keyFile: {{ q(OPNsense.blocky.general.keyFile) }}
+{% endif %}
 {% endif %}
 {% set bs = helpers.toList('OPNsense.blocky.bootstrap') %}
 {% set bs_on = [] %}

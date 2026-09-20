@@ -19,6 +19,29 @@ done
 # blocky binary, built separately by build-blocky-port.sh
 [ -n "${BLOCKY_PKG_DIR}" ] && cp "${BLOCKY_PKG_DIR}"/blocky-*.pkg "${OUT}/" 2>/dev/null || true
 
+# Testing channel: layer this build onto what the channel already holds, so building one
+# branch never withdraws a package another branch published. Newest version of each name
+# wins, whichever side it came from; without this the repo is one branch's snapshot.
+pkg_version() { v=${1##*-}; echo "${v%.pkg}"; }
+if [ -n "${MERGE_REPO_URL}" ]; then
+    tmp=$(mktemp -d)
+    if fetch -qo "${tmp}/packagesite.pkg" "${MERGE_REPO_URL}/${ABI}/packagesite.pkg" 2>/dev/null; then
+        tar -xf "${tmp}/packagesite.pkg" -C "${tmp}" packagesite.yaml
+        sed -n 's/.*"repopath":"\([^"]*\)".*/\1/p' "${tmp}/packagesite.yaml" | sort -u |
+        while read -r path; do
+            file=$(basename "${path}")
+            mine=$(ls "${OUT}/${file%-*}"-*.pkg 2>/dev/null | head -1)
+            if [ -n "${mine}" ]; then
+                [ "$(pkg version -t "$(pkg_version "${file}")" "$(pkg_version "${mine}")")" = ">" ] ||
+                    continue  # this build is at least as new
+                rm -f "${mine}"
+            fi
+            fetch -qo "${OUT}/${file}" "${MERGE_REPO_URL}/${ABI}/${path}" || rm -f "${OUT}/${file}"
+        done
+    fi
+    rm -rf "${tmp}"
+fi
+
 pkg repo "${OUT}" ${REPO_SIGNING_KEY:+"${REPO_SIGNING_KEY}"}
 
 # site root: pkg client config (landing/changelog built at deploy by build-site.sh)
