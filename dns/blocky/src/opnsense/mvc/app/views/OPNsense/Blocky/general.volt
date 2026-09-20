@@ -45,7 +45,7 @@
         });
 
         function escapeHtml(text) {
-            return $('<div>').text(text).html();
+            return $('<div>').text(htmlDecode(text)).html();
         }
         function renderList(title, items, cls) {
             if (!items || items.length === 0) {

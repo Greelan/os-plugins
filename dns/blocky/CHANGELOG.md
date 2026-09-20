@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1_1 - 2026-09-20
+
+- Import results no longer show escaped characters.
+
 ## 1.1 - 2026-09-20
 
 - Certificate for DoT/DoH can be picked from System: Trust.
