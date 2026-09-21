@@ -31,7 +31,7 @@ namespace OPNsense\Blocky;
 use OPNsense\Base\BaseModel;
 use OPNsense\Base\Messages\Message;
 use OPNsense\Core\Backend;
-use OPNsense\Core\Config;
+use OPNsense\Trust\Cert;
 
 /**
  * Class Blocky
@@ -337,7 +337,7 @@ class Blocky extends BaseModel
      */
     private function hasPrivateKey($refid)
     {
-        foreach (Config::getInstance()->object()->cert ?? [] as $cert) {
+        foreach ((new Cert())->cert->iterateItems() as $cert) {
             if ((string)$cert->refid == $refid) {
                 return !empty((string)$cert->prv);
             }

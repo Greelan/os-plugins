@@ -98,24 +98,24 @@
     </field>
     <field>
         <id>blocky.general.certificate</id>
-        <label>Certificate</label>
+        <label>Certificate from trust store</label>
         <type>dropdown</type>
         <advanced>true</advanced>
-        <help><![CDATA[Certificate for DoT/DoH, from <a href="/ui/trust/cert">System: Trust: Certificates</a>. It is written to /usr/local/etc/blocky each time settings are applied, so renewals are picked up when Blocky restarts. Leave empty to use the file paths below, or to let Blocky generate a self-signed certificate.]]></help>
+        <help><![CDATA[Certificate for DoT/DoH, from <a href="/ui/trust/cert">System: Trust: Certificates</a>. It is written with its issuing chain to /usr/local/etc/blocky each time settings are applied and when the service starts, so renewals are picked up. Leave empty to point Blocky at certificate files instead, or to let it generate a self-signed certificate.]]></help>
     </field>
     <field>
         <id>blocky.general.certFile</id>
-        <label>Certificate file</label>
+        <label>Certificate file path</label>
         <type>text</type>
         <advanced>true</advanced>
-        <help>Path to a TLS certificate file for DoT/DoH, for certificates outside the trust store. Ignored when a certificate is selected above; if both are empty, Blocky generates a self-signed certificate.</help>
+        <help>Alternative to the trust store: the path to a TLS certificate file for DoT/DoH, for certificates OPNsense does not hold. Leave empty, along with the key path, to let Blocky generate a self-signed certificate.</help>
     </field>
     <field>
         <id>blocky.general.keyFile</id>
-        <label>Key file</label>
+        <label>Key file path</label>
         <type>text</type>
         <advanced>true</advanced>
-        <help>Path to the matching TLS private key file. Ignored when a certificate is selected above.</help>
+        <help>Path to the private key matching the certificate file above.</help>
     </field>
     <field>
         <id>blocky.general.http3</id>

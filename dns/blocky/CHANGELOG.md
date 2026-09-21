@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2 - 2026-09-21
+
+- The exported certificate now carries its issuing chain, so clients can validate it.
+- Certificate file paths are hidden when a trust store certificate is selected.
+- The certificate written to disk is recorded in the log.
+
 ## 1.1_1 - 2026-09-20
 
 - Import results no longer show escaped characters.

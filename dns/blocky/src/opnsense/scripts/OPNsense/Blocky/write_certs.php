@@ -33,11 +33,11 @@
  * again when no certificate is selected.
  */
 
-require_once 'config.inc';
-require_once 'util.inc';
+require_once('script/load_phalcon.php');
 
 use OPNsense\Blocky\Blocky;
-use OPNsense\Core\Config;
+use OPNsense\Trust\Cert;
+use OPNsense\Trust\Store as CertStore;
 
 $cert_file = '/usr/local/etc/blocky/cert.pem';
 $key_file = '/usr/local/etc/blocky/key.pem';
@@ -49,22 +49,37 @@ if (empty($refid)) {
     exit(0);
 }
 
-foreach (Config::getInstance()->object()->cert ?? [] as $cert) {
+foreach ((new Cert())->cert->iterateItems() as $cert) {
     if ((string)$cert->refid != $refid) {
         continue;
     }
-    if (empty($cert->crt) || empty($cert->prv)) {
-        log_msg('blocky: certificate ' . $refid . ' has no key, keeping the previous files', LOG_ERR);
+    if (empty((string)$cert->prv)) {
+        syslog(LOG_ERR, 'blocky: certificate ' . $refid . ' has no key, keeping the previous files');
         exit(1);
     }
-    /* the key is secret: create the files unreadable before writing, as core does for IPsec */
-    foreach ([$cert_file => (string)$cert->crt, $key_file => (string)$cert->prv] as $file => $pem) {
+    $chain = base64_decode((string)$cert->crt);
+    if (!empty((string)$cert->caref) && ($ca = CertStore::getCaChain((string)$cert->caref))) {
+        $chain .= "\n" . $ca;
+    }
+    $written = false;
+    foreach ([$cert_file => $chain, $key_file => base64_decode((string)$cert->prv)] as $file => $pem) {
         @touch($file);
         @chmod($file, 0600);
-        file_put_contents($file, base64_decode($pem));
+        if (hash('sha256', $pem) !== @hash_file('sha256', $file)) {
+            file_put_contents($file, $pem);
+            $written = true;
+        }
+    }
+    if ($written) {
+        /* the files are named for Blocky, so record which certificate they hold */
+        syslog(LOG_NOTICE, sprintf(
+            'blocky: exported certificate %s (%s)',
+            (string)$cert->descr ?: $refid,
+            $refid
+        ));
     }
     exit(0);
 }
 
-log_msg('blocky: certificate ' . $refid . ' was not found', LOG_ERR);
+syslog(LOG_ERR, 'blocky: certificate ' . $refid . ' was not found');
 exit(1);

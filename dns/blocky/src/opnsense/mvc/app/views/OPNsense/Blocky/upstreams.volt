@@ -107,7 +107,7 @@
     <div id="bootstraptab" class="tab-pane fade in">
         {{ partial('layout_partials/base_bootgrid_table', formGridBootstrap)}}
         <div style="padding: 10px;">
-            {{ lang._('Bootstrap resolvers look up the host names of DoT/DoH upstreams and of deny/allow list download URLs, useful when no system DNS resolver is configured. Plain-IP resolvers need no pinned IPs; add pinned IPs only for a DoT/DoH host name so it can be reached without a prior lookup. If empty, the operating system resolver is used.') }}
+            {{ lang._('Bootstrap resolvers look up the host names of upstream DNS servers and of deny/allow list download URLs, useful when no system DNS resolver is configured. Plain-IP resolvers need no pinned IPs; add pinned IPs only for an encrypted resolver given as a host name, so it can be reached without a prior lookup. A resolv file entry reads the name servers from a resolv.conf-style file instead. If empty, the operating system resolver is used.') }}
         </div>
     </div>
 </div>
