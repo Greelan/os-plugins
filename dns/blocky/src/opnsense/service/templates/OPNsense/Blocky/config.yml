@@ -56,7 +56,7 @@ customDNS:
 {% if cd_on %}
   mapping:
 {% for m in cd if m.enabled == '1' %}
-    "{{ m.domain }}": "{{ m.ip }}"
+    {{ q(m.domain) }}: {{ q(m.ip) }}
 {% endfor %}
 {% endif %}
 {% if OPNsense.blocky.general.customZone %}
@@ -82,7 +82,7 @@ conditional:
 {% endif %}
   mapping:
 {% for m in cf if m.enabled == '1' %}
-    "{{ m.domain }}": {{ q(m.resolver) }}
+    {{ q(m.domain) }}: {{ q(m.resolver) }}
 {% endfor %}
 
 {% endif %}
@@ -110,7 +110,7 @@ blocking:
       - {{ q(b.source) }}
 {% else %}
       - |
-          {{ b.source }}
+          {{ b.source|replace('\r', '')|indent(10) }}
 {% endif %}
 {% endfor %}
 {% endfor %}
@@ -124,7 +124,7 @@ blocking:
       - {{ q(a.source) }}
 {% else %}
       - |
-          {{ a.source }}
+          {{ a.source|replace('\r', '')|indent(10) }}
 {% endif %}
 {% endfor %}
 {% endfor %}
@@ -378,7 +378,7 @@ hostsFile:
     - {{ q(s|trim) }}
 {% else %}
     - |
-        {{ s|trim }}
+        {{ s|trim|replace('\r', '')|indent(8) }}
 {% endif %}
 {% endfor %}
   hostsTTL: {{ d(OPNsense.blocky.hostsFile.hostsTTL|default('1h')) }}

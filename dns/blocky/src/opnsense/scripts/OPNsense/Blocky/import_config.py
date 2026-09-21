@@ -263,6 +263,15 @@ class Mapper:
             return None
         return self._scalar(value, label)
 
+    def _client_key(self, value, label):
+        """PyYAML's YAML 1.1 resolver reads an unquoted 11:22:33:44:55:59 as an integer;
+        quoting it in config.yml keeps it a MAC address."""
+        if isinstance(value, int) and not isinstance(value, bool):
+            self.warnings.append("%s: %s looks like an unquoted MAC address; quote it in "
+                                 "config.yml to import it." % (label, value))
+            return None
+        return str(value)
+
     def _as_mapping(self, value, label):
         if value is None:
             return {}
@@ -500,9 +509,10 @@ class Mapper:
         for client, groups in self._mapping("blocking.clientGroupsBlock").items():
             label = "blocking.clientGroupsBlock.%s" % client
             value = self._list(groups, label)
-            if value is not None:
+            name = self._client_key(client, label)
+            if value is not None and name is not None:
                 self._row("clientgroups", {
-                    "enabled": "1", "client": str(client), "groups": value,
+                    "enabled": "1", "client": name, "groups": value,
                 }, label)
         self._map("blocking.blockType", "general", "blockType", self._list)
         self._map("blocking.blockTTL", "general", "blockTTL")
@@ -517,7 +527,7 @@ class Mapper:
     def _schedules(self):
         schedules = self._mapping("blocking.schedules")
         # invert group -> [schedule names] into schedule name -> [groups]
-        sched_groups = {}
+        sched_groups: dict = {}
         for group, names in self._mapping("blocking.listSchedules").items():
             label = "blocking.listSchedules.%s" % group
             for name in self._sequence(names, label):
@@ -574,9 +584,10 @@ class Mapper:
         for name, ips in self._mapping("clientLookup.clients").items():
             label = "clientLookup.clients.%s" % name
             value = self._list(ips, label)
-            if value is not None:
+            client = self._client_key(name, label)
+            if value is not None and client is not None:
                 self._row("clientlookupclients", {
-                    "enabled": "1", "name": str(name), "ips": value,
+                    "enabled": "1", "name": client, "ips": value,
                 }, label)
 
     def _prometheus_log(self):

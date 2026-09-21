@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2_1 - 2026-09-21
+
+- A list entry holding several lines no longer breaks the generated configuration.
+- An unquoted MAC address in config.yml is reported rather than imported as a number.
+
 ## 1.2 - 2026-09-21
 
 - The exported certificate now carries its issuing chain, so clients can validate it.
