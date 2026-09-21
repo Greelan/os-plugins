@@ -52,6 +52,12 @@ jobs:
             xargs -0 -r -n1 python3 -m py_compile
       - name: Shell syntax
         run: find . -name '*.sh' -print0 | xargs -0 -r -n1 sh -n
+      # the scripts carry no annotations, so check the bodies rather than the signatures
+      - name: Python types
+        run: |
+          pip install --quiet mypy
+          mypy --ignore-missing-imports --check-untyped-defs \
+            dns/blocky/src/opnsense/scripts/OPNsense/Blocky/import_config.py
 
   vendored:
     # vendored pure-Python libraries must run on every Python an OPNsense series ships

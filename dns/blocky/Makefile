@@ -1,5 +1,6 @@
 PLUGIN_NAME=		blocky-greelan
 PLUGIN_VERSION=		1.2
+PLUGIN_REVISION=	1
 PLUGIN_COMMENT=		Fast and lightweight DNS proxy with ad-blocking
 PLUGIN_DEPENDS=		blocky
 PLUGIN_CONFLICTS=	blocky
