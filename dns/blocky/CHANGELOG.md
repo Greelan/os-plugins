@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3_1 - 2026-09-22
+
+- Importing a config.yml that quotes a value no longer fails.
+
 ## 1.3 - 2026-09-22
 
 - Internal architecture and namespaces refactored.

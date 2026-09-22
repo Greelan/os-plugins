@@ -54,7 +54,8 @@ class SettingsController extends ApiMutableModelControllerBase
         if (!$this->request->isPost()) {
             return ['status' => 'failed', 'message' => gettext('Use a POST request.')];
         }
-        $payload = (string)$this->request->getPost('payload', 'string', '');
+        /* unfiltered: the sanitiser escapes quotes and ampersands, which breaks the YAML */
+        $payload = (string)$this->request->getPost('payload');
         if (trim($payload) === '') {
             return ['status' => 'failed', 'message' => gettext('No configuration was provided.')];
         }
