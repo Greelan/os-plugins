@@ -11,3 +11,6 @@ work/
 # vendored libraries, fetched from each lib/VENDOR by tools/vendor.py
 /*/*/src/opnsense/scripts/*/*/lib/*
 !/*/*/src/opnsense/scripts/*/*/lib/VENDOR
+
+# python bytecode
+__pycache__/

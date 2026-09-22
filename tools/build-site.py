@@ -56,6 +56,17 @@ def package_list(names, found):
     return '<ul class="pkgs">\n%s\n</ul>' % "\n".join(items) if items else ""
 
 
+def bundled_version(mk, name):
+    """Version of the engine a plugin bundles, from its lib/VENDOR pins."""
+    pattern = os.path.join(os.path.dirname(mk), "src", "opnsense", "scripts", "*", "*", "lib", "VENDOR")
+    for manifest in glob.glob(pattern):
+        for line in open(manifest):
+            fields = line.split()
+            if len(fields) > 1 and not line.startswith("#") and fields[0].lower() == name.lower():
+                return fields[1]
+    return ""
+
+
 def makefile_field(path, key):
     m = re.search(rf"^{key}=\s*(.*)$", open(path).read(), re.M)
     return m.group(1).strip() if m else ""
@@ -70,10 +81,12 @@ for mk in sorted(glob.glob(os.path.join(ROOT, "*", "*", "Makefile"))):
     if not name:
         continue
     changelog = os.path.join(os.path.dirname(mk), "CHANGELOG.md")
+    bundled = makefile_field(mk, "PLUGIN_BUNDLED")
     plugins.append((
         f"os-{name}",
         changelog if os.path.isfile(changelog) else None,
         makefile_field(mk, "PLUGIN_DEPENDS").split(),
+        (bundled, bundled_version(mk, bundled)) if bundled else None,
     ))
 
 # landing page: README, with a changelog link and the built packages under each
@@ -81,13 +94,17 @@ for mk in sorted(glob.glob(os.path.join(ROOT, "*", "*", "Makefile"))):
 found = built_packages()
 listed = set()
 body = render(open(os.path.join(ROOT, "README.md")).read())
-for pkgname, changelog, depends in plugins:
+for pkgname, changelog, depends, bundled in plugins:
     pattern = r"<h3([^>]*)>%s</h3>" % re.escape(pkgname)
     link = (f' <a class="cl-link" href="changelog/{pkgname}.html">changelog &raquo;</a>'
             if changelog else "")
     names = [pkgname] + depends
     listed.update(names)
     packages = package_list(names, found)
+    if bundled and bundled[1]:
+        # vendored into the plugin package rather than installed beside it
+        packages = packages.replace('</ul>', '<li><code>{}</code> {} <span class="abi">{}</span></li>\n</ul>'.format(
+            html.escape(bundled[0]), html.escape(bundled[1]), "bundled"))
     body, injected = re.subn(
         pattern, lambda m: f"<h3{m.group(1)}>{pkgname}{link}</h3>\n{packages}", body)
     if not injected:
@@ -100,7 +117,7 @@ if leftovers:
 open(os.path.join(REPO, "index.html"), "w").write(page(body))
 
 # one changelog page per plugin that ships one (drop the file's title, keep "## version" as h2)
-for pkgname, changelog, _ in plugins:
+for pkgname, changelog, _, _ in plugins:
     if not changelog:
         continue
     text = open(changelog).read()

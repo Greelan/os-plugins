@@ -1,0 +1,5 @@
+# recorded state and the check lock are ours alone; keep them across upgrades
+if [ "${PKG_UPGRADE}" != "true" ]; then
+	rm -rf /var/db/notify
+	rm -f /var/run/notify.lock
+fi

@@ -1,0 +1,98 @@
+<form>
+    <field>
+        <type>header</type>
+        <label>Service</label>
+    </field>
+    <field>
+        <id>notify.general.enabled</id>
+        <label>Enable</label>
+        <type>checkbox</type>
+        <help>Look for events at the interval below and send them to the enabled channels. Gateway alarms, CARP transitions and startup are reported straight away, and a Monit test can trigger a check itself.</help>
+    </field>
+    <field>
+        <id>notify.general.interval</id>
+        <label>Check interval</label>
+        <type>dropdown</type>
+        <help>How often to look for events. Gateway alarms, CARP changes and startup arrive straight away whatever this is set to, as do Monit alerts when a test runs the check itself (see Monit services on a channel); everything else waits for the next check, so a longer interval delays it by that much. System Status is checked at most every 5 minutes and certificates hourly, either way.</help>
+    </field>
+    <field>
+        <id>notify.general.carpMasterOnly</id>
+        <label>Only when CARP master</label>
+        <type>checkbox</type>
+        <help>Stay quiet while this firewall is the standby of a CARP pair, so only the master reports. Ignored when no CARP virtual IPs exist.</help>
+    </field>
+    <field>
+        <type>header</type>
+        <label>Notifications</label>
+    </field>
+    <field>
+        <id>notify.general.titlePrefix</id>
+        <label>Title prefix</label>
+        <type>dropdown</type>
+        <help>What to put in front of every notification title, to tell firewalls apart. Choose None when the channel already names this firewall, as a Discord webhook's bot name does.</help>
+    </field>
+    <field>
+        <id>notify.general.titleText</id>
+        <label>Prefix text</label>
+        <type>text</type>
+        <help>Text to put in front of every notification title.</help>
+    </field>
+    <field>
+        <id>notify.general.digestFrom</id>
+        <label>Combine messages from</label>
+        <type>text</type>
+        <help>Send one summary instead of separate notifications when this many events arrive in the same check. Enter 0 to always send them separately.</help>
+    </field>
+    <field>
+        <type>header</type>
+        <label>Events</label>
+    </field>
+    <field>
+        <id>notify.general.gatewayDegraded</id>
+        <label>Gateway latency and loss</label>
+        <type>checkbox</type>
+        <help>Also notify when a gateway reports high latency or packet loss, not only when it goes down.</help>
+    </field>
+    <field>
+        <id>notify.general.gatewayHold</id>
+        <label>Gateway hold time</label>
+        <type>dropdown</type>
+        <help>How long a gateway must stay in its new state before it is reported, so a flapping link does not fill a channel. With no hold it is reported by the next check, which a gateway alarm triggers immediately.</help>
+    </field>
+    <field>
+        <id>notify.general.authLogins</id>
+        <label>Report successful logins</label>
+        <type>checkbox</type>
+        <help>Report every successful login as well as failures and lockouts. Failures and lockouts are always reported when a channel takes login events.</help>
+    </field>
+    <field>
+        <id>notify.general.idsSeverity</id>
+        <label>Intrusion alert severity</label>
+        <type>dropdown</type>
+        <help>Which intrusion detection alerts to report. Suricata writes many alerts, so high only is a sensible start; the Combine setting groups bursts into one message.</help>
+    </field>
+    <field>
+        <id>notify.general.firmwareCheck</id>
+        <label>Daily update check</label>
+        <type>checkbox</type>
+        <help><![CDATA[Check for firmware updates daily at around 04:00. Without it, updates are only reported once something else checks: the dashboard, the firmware page, another cron job, or <code>configctl firmware check</code> from a shell. Running an update, or <code>opnsense-update -c</code>, reports nothing.]]></help>
+    </field>
+    <field>
+        <id>notify.general.certDays</id>
+        <label>Certificate warning (days)</label>
+        <type>text</type>
+        <help>Notify when a certificate or authority in System: Trust expires within this many days, and again once it has expired. Certificates are checked hourly.</help>
+    </field>
+    <field>
+        <id>notify.general.statusLevel</id>
+        <label>System Status level</label>
+        <type>dropdown</type>
+        <help>Lowest severity of System Status entries to send. These are the alerts behind the bell icon in the menu bar, such as crash reports, low disk space and expired certificates. Notice also includes configuration override warnings.</help>
+    </field>
+    <field>
+        <id>notify.general.statesPercent</id>
+        <label>State table warning (%)</label>
+        <type>text</type>
+        <help>Warn when the firewall state table reaches this share of its limit, and again when it drops back. Applies to channels that take the State table event.</help>
+    </field>
+</form>

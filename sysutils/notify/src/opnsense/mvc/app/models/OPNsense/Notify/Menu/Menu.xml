@@ -1,0 +1,10 @@
+<menu>
+    <Services>
+        <Notify cssClass="fa fa-bell fa-fw">
+            <General order="10" url="/ui/notify#general"/>
+            <Channels order="20" url="/ui/notify#channels"/>
+            <Status order="30" url="/ui/notify#status"/>
+            <LogFile VisibleName="Log File" order="40" url="/ui/notify/log"/>
+        </Notify>
+    </Services>
+</menu>
