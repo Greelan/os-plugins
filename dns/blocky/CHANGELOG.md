@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3 - 2026-09-22
+
+- Internal architecture and namespaces refactored.
+
 ## 1.2_1 - 2026-09-21
 
 - A list entry holding several lines no longer breaks the generated configuration.

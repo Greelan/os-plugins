@@ -22,7 +22,7 @@
         <label>To</label>
         <type>text</type>
         <help>
-            <![CDATA[Replacement domain looked up in the entries on the <a href="/ui/blocky/settings/customdns#overridestab">Host Overrides</a> tab. The part in front is kept, so with From home and To lan a query for printer.home is looked up as printer.lan.]]>
+            <![CDATA[Replacement domain looked up in the entries on the <a href="/ui/blocky/customdns#overrides">Host Overrides</a> tab. The part in front is kept, so with From home and To lan a query for printer.home is looked up as printer.lan.]]>
         </help>
         <grid_view/>
     </field>

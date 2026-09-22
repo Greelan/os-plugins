@@ -3,7 +3,7 @@
         <id>blocky.queryLog.type</id>
         <label>Log type</label>
         <type>dropdown</type>
-        <help><![CDATA[Where query logs are written. Disabled (the default) turns query logging off; Console writes each query to the Blocky log (viewable under <a href="/ui/blocky/settings/log">Log File</a>); CSV and CSV per-client write daily .csv files to the Target directory; SQLite, MySQL/MariaDB, PostgreSQL and TimescaleDB write to a database using the connection string in Target; dnstap streams to the dnstap socket set in Target. Console is high-volume (one line per query); use CSV or a database for long-term logs.]]></help>
+        <help><![CDATA[Where query logs are written. Disabled (the default) turns query logging off; Console writes each query to the Blocky log (viewable under <a href="/ui/blocky/log">Log File</a>); CSV and CSV per-client write daily .csv files to the Target directory; SQLite, MySQL/MariaDB, PostgreSQL and TimescaleDB write to a database using the connection string in Target; dnstap streams to the dnstap socket set in Target. Console is high-volume (one line per query); use CSV or a database for long-term logs.]]></help>
     </field>
     <field>
         <id>blocky.queryLog.target</id>

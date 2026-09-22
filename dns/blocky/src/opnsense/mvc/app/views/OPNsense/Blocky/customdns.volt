@@ -50,9 +50,9 @@
         });
         $('#maintabs a[data-toggle="tab"]').on('shown.bs.tab', function (e) {
             history.pushState(null, null, e.target.hash);
-            if (e.target.hash === '#overridestab') {
+            if (e.target.hash === '#overrides') {
                 $("#{{formGridCustomdns['table_id']}}").bootgrid('reload');
-            } else if (e.target.hash === '#rewritestab') {
+            } else if (e.target.hash === '#rewrites') {
                 $("#{{formGridCustomdnsrewrite['table_id']}}").bootgrid('reload');
             }
         });
@@ -80,25 +80,25 @@
 </script>
 
 <ul class="nav nav-tabs" data-tabs="tabs" id="maintabs">
-    <li class="active"><a data-toggle="tab" href="#settingstab">{{ lang._('Settings') }}</a></li>
-    <li><a data-toggle="tab" href="#overridestab">{{ lang._('Host Overrides') }}</a></li>
-    <li><a data-toggle="tab" href="#rewritestab">{{ lang._('Rewrites') }}</a></li>
+    <li class="active"><a data-toggle="tab" href="#settings">{{ lang._('Settings') }}</a></li>
+    <li><a data-toggle="tab" href="#overrides">{{ lang._('Host Overrides') }}</a></li>
+    <li><a data-toggle="tab" href="#rewrites">{{ lang._('Rewrites') }}</a></li>
 </ul>
 
 <div class="tab-content content-box __mb">
-    <div id="settingstab" class="tab-pane fade in active">
+    <div id="settings" class="tab-pane fade in active">
         {{ partial("layout_partials/base_form",['fields':customdnsForm,'id':'frm_customdnssettings'])}}
     </div>
-    <div id="overridestab" class="tab-pane fade in">
+    <div id="overrides" class="tab-pane fade in">
         {{ partial('layout_partials/base_bootgrid_table', formGridCustomdns)}}
         <div style="padding: 10px;">
-            {{ lang._('Map an internal name (e.g. printer.lan) to fixed IP address(es) that Blocky answers directly, like a hosts file. To forward a whole domain to another DNS server instead, use %sDomain Overrides%s.') | format('<a href="/ui/blocky/settings/conditional">', '</a>') }}
+            {{ lang._('Map an internal name (e.g. printer.lan) to fixed IP address(es) that Blocky answers directly, like a hosts file. To forward a whole domain to another DNS server instead, use %sDomain Overrides%s.') | format('<a href="/ui/blocky/conditional">', '</a>') }}
         </div>
     </div>
-    <div id="rewritestab" class="tab-pane fade in">
+    <div id="rewrites" class="tab-pane fade in">
         {{ partial('layout_partials/base_bootgrid_table', formGridCustomdnsrewrite)}}
         <div style="padding: 10px;">
-            {{ lang._('Rewrite a queried domain to another domain before it is looked up in the entries on the %sHost Overrides%s tab. Example: queries for example.com are answered using the mapping for printer.lan.') | format('<a href="/ui/blocky/settings/customdns#overridestab">', '</a>') }}
+            {{ lang._('Rewrite a queried domain to another domain before it is looked up in the entries on the %sHost Overrides%s tab. Example: queries for example.com are answered using the mapping for printer.lan.') | format('<a href="/ui/blocky/customdns#overrides">', '</a>') }}
         </div>
     </div>
 </div>

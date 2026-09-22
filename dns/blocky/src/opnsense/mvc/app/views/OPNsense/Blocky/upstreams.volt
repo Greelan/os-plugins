@@ -57,9 +57,9 @@
 
         $('#maintabs a[data-toggle="tab"]').on('shown.bs.tab', function (e) {
             history.pushState(null, null, e.target.hash);
-            if (e.target.hash === '#serverstab') {
+            if (e.target.hash === '#servers') {
                 $("#{{formGridUpstream['table_id']}}").bootgrid('reload');
-            } else if (e.target.hash === '#bootstraptab') {
+            } else if (e.target.hash === '#bootstrap') {
                 $("#{{formGridBootstrap['table_id']}}").bootgrid('reload');
             }
         });
@@ -89,22 +89,22 @@
 </script>
 
 <ul class="nav nav-tabs" data-tabs="tabs" id="maintabs">
-    <li class="active"><a data-toggle="tab" href="#settingstab">{{ lang._('Settings') }}</a></li>
-    <li><a data-toggle="tab" href="#serverstab">{{ lang._('Servers') }}</a></li>
-    <li><a data-toggle="tab" href="#bootstraptab">{{ lang._('Bootstrap') }}</a></li>
+    <li class="active"><a data-toggle="tab" href="#settings">{{ lang._('Settings') }}</a></li>
+    <li><a data-toggle="tab" href="#servers">{{ lang._('Servers') }}</a></li>
+    <li><a data-toggle="tab" href="#bootstrap">{{ lang._('Bootstrap') }}</a></li>
 </ul>
 
 <div class="tab-content content-box __mb">
-    <div id="settingstab" class="tab-pane fade in active">
+    <div id="settings" class="tab-pane fade in active">
         {{ partial("layout_partials/base_form",['fields':upstreamsForm,'id':'frm_upstreamsettings'])}}
     </div>
-    <div id="serverstab" class="tab-pane fade in">
+    <div id="servers" class="tab-pane fade in">
         {{ partial('layout_partials/base_bootgrid_table', formGridUpstream)}}
         <div style="padding: 10px;">
             {{ lang._('Resolvers Blocky forwards queries to. The "default" group applies to every client, so define at least one resolver there. To give specific clients their own resolvers, set the Upstream Group to a client selector - a client name (with * and [0-9] wildcards), an IP, or a CIDR. See the Resolver field for accepted server formats.') }}
         </div>
     </div>
-    <div id="bootstraptab" class="tab-pane fade in">
+    <div id="bootstrap" class="tab-pane fade in">
         {{ partial('layout_partials/base_bootgrid_table', formGridBootstrap)}}
         <div style="padding: 10px;">
             {{ lang._('Bootstrap resolvers look up the host names of upstream DNS servers and of deny/allow list download URLs, useful when no system DNS resolver is configured. Plain-IP resolvers need no pinned IPs; add pinned IPs only for an encrypted resolver given as a host name, so it can be reached without a prior lookup. A resolv file entry reads the name servers from a resolv.conf-style file instead. If empty, the operating system resolver is used.') }}

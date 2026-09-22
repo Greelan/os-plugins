@@ -50,9 +50,9 @@
         });
         $('#maintabs a[data-toggle="tab"]').on('shown.bs.tab', function (e) {
             history.pushState(null, null, e.target.hash);
-            if (e.target.hash === '#denytab') {
+            if (e.target.hash === '#denylists') {
                 $("#{{formGridDenylist['table_id']}}").bootgrid('reload');
-            } else if (e.target.hash === '#allowtab') {
+            } else if (e.target.hash === '#allowlists') {
                 $("#{{formGridAllowlist['table_id']}}").bootgrid('reload');
             }
         });
@@ -80,19 +80,19 @@
 </script>
 
 <ul class="nav nav-tabs" data-tabs="tabs" id="maintabs">
-    <li class="active"><a data-toggle="tab" href="#settingstab">{{ lang._('Settings') }}</a></li>
-    <li><a data-toggle="tab" href="#denytab">{{ lang._('Deny Lists') }}</a></li>
-    <li><a data-toggle="tab" href="#allowtab">{{ lang._('Allow Lists') }}</a></li>
+    <li class="active"><a data-toggle="tab" href="#settings">{{ lang._('Settings') }}</a></li>
+    <li><a data-toggle="tab" href="#denylists">{{ lang._('Deny Lists') }}</a></li>
+    <li><a data-toggle="tab" href="#allowlists">{{ lang._('Allow Lists') }}</a></li>
 </ul>
 
 <div class="tab-content content-box __mb">
-    <div id="settingstab" class="tab-pane fade in active">
+    <div id="settings" class="tab-pane fade in active">
         {{ partial("layout_partials/base_form",['fields':filterForm,'id':'frm_filtersettings'])}}
     </div>
-    <div id="denytab" class="tab-pane fade in">
+    <div id="denylists" class="tab-pane fade in">
         {{ partial('layout_partials/base_bootgrid_table', formGridDenylist)}}
     </div>
-    <div id="allowtab" class="tab-pane fade in">
+    <div id="allowlists" class="tab-pane fade in">
         {{ partial('layout_partials/base_bootgrid_table', formGridAllowlist)}}
         <div style="padding: 10px;">
             {{ lang._('Allow list entries override deny lists in the same list group.') }}

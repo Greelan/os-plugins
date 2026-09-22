@@ -14,7 +14,7 @@
         <id>upstream.group</id>
         <label>Upstream group</label>
         <type>text</type>
-        <help><![CDATA[Which clients use this resolver. "default" applies to every client; otherwise a client name (wildcards * and [0-9] ranges supported), an IP address, or a CIDR subnet. Blocky matches each query's client against the upstream groups and falls back to "default". This is separate from the list groups under <a href="/ui/blocky/settings/clients#clientgroupstab">Clients</a>.]]></help>
+        <help><![CDATA[Which clients use this resolver. "default" applies to every client; otherwise a client name (wildcards * and [0-9] ranges supported), an IP address, or a CIDR subnet. Blocky matches each query's client against the upstream groups and falls back to "default". This is separate from the list groups under <a href="/ui/blocky/clients#clientgroups">Clients</a>.]]></help>
         <grid_view/>
     </field>
     <field>

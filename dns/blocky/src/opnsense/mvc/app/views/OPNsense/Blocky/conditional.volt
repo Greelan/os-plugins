@@ -50,9 +50,9 @@
         });
         $('#maintabs a[data-toggle="tab"]').on('shown.bs.tab', function (e) {
             history.pushState(null, null, e.target.hash);
-            if (e.target.hash === '#overridestab') {
+            if (e.target.hash === '#overrides') {
                 $("#{{formGridConditional['table_id']}}").bootgrid('reload');
-            } else if (e.target.hash === '#rewritestab') {
+            } else if (e.target.hash === '#rewrites') {
                 $("#{{formGridConditionalrewrite['table_id']}}").bootgrid('reload');
             }
         });
@@ -80,25 +80,25 @@
 </script>
 
 <ul class="nav nav-tabs" data-tabs="tabs" id="maintabs">
-    <li class="active"><a data-toggle="tab" href="#settingstab">{{ lang._('Settings') }}</a></li>
-    <li><a data-toggle="tab" href="#overridestab">{{ lang._('Domain Overrides') }}</a></li>
-    <li><a data-toggle="tab" href="#rewritestab">{{ lang._('Rewrites') }}</a></li>
+    <li class="active"><a data-toggle="tab" href="#settings">{{ lang._('Settings') }}</a></li>
+    <li><a data-toggle="tab" href="#overrides">{{ lang._('Domain Overrides') }}</a></li>
+    <li><a data-toggle="tab" href="#rewrites">{{ lang._('Rewrites') }}</a></li>
 </ul>
 
 <div class="tab-content content-box __mb">
-    <div id="settingstab" class="tab-pane fade in active">
+    <div id="settings" class="tab-pane fade in active">
         {{ partial("layout_partials/base_form",['fields':conditionalForm,'id':'frm_conditionalsettings'])}}
     </div>
-    <div id="overridestab" class="tab-pane fade in">
+    <div id="overrides" class="tab-pane fade in">
         {{ partial('layout_partials/base_bootgrid_table', formGridConditional)}}
         <div style="padding: 10px;">
             {{ lang._('Forward queries for specific domains to a dedicated resolver, e.g. an internal DNS server for your LAN domain.') }}
         </div>
     </div>
-    <div id="rewritestab" class="tab-pane fade in">
+    <div id="rewrites" class="tab-pane fade in">
         {{ partial('layout_partials/base_bootgrid_table', formGridConditionalrewrite)}}
         <div style="padding: 10px;">
-            {{ lang._('Rewrite a queried domain to another domain before it is forwarded to the resolver mapped on the %sDomain Overrides%s tab. Example: queries for example.com are sent as fritz.box.') | format('<a href="/ui/blocky/settings/conditional#overridestab">', '</a>') }}
+            {{ lang._('Rewrite a queried domain to another domain before it is forwarded to the resolver mapped on the %sDomain Overrides%s tab. Example: queries for example.com are sent as fritz.box.') | format('<a href="/ui/blocky/conditional#overrides">', '</a>') }}
         </div>
     </div>
 </div>

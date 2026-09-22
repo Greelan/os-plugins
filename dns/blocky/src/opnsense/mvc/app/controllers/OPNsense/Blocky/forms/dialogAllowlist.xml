@@ -15,7 +15,7 @@
         <label>List group</label>
         <type>text</type>
         <help>
-            <![CDATA[The list group this allow list belongs to. The list takes effect only for clients assigned this group under <a href="/ui/blocky/settings/clients#clientgroupstab">Clients</a>. Within a group, allow list entries override deny lists; a group with only allow lists permits only those domains and blocks everything else.]]>
+            <![CDATA[The list group this allow list belongs to. The list takes effect only for clients assigned this group under <a href="/ui/blocky/clients#clientgroups">Clients</a>. Within a group, allow list entries override deny lists; a group with only allow lists permits only those domains and blocks everything else.]]>
         </help>
         <grid_view/>
     </field>
