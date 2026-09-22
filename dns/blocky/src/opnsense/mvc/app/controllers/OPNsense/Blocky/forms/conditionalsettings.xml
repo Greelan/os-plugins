@@ -4,7 +4,7 @@
         <label>Fallback to upstream</label>
         <type>checkbox</type>
         <help>
-            <![CDATA[If a resolver on the <a href="/ui/blocky/settings/conditional#overridestab">Domain Overrides</a> tab answers empty or NXDOMAIN, retry the query against the normal upstream resolvers instead of returning that empty result. Useful for split DNS, where the internal resolver holds only some names under a domain and the rest are public. Blocky ties this setting to rewrites: it takes effect only while at least one <a href="/ui/blocky/settings/conditional#rewritestab">Rewrites</a> entry exists.]]>
+            <![CDATA[If a resolver on the <a href="/ui/blocky/conditional#overrides">Domain Overrides</a> tab answers empty or NXDOMAIN, retry the query against the normal upstream resolvers instead of returning that empty result. Useful for split DNS, where the internal resolver holds only some names under a domain and the rest are public. Blocky ties this setting to rewrites: it takes effect only while at least one <a href="/ui/blocky/conditional#rewrites">Rewrites</a> entry exists.]]>
         </help>
     </field>
 </form>

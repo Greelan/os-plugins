@@ -5,7 +5,7 @@
         <type>text</type>
         <hint>1h</hint>
         <help>
-            <![CDATA[TTL returned for answers coming from the entries on the <a href="/ui/blocky/settings/customdns#overridestab">Host Overrides</a> tab.]]>
+            <![CDATA[TTL returned for answers coming from the entries on the <a href="/ui/blocky/customdns#overrides">Host Overrides</a> tab.]]>
         </help>
     </field>
     <field>
@@ -21,7 +21,7 @@
         <height>8</height>
         <advanced>true</advanced>
         <help>
-            <![CDATA[Optional DNS zone-file content for advanced records (e.g. CNAME), in standard zone format. Every record needs a TTL, either its own or a $TTL line before it, and Blocky refuses to start if the zone does not parse. Applied in addition to the simple entries on the <a href="/ui/blocky/settings/customdns#overridestab">Host Overrides</a> tab.]]>
+            <![CDATA[Optional DNS zone-file content for advanced records (e.g. CNAME), in standard zone format. Every record needs a TTL, either its own or a $TTL line before it, and Blocky refuses to start if the zone does not parse. Applied in addition to the simple entries on the <a href="/ui/blocky/customdns#overrides">Host Overrides</a> tab.]]>
         </help>
     </field>
 </form>

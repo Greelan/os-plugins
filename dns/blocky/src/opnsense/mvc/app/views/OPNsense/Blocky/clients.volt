@@ -49,9 +49,9 @@
         });
         $('#maintabs a[data-toggle="tab"]').on('shown.bs.tab', function (e) {
             history.pushState(null, null, e.target.hash);
-            if (e.target.hash === '#clientgroupstab') {
+            if (e.target.hash === '#clientgroups') {
                 $("#{{formGridClientgroup['table_id']}}").bootgrid('reload');
-            } else if (e.target.hash === '#clientnamestab') {
+            } else if (e.target.hash === '#clientnames') {
                 $("#{{formGridClientlookupclient['table_id']}}").bootgrid('reload');
             }
         });
@@ -79,25 +79,25 @@
 </script>
 
 <ul class="nav nav-tabs" data-tabs="tabs" id="maintabs">
-    <li class="active"><a data-toggle="tab" href="#settingstab">{{ lang._('Settings') }}</a></li>
-    <li><a data-toggle="tab" href="#clientgroupstab">{{ lang._('Client Groups') }}</a></li>
-    <li><a data-toggle="tab" href="#clientnamestab">{{ lang._('Client Names') }}</a></li>
+    <li class="active"><a data-toggle="tab" href="#settings">{{ lang._('Settings') }}</a></li>
+    <li><a data-toggle="tab" href="#clientgroups">{{ lang._('Client Groups') }}</a></li>
+    <li><a data-toggle="tab" href="#clientnames">{{ lang._('Client Names') }}</a></li>
 </ul>
 
 <div class="tab-content content-box __mb">
-    <div id="settingstab" class="tab-pane fade in active">
+    <div id="settings" class="tab-pane fade in active">
         {{ partial("layout_partials/base_form",['fields':clientlookupForm,'id':'frm_clientlookupsettings'])}}
     </div>
-    <div id="clientgroupstab" class="tab-pane fade in">
+    <div id="clientgroups" class="tab-pane fade in">
         {{ partial('layout_partials/base_bootgrid_table', formGridClientgroup)}}
         <div style="padding: 10px;">
-            {{ lang._('Choose which list groups apply to which client. Match a client by name (wildcards * and [0-9]), IP address, FQDN, or CIDR subnet. Add a "default" entry to cover clients that match no other entry; a client with no matching entry (and no "default") is not filtered at all. %sDeny and allow lists%s take effect only for clients mapped to their group.') | format('<a href="/ui/blocky/settings/filterlists">', '</a>') }}
+            {{ lang._('Choose which list groups apply to which client. Match a client by name (wildcards * and [0-9]), IP address, FQDN, or CIDR subnet. Add a "default" entry to cover clients that match no other entry; a client with no matching entry (and no "default") is not filtered at all. %sDeny and allow lists%s take effect only for clients mapped to their group.') | format('<a href="/ui/blocky/filterlists">', '</a>') }}
         </div>
     </div>
-    <div id="clientnamestab" class="tab-pane fade in">
+    <div id="clientnames" class="tab-pane fade in">
         {{ partial('layout_partials/base_bootgrid_table', formGridClientlookupclient)}}
         <div style="padding: 10px;">
-            {{ lang._('Assign custom names to clients by IP address, for use in the client groups and in query logs. Useful when reverse DNS is unavailable or unreliable. This is independent of the reverse-DNS resolver configured on the %sSettings%s tab.') | format('<a href="/ui/blocky/settings/clients#settingstab">', '</a>') }}
+            {{ lang._('Assign custom names to clients by IP address, for use in the client groups and in query logs. Useful when reverse DNS is unavailable or unreliable. This is independent of the reverse-DNS resolver configured on the %sSettings%s tab.') | format('<a href="/ui/blocky/clients#settings">', '</a>') }}
         </div>
     </div>
 </div>

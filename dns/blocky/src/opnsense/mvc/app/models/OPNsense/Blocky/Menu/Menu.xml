@@ -1,17 +1,17 @@
 <menu>
     <Services>
         <Blocky VisibleName="Blocky DNS" cssClass="fa fa-shield-alt fa-fw">
-            <General order="10" url="/ui/blocky/settings/general"/>
-            <Upstreams VisibleName="Upstream Servers" order="20" url="/ui/blocky/settings/upstreams"/>
-            <Conditional VisibleName="Domain Overrides" order="30" url="/ui/blocky/settings/conditional"/>
-            <CustomDNS VisibleName="Host Overrides" order="40" url="/ui/blocky/settings/customdns"/>
-            <FilterLists VisibleName="Filter Lists" order="50" url="/ui/blocky/settings/filterlists"/>
-            <Schedules order="60" url="/ui/blocky/settings/schedules"/>
-            <Clients VisibleName="Clients" order="70" url="/ui/blocky/settings/clients"/>
-            <Security order="80" url="/ui/blocky/settings/security"/>
-            <QueryLog VisibleName="Query Log" order="90" url="/ui/blocky/settings/querylog"/>
-            <Advanced order="100" url="/ui/blocky/settings/advanced"/>
-            <LogFile VisibleName="Log File" order="110" url="/ui/blocky/settings/log"/>
+            <General order="10" url="/ui/blocky/general"/>
+            <Upstreams VisibleName="Upstream Servers" order="20" url="/ui/blocky/upstreams"/>
+            <Conditional VisibleName="Domain Overrides" order="30" url="/ui/blocky/conditional"/>
+            <CustomDNS VisibleName="Host Overrides" order="40" url="/ui/blocky/customdns"/>
+            <FilterLists VisibleName="Filter Lists" order="50" url="/ui/blocky/filterlists"/>
+            <Schedules order="60" url="/ui/blocky/schedules"/>
+            <Clients VisibleName="Clients" order="70" url="/ui/blocky/clients"/>
+            <Security order="80" url="/ui/blocky/security"/>
+            <QueryLog VisibleName="Query Log" order="90" url="/ui/blocky/querylog"/>
+            <Advanced order="100" url="/ui/blocky/advanced"/>
+            <LogFile VisibleName="Log File" order="110" url="/ui/blocky/log"/>
         </Blocky>
     </Services>
 </menu>

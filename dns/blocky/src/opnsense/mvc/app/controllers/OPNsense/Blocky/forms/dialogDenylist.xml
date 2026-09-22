@@ -15,7 +15,7 @@
         <label>List group</label>
         <type>text</type>
         <help>
-            <![CDATA[The list group this deny list belongs to. The list takes effect only for clients assigned this group under <a href="/ui/blocky/settings/clients#clientgroupstab">Clients</a>.]]>
+            <![CDATA[The list group this deny list belongs to. The list takes effect only for clients assigned this group under <a href="/ui/blocky/clients#clientgroups">Clients</a>.]]>
         </help>
         <grid_view/>
     </field>
