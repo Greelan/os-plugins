@@ -37,7 +37,9 @@
         /* the file paths are an alternative to the trust store, so only one applies */
         function certFields() {
             const picked = $("#blocky\\.general\\.certificate").val() !== '';
-            $("#row_blocky\\.general\\.certFile, #row_blocky\\.general\\.keyFile").toggle(!picked);
+            /* they are advanced fields, so they only ever show in advanced mode */
+            const advanced = $("#show_advanced_frm_settings").hasClass('fa-toggle-on');
+            $("#row_blocky\\.general\\.certFile, #row_blocky\\.general\\.keyFile").toggle(advanced && !picked);
         }
         $("#blocky\\.general\\.certificate").change(certFields);
         $('[id*="show_advanced"]').click(() => setTimeout(certFields, 0));

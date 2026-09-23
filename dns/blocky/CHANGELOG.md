@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3_2 - 2026-09-23
+
+- The certificate and key path fields stay hidden until advanced mode is on.
+
 ## 1.3_1 - 2026-09-22
 
 - Importing a config.yml that quotes a value no longer fails.
