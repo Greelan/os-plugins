@@ -39,7 +39,13 @@ class SettingsController extends ApiMutableModelControllerBase
     /* channels */
     public function searchChannelAction()
     {
-        return $this->searchBase('channels', null, 'description');
+        $result = $this->searchBase('channels', null, 'description');
+        /* a grid row carries every field, and the URL holds the channel's credentials */
+        foreach ($result['rows'] as &$row) {
+            unset($row['url'], $row['%url']);
+        }
+
+        return $result;
     }
 
     public function getChannelAction($uuid = null)
