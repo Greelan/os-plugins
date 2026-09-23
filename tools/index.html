@@ -15,6 +15,7 @@
     --muted: #656d76;
     --accent: #2563eb;
     --accent-soft: rgba(37, 99, 235, .1);
+    --plugin: #0f766e;
     --border: #d0d7de;
     --code-bg: #f6f8fa;
     --shadow: 0 1px 3px rgba(31, 35, 40, .08), 0 8px 24px rgba(31, 35, 40, .06);
@@ -29,6 +30,7 @@
       --muted: #8b949e;
       --accent: #58a6ff;
       --accent-soft: rgba(88, 166, 255, .12);
+      --plugin: #2dd4bf;
       --border: #30363d;
       --code-bg: #0d1117;
       --shadow: none;
@@ -82,12 +84,11 @@
   h2 { font-size: 1.3rem; margin: 2.2rem 0 .8rem; padding-bottom: .3rem; border-bottom: 1px solid var(--border); }
   h3 { font-size: 1.08rem; margin: 1.6rem 0 .5rem; }
   /* package names, set apart from the prose headings around them */
-  .plugin { color: var(--accent); font-family: var(--mono); font-size: .95em; }
+  .plugin { color: var(--plugin); font-family: var(--mono); font-size: .95em; }
   .cl-link {
     font-size: .72rem; font-weight: 400; margin-left: .4rem; white-space: nowrap;
-    font-family: var(--sans); color: var(--muted);
+    font-family: var(--sans);
   }
-  .cl-link:hover { color: var(--accent); }
   /* packages under a plugin heading */
   .pkgs { list-style: none; padding: 0; margin: .4rem 0 .9rem; font-size: .9rem; }
   .pkgs li { margin: .15rem 0; }
