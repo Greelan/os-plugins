@@ -87,7 +87,7 @@
         <id>notify.general.statusLevel</id>
         <label>System Status level</label>
         <type>dropdown</type>
-        <help>Lowest severity of System Status entries to send. These are the alerts behind the bell icon in the menu bar, such as crash reports, low disk space and expired certificates. Notice also includes configuration override warnings.</help>
+        <help>Lowest severity of System Status entries to send. Each new occurrence is reported, and so is an entry being resolved or dismissed. These are the alerts behind the bell icon in the menu bar, such as crash reports, low disk space and expired certificates. Notice also includes configuration override warnings.</help>
     </field>
     <field>
         <id>notify.general.statesPercent</id>

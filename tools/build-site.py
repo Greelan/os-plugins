@@ -106,7 +106,7 @@ for pkgname, changelog, depends, bundled in plugins:
         packages = packages.replace('</ul>', '<li><code>{}</code> {} <span class="abi">{}</span></li>\n</ul>'.format(
             html.escape(bundled[0]), html.escape(bundled[1]), "bundled"))
     body, injected = re.subn(
-        pattern, lambda m: f"<h3{m.group(1)}>{pkgname}{link}</h3>\n{packages}", body)
+        pattern, lambda m: f'<h3{m.group(1)} class="plugin">{pkgname}{link}</h3>\n{packages}', body)
     if not injected:
         raise SystemExit(f"no <h3>{pkgname}</h3> heading in README.md to list packages under")
 
@@ -123,6 +123,6 @@ for pkgname, changelog, _, _ in plugins:
     text = open(changelog).read()
     m = re.search(r"^## ", text, re.M)
     content = text[m.start():] if m else text
-    body = f'<h1 id="{pkgname}">{pkgname} changelog</h1>\n' + render(content)
+    body = f'<h1 id="{pkgname}"><span class="plugin">{pkgname}</span> changelog</h1>\n' + render(content)
     out = os.path.join(REPO, "changelog", f"{pkgname}.html")
     open(out, "w").write(page(body, title=f"{pkgname} changelog"))
