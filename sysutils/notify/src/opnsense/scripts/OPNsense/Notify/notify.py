@@ -219,11 +219,15 @@ def save_state(state):
 
 
 def configctl_json(*args):
-    """JSON from a configd action, or None; a missing action is a plugin bug, so say so."""
+    """JSON from a configd action, or None; a missing action is a plugin bug, so say so.
+
+    PHP renders an empty array as [], so an empty answer comes back as {}.
+    """
     result = None
     try:
         result = subprocess.run([CONFIGCTL] + list(args), capture_output=True, text=True, timeout=120)
-        return json.loads(result.stdout)
+        answer = json.loads(result.stdout)
+        return {} if answer == [] else answer
     except (OSError, subprocess.SubprocessError, ValueError):
         answer = result.stdout[:100].strip() if result is not None else ""
         log(syslog.LOG_DEBUG, f"no usable answer from \"{' '.join(args)}\": {answer}")
@@ -245,7 +249,9 @@ def clock(timestamp):
 
 
 def message(event, ntype, title, body):
-    return {"event": event, "type": ntype, "title": title, "body": body, "time": int(time.time())}
+    # a notification with an empty body is refused on delivery, so fall back to the title
+    return {"event": event, "type": ntype, "title": title, "body": body or title,
+            "time": int(time.time())}
 
 
 def follow(path, previous):
@@ -454,11 +460,18 @@ def check_status(config, previous):
         if code > threshold:
             continue
         body = re.sub(r"<[^>]+>", "", str(item.get("message", ""))).strip()
-        current[name] = [code, body]
+        title = str(item.get("title", name))
+        # the timestamp moves for each new occurrence, where the message rarely does
+        current[name] = [code, body, str(item.get("timestamp", "")), title]
         if seen is None or seen.get(name) == current[name]:
             continue
-        messages.append(message("status", STATUS_TYPES.get(code, "info"),
-                                str(item.get("title", name)), body))
+        messages.append(message("status", STATUS_TYPES.get(code, "info"), title, body))
+    for name, was in (seen or {}).items():
+        if name in current:
+            continue
+        gone = was[3] if len(was) > 3 else name
+        messages.append(message("status", "success", f"{gone} is resolved",
+                                f"Was: {was[1]}" if was[1] else ""))
     return {"checked": now, "items": current}, messages
 
 
