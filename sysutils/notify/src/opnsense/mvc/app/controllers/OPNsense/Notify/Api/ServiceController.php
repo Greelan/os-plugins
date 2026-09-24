@@ -75,7 +75,7 @@ class ServiceController extends ApiControllerBase
         }
         /* the URL carries credentials, so hand it over in a private file */
         $tmpfile = tempnam(sys_get_temp_dir(), 'notify_parse_');
-        file_put_contents($tmpfile, json_encode(['url' => (string)$this->request->getPost('url', 'string', '')]));
+        file_put_contents($tmpfile, json_encode(['url' => (string)$this->request->getPost('url', null, '')]));
         try {
             $result = json_decode((new Backend())->configdpRun('notify parse', [$tmpfile]), true);
         } finally {

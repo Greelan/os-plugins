@@ -273,8 +273,8 @@
                                 if (data && data.service) {
                                     appriseImported = appriseDecode(data);
                                 } else if (data && data.service === '') {
-                                    appriseImported = appriseDecode({service: '', url: url,
-                                                                     error: data.error || ''});
+                                    /* the URL is as typed, only the answer is escaped */
+                                    appriseImported = {service: '', url: url, error: htmlDecode(data.error || '')};
                                 } else {
                                     $message.text((data && data.error) || "{{ lang._('The URL could not be read.') }}");
                                     return;

@@ -210,6 +210,14 @@ def load_state():
         return {}
 
 
+def fresh_state():
+    """The recorded state, keeping only the queue once it is too old to compare against."""
+    state = load_state()
+    if int(time.time()) - state.get("stamp", 0) > STALE_SECONDS:
+        state = {"queue": state.get("queue", [])}  # queued items expire on their own
+    return state
+
+
 def save_state(state):
     """The queue holds message bodies, so the state is written private like the cache."""
     os.makedirs(os.path.dirname(STATE) or ".", mode=0o700, exist_ok=True)
@@ -918,14 +926,13 @@ def prepare():
 def run_check():
     prepared = prepare()
     if prepared is None:
-        if os.path.exists(STATE):
-            os.remove(STATE)  # start from a fresh baseline when enabled again
+        # disabled, not merely unreadable: start from a fresh baseline when enabled again
+        if os.path.exists(STATE) and load_config() is not None:
+            os.remove(STATE)
         return
     config, general, channels, hostname = prepared
     events = {e for c in channels for e in c["events"]}
-    state = load_state()
-    if int(time.time()) - state.get("stamp", 0) > STALE_SECONDS:
-        state = {}  # too old to compare against; record a fresh baseline instead
+    state = fresh_state()
     new_state, messages = {"stamp": int(time.time())}, []
     for event, collector in COLLECTORS:
         if event not in events:
@@ -956,7 +963,7 @@ def run_boot():
     config, general, channels, hostname = prepared
     if is_carp_backup(config):
         return
-    state = load_state()
+    state = fresh_state()
     try:
         version = subprocess.run(["/usr/local/sbin/opnsense-version", "-v"], capture_output=True,
                                  text=True, timeout=30).stdout.strip()
@@ -1072,9 +1079,12 @@ def apprise_services():
             if arg.get("default") is not None:
                 field["default"] = default_text(arg["default"])
             options[str(key)] = field
+        # free-form arguments such as +header or -param, which can carry credentials
+        prefixes = tuple(str(k["prefix"]) for k in (entry["details"].get("kwargs") or {}).values()
+                         if k.get("prefix"))
         services[service_id] = {"id": service_id, "name": str(entry["service_name"]),
                                 "setup": str(entry.get("setup_url") or ""), "templates": templates,
-                                "tokens": tokens, "args": args, "options": options}
+                                "tokens": tokens, "args": args, "options": options, "prefixes": prefixes}
         for protocol in protocols:
             schemas.setdefault(protocol.lower(), service_id)
 
@@ -1265,6 +1275,8 @@ def describe_url(url, keep_secrets=False):
     fields["schema"] = url_schema(url)
     secrets = saved_values(service, results, [k for k in shown if tokens[k]["private"]])
     options, rest = split_query(service, urllib.parse.urlsplit(url).query)
+    if any(urllib.parse.unquote(part).startswith(service["prefixes"]) for part in rest.split("&")):
+        return {"service": "", "custom": True}  # no field masks these, so keep the URL write-only
     for key, value in options.items():
         (secrets if service["options"][key]["private"] else fields)[key] = value
     if rest:

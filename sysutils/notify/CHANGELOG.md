@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2_1 - 2026-09-25
+
+- Channel URLs with headers or extra parameters are kept as custom URLs, so those values are not sent to the browser.
+- Importing a URL no longer mangles characters such as `&`.
+- Queued notifications survive a long shutdown or a failed settings read.
+
 ## 1.2 - 2026-09-24
 
 - Channels and settings can only be changed by an administrator, since every event reports on the firewall rather than on one account. This replaces the per-event check added in 1.1.

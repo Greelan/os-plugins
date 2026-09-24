@@ -58,6 +58,7 @@
             </idsSeverity>
             <statesPercent type="IntegerField">
                 <Default>80</Default>
+                <Required>Y</Required>
                 <MinimumValue>10</MinimumValue>
                 <MaximumValue>99</MaximumValue>
                 <ValidationMessage>Enter a percentage between 10 and 99.</ValidationMessage>

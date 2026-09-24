@@ -88,12 +88,10 @@ class SettingsController extends ApiMutableModelControllerBase
         }
         $channel = $this->request->getPost('channel');
         $apprise = $this->request->getPost('apprise');
-        /* a URL pasted but never imported still counts, so saving cannot quietly ignore it */
-        $pasted = trim((string)$this->request->getPost('apprise_import', 'string', ''));
-        $service = $pasted !== '' ? '' : (string)$this->request->getPost('apprise_service', 'string', '');
+        $service = (string)$this->request->getPost('apprise_service', 'string', '');
         $request = [
             'uuid' => (string)$uuid,
-            'url' => $pasted !== '' ? $pasted : (is_array($channel) ? (string)($channel['url'] ?? '') : ''),
+            'url' => is_array($channel) ? (string)($channel['url'] ?? '') : '',
             'service' => $service === '__custom' ? '' : $service,
             'fields' => is_array($apprise) ? $apprise : [],
         ];
@@ -118,9 +116,7 @@ class SettingsController extends ApiMutableModelControllerBase
         }
         if (isset($result['error'])) {
             /* point at a row the user can actually see */
-            if ($pasted !== '') {
-                $field = 'apprise_import';
-            } elseif ($service === '__custom') {
+            if ($service === '__custom') {
                 $field = $result['field'] ?? 'channel.url';
             } else {
                 $field = 'apprise_service';
