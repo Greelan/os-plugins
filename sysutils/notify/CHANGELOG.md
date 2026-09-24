@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2 - 2026-09-24
+
+- Channels and settings can only be changed by an administrator, since every event reports on the firewall rather than on one account. This replaces the per-event check added in 1.1.
+
 ## 1.1 - 2026-09-24
 
 - A channel can only be given events whose data the account saving it can already see elsewhere in the web interface.

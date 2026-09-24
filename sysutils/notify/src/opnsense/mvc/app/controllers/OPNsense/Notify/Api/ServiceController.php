@@ -59,6 +59,8 @@ class ServiceController extends ApiControllerBase
      */
     public function statusAction()
     {
+        $this->throwNotFullAdmin();
+
         $status = json_decode((new Backend())->configdRun('notify status'), true);
         return is_array($status) ? $status : ['status' => 'failed'];
     }

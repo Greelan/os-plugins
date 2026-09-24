@@ -44,7 +44,7 @@
         <id>channel.events</id>
         <label>Events</label>
         <type>select_multiple</type>
-        <help><![CDATA[Events sent to this channel. Configuration changes, logins and intrusion detection alerts come from the firewall's own logs and audit trail; new devices come from <a href="/ui/hostdiscovery/settings#hosts">Interfaces: Neighbors: Automatic Discovery</a>. Monit alerts come from the services set up under <a href="/ui/monit#services">Services: Monit</a>, filtered by Monit services below; their state is read straight from the Monit daemon, so nothing needs changing there. System Status entries are the alerts behind the bell icon in the menu bar. UPS power needs the apcupsd or NUT plugin installed; without one it stays silent. You can only choose events whose data your account can already see elsewhere in the web interface.]]></help>
+        <help><![CDATA[Events sent to this channel. Configuration changes, logins and intrusion detection alerts come from the firewall's own logs and audit trail; new devices come from <a href="/ui/hostdiscovery/settings#hosts">Interfaces: Neighbors: Automatic Discovery</a>. Monit alerts come from the services set up under <a href="/ui/monit#services">Services: Monit</a>, filtered by Monit services below; their state is read straight from the Monit daemon, so nothing needs changing there. System Status entries are the alerts behind the bell icon in the menu bar. UPS power needs the apcupsd or NUT plugin installed; without one it stays silent.]]></help>
         <grid_view/>
     </field>
     <field>
