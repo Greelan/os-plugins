@@ -211,10 +211,13 @@ def load_state():
 
 
 def save_state(state):
+    """The queue holds message bodies, so the state is written private like the cache."""
     os.makedirs(os.path.dirname(STATE) or ".", mode=0o700, exist_ok=True)
     tmp = STATE + ".tmp"
-    with open(tmp, "w") as handle:
-        json.dump(state, handle)
+    handle = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(handle, "w") as stream:
+        os.fchmod(stream.fileno(), 0o600)  # the mode above applies to a new file only
+        json.dump(state, stream)
     os.replace(tmp, STATE)
 
 
