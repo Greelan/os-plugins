@@ -29,12 +29,35 @@
 namespace OPNsense\Notify\Api;
 
 use OPNsense\Base\ApiMutableModelControllerBase;
+use OPNsense\Core\ACL;
 use OPNsense\Core\Backend;
 
 class SettingsController extends ApiMutableModelControllerBase
 {
     protected static $internalModelName = 'notify';
     protected static $internalModelClass = '\OPNsense\Notify\Notify';
+
+    /* where each event's data comes from; a channel may only carry pages the user can reach.
+       Pages, not privilege names: which privilege covers a page varies by release. */
+    private const EVENT_PAGES = [
+        'gateway' => ['/ui/routing/configuration'],
+        'config' => ['/ui/core/backup/history/this'],
+        'auth' => ['/ui/diagnostics/log/core/audit'],
+        'vpn' => ['/ui/openvpn/instances', '/ui/wireguard/diagnostics/'],
+        'device' => ['/ui/hostdiscovery/settings'],
+        'ids' => ['/ui/ids'],
+        'firmware' => ['/ui/core/firmware#status'],
+        'certificate' => ['/ui/trust/cert', '/ui/trust/ca'],
+        'monit' => ['/ui/monit/status'],
+        'status' => ['/api/core/system/status'],
+        'carp' => ['/ui/diagnostics/interface/vip'],
+        'wanip' => ['/ui/interfaces/overview'],
+        'link' => ['/ui/interfaces/overview'],
+        'states' => ['/ui/diagnostics/firewall/states'],
+        /* either daemon can be the source */
+        'ups' => ['/ui/apcupsd/status', '/ui/nut/index'],
+        'boot' => ['/ui/diagnostics/log/core/boot'],
+    ];
 
     /* channels */
     public function searchChannelAction()
@@ -59,6 +82,10 @@ class SettingsController extends ApiMutableModelControllerBase
 
     public function setChannelAction($uuid)
     {
+        $refused = $this->eventsOutOfReach();
+        if ($refused !== null) {
+            return $refused;
+        }
         $overlay = $this->channelUrl($uuid);
         if (isset($overlay['validations'])) {
             return ['result' => 'failed', 'validations' => $overlay['validations']];
@@ -68,11 +95,50 @@ class SettingsController extends ApiMutableModelControllerBase
 
     public function addChannelAction()
     {
+        $refused = $this->eventsOutOfReach();
+        if ($refused !== null) {
+            return $refused;
+        }
         $overlay = $this->channelUrl(null);
         if (isset($overlay['validations'])) {
             return ['result' => 'failed', 'validations' => $overlay['validations']];
         }
         return $this->addBase('channel', 'channels', $overlay);
+    }
+
+    /**
+     * Events this user cannot reach elsewhere. The whole channel is checked, so one an
+     * administrator set up cannot be redirected with its events intact.
+     */
+    private function eventsOutOfReach()
+    {
+        $posted = $this->request->getPost('channel');
+        $events = is_array($posted) ? (string)($posted['events'] ?? '') : '';
+        $acl = new ACL();
+        $username = $this->getUserName();
+        $refused = [];
+
+        foreach (array_filter(explode(',', $events)) as $event) {
+            if (!isset(self::EVENT_PAGES[$event])) {
+                $refused[] = $event;  // no known source: fail closed
+                continue;
+            }
+            foreach (self::EVENT_PAGES[$event] as $page) {
+                if (!$acl->isPageAccessible($username, $page)) {
+                    $refused[] = $event;
+                    break;
+                }
+            }
+        }
+
+        if (empty($refused)) {
+            return null;
+        }
+
+        return ['result' => 'failed', 'validations' => ['channel.events' => sprintf(
+            gettext('Your account cannot see the data behind these events: %s.'),
+            implode(', ', $refused)
+        )]];
     }
 
     /**

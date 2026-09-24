@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1 - 2026-09-24
+
+- A channel can only be given events whose data the account saving it can already see elsewhere in the web interface.
+
 ## 1.0_4 - 2026-09-24
 
 - Channel URLs, which hold credentials, are no longer sent to the browser with the channel list.

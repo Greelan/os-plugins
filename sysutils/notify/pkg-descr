@@ -4,6 +4,4 @@ Events: configuration changes (who changed what), logins and lockouts, gateway d
 
 Notifications that cannot be delivered, for example while the only WAN is down, are retried with a backoff for up to 24 hours.
 
-The Services: Notify privilege is admin-equivalent in effect: anyone holding it can point a channel at any destination and have the firewall send system events there. Grant it accordingly.
-
 WWW: https://github.com/caronc/apprise
