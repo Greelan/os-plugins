@@ -3,7 +3,8 @@ name: build
 # Build plugins + blocky per ABI and publish a pkg repo to Cloudflare R2.
 
 on:
-  # push to main auto-ships prod; schedule builds nightly (no deploy) + emails on new blocky
+  # push to main publishes both channels; schedule builds nightly (no deploy)
+  # + emails on new blocky
   push:
     branches: [main]
   schedule:
@@ -11,9 +12,9 @@ on:
   workflow_dispatch:
     inputs:
       channel:
-        description: "Deploy channel"
+        description: "Deploy channel (both = prod and dev)"
         type: choice
-        options: [dev, prod]
+        options: [dev, prod, both]
         default: dev
 
 permissions:
@@ -126,10 +127,11 @@ jobs:
         env:
           BLOCKY_VERSION: ${{ steps.blocky.outputs.version }}
           BLOCKY_CACHED: ${{ steps.blockycache.outputs.cache-hit }}
-          # dev builds add to the channel instead of replacing it, so two branches can be tested together
-          MERGE_REPO_URL: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.channel == 'dev' && 'https://pkg.greelan.net/dev' || '' }}
+          # the dev repository is built alongside the production one, layered onto the
+          # channel, so a package another branch published there survives this build
+          DEV_REPO_URL: ${{ (github.event_name == 'push' || github.event.inputs.channel != 'prod') && 'https://pkg.greelan.net/dev' || '' }}
         with:
-          envs: 'BLOCKY_VERSION BLOCKY_CACHED MERGE_REPO_URL'
+          envs: 'BLOCKY_VERSION BLOCKY_CACHED DEV_REPO_URL'
           release: ${{ matrix.release }}
           usesh: true
           prepare: pkg install -y git gmake go
@@ -155,8 +157,8 @@ jobs:
             done
           } >> "$GITHUB_STEP_SUMMARY"
       # upload-artifact rejects ':' in paths, but ABI dirs are e.g. FreeBSD:15:amd64
-      - name: Bundle repo for transfer
-        run: tar -cf "repo-${{ matrix.release }}.tar" -C repo .
+      - name: Bundle repos for transfer
+        run: tar -cf "repo-${{ matrix.release }}.tar" repo $([ -d repo-dev ] && echo repo-dev)
       - uses: actions/upload-artifact@v7
         with:
           name: repo-${{ matrix.release }}
@@ -164,7 +166,7 @@ jobs:
 
   deploy:
     needs: [build, lint, vendored]
-    # deploy on manual dispatch (dev/prod) or a push to main (prod); scheduled runs don't deploy
+    # deploy on manual dispatch or a push to main (prod + dev); scheduled runs don't deploy
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
     runs-on: ubuntu-latest
     env:
@@ -177,10 +179,9 @@ jobs:
           pattern: repo-*
           path: _bundles
           merge-multiple: true
-      - name: Reassemble repo
+      - name: Reassemble repos
         run: |
-          mkdir repo
-          for t in _bundles/*.tar; do tar -xf "$t" -C repo; done
+          for t in _bundles/*.tar; do tar -xf "$t"; done
       - name: Render landing page + changelog
         run: |
           sudo apt-get update -qq
@@ -192,22 +193,31 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: auto
           R2_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
-          CHANNEL: ${{ github.event_name == 'push' && 'prod' || github.event.inputs.channel }}
+          CHANNEL: ${{ github.event_name == 'push' && 'both' || github.event.inputs.channel }}
         run: |
           # everything revalidates: pages and repo metadata both keep their names
           CACHE="public, max-age=60, must-revalidate"
-          if [ "${CHANNEL}" = "dev" ]; then
-            # dev channel = package dirs only (site files live at the prod root)
-            aws s3 sync repo/ "s3://${R2_BUCKET}/dev/" \
-              --endpoint-url "${R2_ENDPOINT}" --delete \
-              --exclude "index.html" --exclude "changelog/*" --exclude "*.conf" \
-              --cache-control "${CACHE}" --no-progress
-          else
-            # prod root; keep --delete out of the dev/ prefix
+          # prod root; keep --delete out of the dev/ prefix
+          sync_prod() {
             aws s3 sync repo/ "s3://${R2_BUCKET}/" \
               --endpoint-url "${R2_ENDPOINT}" --delete --exclude "dev/*" \
               --cache-control "${CACHE}" --no-progress
-          fi
+          }
+          # dev channel = its own repository, already layered onto what the channel held
+          sync_dev() {
+            if ! ls repo-dev/*/*.pkg >/dev/null 2>&1; then
+              echo "no dev repository was built; leaving the channel alone" >&2
+              return 0
+            fi
+            aws s3 sync repo-dev/ "s3://${R2_BUCKET}/dev/" \
+              --endpoint-url "${R2_ENDPOINT}" --delete \
+              --cache-control "${CACHE}" --no-progress
+          }
+          case "${CHANNEL}" in
+            dev) sync_dev ;;
+            prod) sync_prod ;;
+            both) sync_prod; sync_dev ;;
+          esac
 
   notify:
     # nightly: version check only (no build); email once per new blocky release and once per

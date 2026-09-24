@@ -1,5 +1,7 @@
 # build output
 /repo/
+/repo-dev/
+/stage/
 work/
 *.pkg
 *.txz
