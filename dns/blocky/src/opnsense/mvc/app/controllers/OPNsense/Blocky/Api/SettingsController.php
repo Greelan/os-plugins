@@ -76,6 +76,7 @@ class SettingsController extends ApiMutableModelControllerBase
             return ['status' => 'failed', 'message' => $parsed['error']];
         }
 
+        Config::getInstance()->lock();
         $model = $this->getModel();
 
         // faithful mirror: reset everything to defaults so keys absent from the
@@ -119,8 +120,8 @@ class SettingsController extends ApiMutableModelControllerBase
             ];
         }
 
-        $model->serializeToConfig();
-        Config::getInstance()->save();
+        /* the base save refuses read-only users and records the change */
+        $this->save();
         return [
             'status' => 'ok',
             'counts' => $counts,

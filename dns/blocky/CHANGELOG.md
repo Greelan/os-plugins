@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3_3 - 2026-09-25
+
+- A quote in a cache exclude pattern or query log ignored domain no longer stops Blocky from starting, and neither field can add settings to the generated configuration.
+- Importing a config.yml respects read-only accounts and no longer races other saves.
+- Download cache directories and CSV or SQLite query log targets must be under /var.
+
 ## 1.3_2 - 2026-09-23
 
 - The certificate and key path fields stay hidden until advanced mode is on.

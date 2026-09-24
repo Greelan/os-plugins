@@ -274,7 +274,8 @@
                 </OptionValues>
             </proxyProtocol>
             <downloadCachePath type="TextField">
-                <ValidationMessage>Enter a directory path where downloaded lists are cached.</ValidationMessage>
+                <Mask>/^\/var(\/(?!\.\.?(\/|$))[^\/\0]+)+\/?$/u</Mask>
+                <ValidationMessage>Enter a directory under /var where downloaded lists are cached.</ValidationMessage>
             </downloadCachePath>
         </general>
         <upstreams type="ArrayField">
@@ -691,7 +692,8 @@
                 <ValidationMessage>Enter a duration such as 500ms. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </downloadCooldown>
             <downloadCachePath type="TextField">
-                <ValidationMessage>Enter a directory path where downloaded hosts files are cached.</ValidationMessage>
+                <Mask>/^\/var(\/(?!\.\.?(\/|$))[^\/\0]+)+\/?$/u</Mask>
+                <ValidationMessage>Enter a directory under /var where downloaded hosts files are cached.</ValidationMessage>
             </downloadCachePath>
             <concurrency type="IntegerField">
                 <Default>4</Default>

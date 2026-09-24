@@ -203,7 +203,7 @@ caching:
 {% if OPNsense.blocky.general.cacheExclude %}
   exclude:
 {% for r in OPNsense.blocky.general.cacheExclude.split(',') if r|trim %}
-    - '{{ r|trim }}'
+    - {{ q(r|trim) }}
 {% endfor %}
 {% endif %}
 
@@ -271,7 +271,7 @@ queryLog:
 {% if OPNsense.blocky.queryLog.ignoreDomains %}
     domains:
 {% for d in OPNsense.blocky.queryLog.ignoreDomains.split(',') if d|trim %}
-      - '{{ d|trim }}'
+      - {{ q(d|trim) }}
 {% endfor %}
 {% endif %}
 {% endif %}

@@ -39,6 +39,9 @@ use OPNsense\Trust\Cert;
  */
 class Blocky extends BaseModel
 {
+    /* Blocky runs as root, so what it writes stays under /var, without . or .. segments */
+    private const VAR_PATH = '/^\/var(\/(?!\.\.?(\/|$))[^\/\0]+)+\/?$/u';
+
     /**
      * {@inheritdoc}
      */
@@ -144,9 +147,31 @@ class Blocky extends BaseModel
             in_array((string)$this->queryLog->type, ['csv', 'csv-client'])
         ) {
             $target = trim((string)$this->queryLog->target);
-            if ($target !== '' && stripos($target, 'file:') !== 0 && !is_dir($target)) {
+            if ($target !== '' && stripos($target, 'file:') !== 0) {
+                if (!preg_match(self::VAR_PATH, $target)) {
+                    $messages->appendMessage(new Message(
+                        gettext('Enter a directory under /var.'),
+                        'queryLog.target'
+                    ));
+                } elseif (!is_dir($target)) {
+                    $messages->appendMessage(new Message(
+                        gettext('This directory does not exist.'),
+                        'queryLog.target'
+                    ));
+                }
+            }
+        }
+
+        /* Blocky creates the SQLite database and its parent directory */
+        if (
+            ($validateFullModel || $this->queryLog->type->isFieldChanged() ||
+                $this->queryLog->target->isFieldChanged()) &&
+            (string)$this->queryLog->type == 'sqlite'
+        ) {
+            $target = trim((string)$this->queryLog->target);
+            if ($target !== '' && !preg_match(self::VAR_PATH, $target)) {
                 $messages->appendMessage(new Message(
-                    gettext('This directory does not exist.'),
+                    gettext('Enter a file path under /var.'),
                     'queryLog.target'
                 ));
             }

@@ -9,7 +9,7 @@
         <id>blocky.queryLog.target</id>
         <label>Target</label>
         <type>text</type>
-        <help>Where the log goes, by type. CSV: an existing directory, not a file name; Blocky writes 2026-09-14_ALL.log per day, or one file per client. SQLite: a file path, created with its parent, on local storage only. MySQL/MariaDB, PostgreSQL, TimescaleDB: a connection string, e.g. postgres://user:password@host:5432/blocky. dnstap: unix:/var/run/dnstap.sock, tcp://127.0.0.1:6000, or a bare socket path. Unused for Console. A file:/path value reads the target from that file, keeping credentials out of the configuration, but not for SQLite, where the prefix is taken literally.</help>
+        <help>Where the log goes, by type. CSV: an existing directory under /var, not a file name; Blocky writes 2026-09-14_ALL.log per day, or one file per client. SQLite: a file path under /var, created with its parent, on local storage only. MySQL/MariaDB, PostgreSQL, TimescaleDB: a connection string, e.g. postgres://user:password@host:5432/blocky. dnstap: unix:/var/run/dnstap.sock, tcp://127.0.0.1:6000, or a bare socket path. Unused for Console. A file:/path value reads the target from that file, keeping credentials out of the configuration, but not for SQLite, where the prefix is taken literally.</help>
     </field>
     <field>
         <id>blocky.queryLog.logRetentionDays</id>

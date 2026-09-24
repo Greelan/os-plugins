@@ -99,7 +99,7 @@
         <type>text</type>
         <hint>/var/cache/blocky/lists</hint>
         <advanced>true</advanced>
-        <help>Optional directory for an on-disk cache of downloaded hosts files. When set, Blocky uses HTTP conditional requests to skip re-downloading unchanged files, and can serve a hosts file from disk when its source is temporarily unreachable. When empty (default), downloads are stateless and nothing is written to disk.</help>
+        <help>Optional directory under /var for an on-disk cache of downloaded hosts files. When set, Blocky uses HTTP conditional requests to skip re-downloading unchanged files, and can serve a hosts file from disk when its source is temporarily unreachable. When empty (default), downloads are stateless and nothing is written to disk.</help>
     </field>
     <field>
         <type>header</type>
