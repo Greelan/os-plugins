@@ -23,7 +23,7 @@
         <id>denylist.source</id>
         <label>Source</label>
         <type>text</type>
-        <help>An http or https URL to a hosts/domain list, an absolute file path (a file:// prefix is accepted), or a single inline entry. Anything that is not a URL or an absolute path is written into Blocky's configuration as an inline entry, so a relative path is read as a domain, not as a file. An entry is a domain (ads.example.com), which also covers its subdomains, a wildcard (*.ads.example.com), or a regular expression between slashes (/^ad[sx]?\./). Blocky warns when a group holds many regular expressions, as they are slow to search.</help>
+        <help>An http or https URL to a hosts/domain list, the path of a file in /usr/local/etc/blocky/lists (a file:// prefix is accepted), or a single inline entry. Anything that is not a URL or an absolute path is written into Blocky's configuration as an inline entry, so a relative path is read as a domain, not as a file. An entry is a domain (ads.example.com), which also covers its subdomains, a wildcard (*.ads.example.com), or a regular expression between slashes (/^ad[sx]?\./). Blocky warns when a group holds many regular expressions, as they are slow to search.</help>
         <grid_view/>
     </field>
     <field>

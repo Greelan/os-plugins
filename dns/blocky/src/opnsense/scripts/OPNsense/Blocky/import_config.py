@@ -67,8 +67,12 @@ DOWNLOAD_FIELDS = (
     ("timeout", "downloadTimeout"),
     ("attempts", "downloadAttempts"),
     ("cooldown", "downloadCooldown"),
-    ("cachePath", "downloadCachePath"),
 )
+
+# files blocky may read from disk live here (and /etc/hosts for hosts files)
+LIST_DIR = "/usr/local/etc/blocky/lists/"
+# and a secret blocky reads from a file: value lives here
+SECRET_DIR = "/usr/local/etc/blocky/secrets/"
 
 # blocky takes these from blocking.loading.downloads for its own HTTP server
 SERVER_TIMEOUT_FIELDS = (
@@ -176,6 +180,27 @@ MOVES = (
     ("blocking.maxErrorsPerFile", "blocking.loading.maxErrorsPerSource"),
     ("hostsFile.refreshPeriod", "hostsFile.loading.refreshPeriod"),
 )
+
+
+def allowed_file(source, extra=()):
+    """A URL or inline entry, or a file the plugin lets blocky read; mirrors the model."""
+    path = source[7:] if source.lower().startswith("file://") else source
+    if path == source and (not source.startswith("/") or source.endswith("/")):
+        return True
+    return path in extra or in_directory(path, LIST_DIR)
+
+
+def in_directory(path, directory):
+    rest = path[len(directory):] if path.startswith(directory) else ""
+    return rest != "" and all(part not in ("", ".", "..") for part in rest.split("/"))
+
+
+def allowed_secret(value):
+    """A literal secret, or a file: value naming a file in the secrets directory; mirrors the model."""
+    for prefix in ("file://", "file:"):
+        if value.startswith(prefix):
+            return in_directory(value[len(prefix):], SECRET_DIR)
+    return True
 
 
 class Mapper:
@@ -432,8 +457,10 @@ class Mapper:
     def _general_connect_tls(self):
         self._map("connectIPVersion", "general", "connectIPVersion")
         self._map("minTlsServeVersion", "general", "minTlsServeVersion")
-        self._map("certFile", "general", "certFile")
-        self._map("keyFile", "general", "keyFile")
+        for key in ("certFile", "keyFile"):
+            if self._get(key) is not None:
+                self.warnings.append("%s: import the certificate under System: Trust and select it "
+                                     "in the settings; not imported." % key)
         self._map("http3.enable", "general", "http3", self._bool)
 
     def _upstreams(self):
@@ -503,6 +530,10 @@ class Mapper:
                     if text is None:
                         continue
                     for one in self._inline_sources(text):
+                        if not allowed_file(one):
+                            self.warnings.append("%s: %s is a file outside %s; not imported."
+                                                 % (label, one, LIST_DIR.rstrip("/")))
+                            continue
                         self._row(name, {
                             "enabled": "1", "group": str(group), "source": one,
                         }, "%s: %s" % (label, one))
@@ -522,6 +553,7 @@ class Mapper:
         self._map("blocking.loading.concurrency", "general", "loadingConcurrency")
         for yml_key, field in DOWNLOAD_FIELDS + SERVER_TIMEOUT_FIELDS:
             self._map("blocking.loading.downloads.%s" % yml_key, "general", field)
+        self._download_cache("blocking.loading.downloads.cachePath", "general", "/var/cache/blocky/lists")
         self._schedules()
 
     def _schedules(self):
@@ -634,18 +666,24 @@ class Mapper:
                 }, label)
 
     def _query_log(self):
-        for field in ("type", "target", "logRetentionDays", "creationAttempts",
-                      "creationCooldown", "flushInterval"):
+        for field in ("type", "logRetentionDays", "creationAttempts", "creationCooldown", "flushInterval"):
             self._map("queryLog.%s" % field, "queryLog", field)
+        fixed = {"csv": "/var/db/blocky/querylog", "csv-client": "/var/db/blocky/querylog",
+                 "sqlite": "/var/db/blocky/querylog.db"}.get(str(self._get("queryLog", "type") or "").strip())
+        if fixed is None:
+            self._secret("queryLog.target", "queryLog", "target")
+        elif self._get("queryLog", "target") is not None:
+            self.warnings.append("queryLog.target: this log type is written to %s; not imported." % fixed)
         self._map("queryLog.fields", "queryLog", "fields", self._list)
         self._map("queryLog.ignore.sudn", "queryLog", "ignoreSudn", self._bool)
         self._map("queryLog.ignore.domains", "queryLog", "ignoreDomains", self._list)
 
     def _redis(self):
-        for field in ("address", "username", "password", "database",
-                      "connectionAttempts", "connectionCooldown",
-                      "sentinelUsername", "sentinelPassword"):
+        for field in ("address", "username", "database", "connectionAttempts", "connectionCooldown",
+                      "sentinelUsername"):
             self._map("redis.%s" % field, "redis", field)
+        for field in ("password", "sentinelPassword"):
+            self._secret("redis.%s" % field, "redis", field)
         self._map("redis.required", "redis", "required", self._bool)
         self._map("redis.sentinelAddresses", "redis", "sentinelAddresses", self._list)
 
@@ -671,7 +709,16 @@ class Mapper:
                   self._bool)
 
     def _hosts_file(self):
-        self._map("hostsFile.sources", "hostsFile", "sources", self._list)
+        sources = self._list(self._get("hostsFile", "sources"), "hostsFile.sources")
+        kept = []
+        for one in (sources or "").split(","):
+            if one and not allowed_file(one, ("/etc/hosts",)):
+                self.warnings.append("hostsFile.sources: %s is a file other than /etc/hosts outside %s; "
+                                     "not imported." % (one, LIST_DIR.rstrip("/")))
+            elif one:
+                kept.append(one)
+        if kept:
+            self.scalars.setdefault("hostsFile", {})["sources"] = ",".join(kept)
         self._map("hostsFile.hostsTTL", "hostsFile", "hostsTTL")
         self._map("hostsFile.filterLoopback", "hostsFile", "filterLoopback", self._bool)
         self._map("hostsFile.loading.refreshPeriod", "hostsFile", "refreshPeriod")
@@ -680,6 +727,25 @@ class Mapper:
         self._map("hostsFile.loading.concurrency", "hostsFile", "concurrency")
         for yml_key, field in DOWNLOAD_FIELDS:
             self._map("hostsFile.loading.downloads.%s" % yml_key, "hostsFile", field)
+        self._download_cache("hostsFile.loading.downloads.cachePath", "hostsFile", "/var/cache/blocky/hosts")
+
+    def _secret(self, path, section, field):
+        """blocky reads a file: value from disk as root, so only the secrets directory is allowed."""
+        value = self._get(*path.split("."))
+        if isinstance(value, str) and not allowed_secret(value):
+            self.warnings.append("%s: a file: value must name a file in %s; not imported."
+                                 % (path, SECRET_DIR.rstrip("/")))
+            return
+        self._map(path, section, field)
+
+    def _download_cache(self, path, section, directory):
+        """The plugin keeps each download cache in a fixed directory, so a path turns it on."""
+        value = self._scalar(self._get(*path.split(".")), path)
+        if not value:
+            return
+        self.scalars.setdefault(section, {})["downloadCache"] = "1"
+        if value.rstrip("/") != directory:
+            self.warnings.append("%s: the cache is kept in %s; caching turned on." % (path, directory))
 
     def _ecs(self):
         self._map("ecs.useAsClient", "ecs", "useAsClient", self._bool)

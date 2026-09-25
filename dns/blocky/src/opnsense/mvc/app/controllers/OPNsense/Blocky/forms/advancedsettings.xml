@@ -23,7 +23,7 @@
         <style>tokenize</style>
         <allownew>true</allownew>
         <hint>/etc/hosts or https://...</hint>
-        <help>Hosts files used for name resolution: an http or https URL, an absolute path (e.g. /etc/hosts), or inline content. Anything else is written as an inline entry rather than a file name. Entries are answered directly by Blocky.</help>
+        <help>Hosts files used for name resolution: an http or https URL, /etc/hosts, a file in /usr/local/etc/blocky/lists, or inline content. Anything else is written as an inline entry rather than a file name. Entries are answered directly by Blocky.</help>
     </field>
     <field>
         <id>blocky.hostsFile.hostsTTL</id>
@@ -94,12 +94,11 @@
         <help>Wait time between failed download attempts.</help>
     </field>
     <field>
-        <id>blocky.hostsFile.downloadCachePath</id>
-        <label>Download cache path</label>
-        <type>text</type>
-        <hint>/var/cache/blocky/lists</hint>
+        <id>blocky.hostsFile.downloadCache</id>
+        <label>Download cache</label>
+        <type>checkbox</type>
         <advanced>true</advanced>
-        <help>Optional directory under /var for an on-disk cache of downloaded hosts files. When set, Blocky uses HTTP conditional requests to skip re-downloading unchanged files, and can serve a hosts file from disk when its source is temporarily unreachable. When empty (default), downloads are stateless and nothing is written to disk.</help>
+        <help>Keep downloaded hosts files in /var/cache/blocky/hosts. Blocky then uses HTTP conditional requests to skip re-downloading unchanged files, and can serve a hosts file from disk when its source is temporarily unreachable. When off (default), downloads are stateless and nothing is written to disk.</help>
     </field>
     <field>
         <type>header</type>
@@ -183,7 +182,7 @@
         <id>blocky.redis.password</id>
         <label>Password</label>
         <type>password</type>
-        <help>Redis password, if required. A value of file:/path or file:///path reads the password from that file instead, keeping it out of the OPNsense configuration; Blocky strips one trailing newline.</help>
+        <help>Redis password, if required. It is never shown again; leave the field empty to keep the saved one. A value of file:/usr/local/etc/blocky/secrets/name reads it from that file instead, keeping it out of the OPNsense configuration and its backups.</help>
     </field>
     <field>
         <id>blocky.redis.database</id>
@@ -238,6 +237,6 @@
         <label>Sentinel password</label>
         <type>password</type>
         <advanced>true</advanced>
-        <help>Password used to authenticate to the Redis Sentinel hosts, if required. A value of file:/path or file:///path reads it from that file instead.</help>
+        <help>Password used to authenticate to the Redis Sentinel hosts, if required. It is never shown again; leave the field empty to keep the saved one. A value of file:/usr/local/etc/blocky/secrets/name reads it from that file instead, keeping it out of the OPNsense configuration and its backups.</help>
     </field>
 </form>

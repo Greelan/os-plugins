@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4_2 - 2026-09-25
+
+- Files Blocky writes or reads from disk use fixed locations; see the field help.
+- Certificate file paths are removed; use the trust store.
+- Secrets are no longer sent to the browser.
+- Restart Blocky DNS proxy can be run from cron or an ACME automation.
+
 ## 1.3_3 - 2026-09-25
 
 - A quote in a cache exclude pattern or query log ignored domain no longer stops Blocky from starting, and neither field can add settings to the generated configuration.

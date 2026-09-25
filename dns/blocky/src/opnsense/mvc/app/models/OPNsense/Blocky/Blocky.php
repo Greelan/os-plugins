@@ -39,8 +39,10 @@ use OPNsense\Trust\Cert;
  */
 class Blocky extends BaseModel
 {
-    /* Blocky runs as root, so what it writes stays under /var, without . or .. segments */
-    private const VAR_PATH = '/^\/var(\/(?!\.\.?(\/|$))[^\/\0]+)+\/?$/u';
+    /* Blocky runs as root, so a list it reads from disk lives in the plugin's own directory */
+    public const HOSTS_FILES = ['/etc/hosts'];
+    private const LIST_DIR = '/^\/usr\/local\/etc\/blocky\/lists(\/(?!\.\.?(\/|$))[^\/\0]+)+$/u';
+    private const SECRET_DIR = '/^\/usr\/local\/etc\/blocky\/secrets(\/(?!\.\.?(\/|$))[^\/\0]+)+$/u';
 
     /**
      * {@inheritdoc}
@@ -140,43 +142,6 @@ class Blocky extends BaseModel
             }
         }
 
-        /* Blocky writes the CSV query log into an existing directory, and exits without one */
-        if (
-            ($validateFullModel || $this->queryLog->type->isFieldChanged() ||
-                $this->queryLog->target->isFieldChanged()) &&
-            in_array((string)$this->queryLog->type, ['csv', 'csv-client'])
-        ) {
-            $target = trim((string)$this->queryLog->target);
-            if ($target !== '' && stripos($target, 'file:') !== 0) {
-                if (!preg_match(self::VAR_PATH, $target)) {
-                    $messages->appendMessage(new Message(
-                        gettext('Enter a directory under /var.'),
-                        'queryLog.target'
-                    ));
-                } elseif (!is_dir($target)) {
-                    $messages->appendMessage(new Message(
-                        gettext('This directory does not exist.'),
-                        'queryLog.target'
-                    ));
-                }
-            }
-        }
-
-        /* Blocky creates the SQLite database and its parent directory */
-        if (
-            ($validateFullModel || $this->queryLog->type->isFieldChanged() ||
-                $this->queryLog->target->isFieldChanged()) &&
-            (string)$this->queryLog->type == 'sqlite'
-        ) {
-            $target = trim((string)$this->queryLog->target);
-            if ($target !== '' && !preg_match(self::VAR_PATH, $target)) {
-                $messages->appendMessage(new Message(
-                    gettext('Enter a file path under /var.'),
-                    'queryLog.target'
-                ));
-            }
-        }
-
         /* Blocky exits when Redis is required but cannot be reached, so at least insist on an address */
         if (
             ($validateFullModel || $this->redis->required->isFieldChanged() ||
@@ -206,12 +171,13 @@ class Blocky extends BaseModel
             }
         }
 
-        /* Blocky needs somewhere to write for these query log types */
+        /* database and dnstap logs need a target (write-only, so read the stored value);
+         * CSV and SQLite logs have fixed locations */
         if (
             ($validateFullModel || $this->queryLog->type->isFieldChanged() ||
                 $this->queryLog->target->isFieldChanged()) &&
-            !in_array((string)$this->queryLog->type, ['none', 'console']) &&
-            trim((string)$this->queryLog->target) === ''
+            in_array((string)$this->queryLog->type, ['mysql', 'postgresql', 'timescale', 'dnstap']) &&
+            trim($this->queryLog->target->getValue()) === ''
         ) {
             $messages->appendMessage(new Message(
                 gettext('Enter a target for this log type.'),
@@ -336,25 +302,102 @@ class Blocky extends BaseModel
             }
         }
 
-        /* one of cert/key alone stops DoT/DoH, both empty means self-signed; a selected
-         * certificate wins, so the paths are not used either way */
-        if (
-            (string)$this->general->certificate == '' && (
-                $validateFullModel || $this->general->certFile->isFieldChanged() ||
-                $this->general->keyFile->isFieldChanged()
-            )
-        ) {
-            $cert = trim((string)$this->general->certFile);
-            $key = trim((string)$this->general->keyFile);
-            if (($cert === '') !== ($key === '')) {
+        /* Blocky reads a secret from the file a file: value names, as root, and refuses to start
+         * when it cannot; a stored secret is checked again once a change puts it to use */
+        $secrets = [
+            'redis.password' => [['redis.address'], trim((string)$this->redis->address) !== ''],
+            'redis.sentinelPassword' => [
+                ['redis.address', 'redis.sentinelAddresses'],
+                trim((string)$this->redis->address) !== '' && trim((string)$this->redis->sentinelAddresses) !== '',
+            ],
+            'queryLog.target' => [
+                ['queryLog.type'],
+                in_array((string)$this->queryLog->type, ['mysql', 'postgresql', 'timescale', 'dnstap']),
+            ],
+        ];
+        foreach ($secrets as $ref => [$users, $used]) {
+            $node = $this->getNodeByReference($ref);
+            $changed = $validateFullModel || $node->isFieldChanged();
+            if ($changed && !self::isAllowedSecret($node->getValue())) {
                 $messages->appendMessage(new Message(
-                    gettext('Set both the certificate and key file, or leave both empty to self-sign.'),
-                    $cert === '' ? 'general.certFile' : 'general.keyFile'
+                    gettext('A file: value must name a file in /usr/local/etc/blocky/secrets.'),
+                    $ref
                 ));
+                continue;
+            }
+            $recheck = false;
+            foreach ($users as $user) {
+                $recheck = $recheck || $this->getNodeByReference($user)->isFieldChanged();
+            }
+            $file = self::secretFile($node->getValue());
+            if (($changed || ($used && $recheck)) && $file !== null && !is_file($file)) {
+                $messages->appendMessage(new Message(gettext('This file does not exist.'), $ref));
+            }
+        }
+
+        /* a list or hosts file on disk must be one the plugin keeps, or the system hosts file */
+        foreach (['denylists', 'allowlists'] as $section) {
+            foreach ($this->$section->iterateItems() as $item) {
+                if (
+                    ($validateFullModel || $item->source->isFieldChanged()) &&
+                    !self::isAllowedFile((string)$item->source)
+                ) {
+                    $messages->appendMessage(new Message(
+                        gettext('A file must be in /usr/local/etc/blocky/lists.'),
+                        $item->source->__reference
+                    ));
+                }
+            }
+        }
+        if ($validateFullModel || $this->hostsFile->sources->isFieldChanged()) {
+            foreach (explode(',', (string)$this->hostsFile->sources) as $source) {
+                if (!self::isAllowedFile(trim($source), self::HOSTS_FILES)) {
+                    $messages->appendMessage(new Message(
+                        gettext('A file must be /etc/hosts or in /usr/local/etc/blocky/lists.'),
+                        'hostsFile.sources'
+                    ));
+                    break;
+                }
             }
         }
 
         return $messages;
+    }
+
+    /**
+     * Is this a literal secret, or a file: value Blocky may read? Blocky cuts file:// first,
+     * then file:, case-sensitively.
+     */
+    public static function isAllowedSecret($value)
+    {
+        $path = self::secretFile($value);
+        return $path === null || preg_match(self::SECRET_DIR, $path) === 1;
+    }
+
+    /**
+     * The file Blocky reads a file: secret from, or null for a literal value.
+     */
+    private static function secretFile($value)
+    {
+        foreach (['file://', 'file:'] as $prefix) {
+            if (strpos((string)$value, $prefix) === 0) {
+                return substr((string)$value, strlen($prefix));
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Is this source a URL or inline entry, or a file Blocky may read? Blocky reads a
+     * source as a file when it has a file:// prefix, or starts but does not end with a slash.
+     */
+    public static function isAllowedFile($source, $extra = [])
+    {
+        $path = stripos($source, 'file://') === 0 ? substr($source, 7) : $source;
+        if ($path === $source && (substr($source, 0, 1) !== '/' || substr($source, -1) === '/')) {
+            return true;
+        }
+        return in_array($path, $extra, true) || preg_match(self::LIST_DIR, $path) === 1;
     }
 
     /**

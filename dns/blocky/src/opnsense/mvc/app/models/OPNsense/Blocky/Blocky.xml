@@ -1,7 +1,7 @@
 <model>
     <mount>//OPNsense/blocky</mount>
     <description>Blocky DNS proxy</description>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
     <items>
         <general>
             <enabled type="BooleanField">
@@ -74,12 +74,6 @@
             <certificate type="CertificateField">
                 <Type>cert</Type>
             </certificate>
-            <certFile type="TextField">
-                <ValidationMessage>Enter the path to the TLS certificate file.</ValidationMessage>
-            </certFile>
-            <keyFile type="TextField">
-                <ValidationMessage>Enter the path to the TLS key file.</ValidationMessage>
-            </keyFile>
             <http3 type="BooleanField">
                 <Default>0</Default>
                 <Required>Y</Required>
@@ -273,10 +267,10 @@
                     <tls>tls</tls>
                 </OptionValues>
             </proxyProtocol>
-            <downloadCachePath type="TextField">
-                <Mask>/^\/var(\/(?!\.\.?(\/|$))[^\/\0]+)+\/?$/u</Mask>
-                <ValidationMessage>Enter a directory under /var where downloaded lists are cached.</ValidationMessage>
-            </downloadCachePath>
+            <downloadCache type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </downloadCache>
         </general>
         <upstreams type="ArrayField">
             <enabled type="BooleanField">
@@ -609,7 +603,7 @@
                     <dnstap>dnstap</dnstap>
                 </OptionValues>
             </type>
-            <target type="TextField"/>
+            <target type="UpdateOnlyTextField"/>
             <logRetentionDays type="IntegerField">
                 <Default>0</Default>
                 <MinimumValue>0</MinimumValue>
@@ -691,10 +685,10 @@
                 <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
                 <ValidationMessage>Enter a duration such as 500ms. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </downloadCooldown>
-            <downloadCachePath type="TextField">
-                <Mask>/^\/var(\/(?!\.\.?(\/|$))[^\/\0]+)+\/?$/u</Mask>
-                <ValidationMessage>Enter a directory under /var where downloaded hosts files are cached.</ValidationMessage>
-            </downloadCachePath>
+            <downloadCache type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </downloadCache>
             <concurrency type="IntegerField">
                 <Default>4</Default>
                 <MinimumValue>1</MinimumValue>
@@ -757,7 +751,7 @@
         <redis>
             <address type="TextField"/>
             <username type="TextField"/>
-            <password type="TextField"/>
+            <password type="UpdateOnlyTextField"/>
             <database type="IntegerField">
                 <Default>0</Default>
                 <MinimumValue>0</MinimumValue>
@@ -778,7 +772,7 @@
                 <ValidationMessage>Enter a duration such as 1s. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </connectionCooldown>
             <sentinelUsername type="TextField"/>
-            <sentinelPassword type="TextField"/>
+            <sentinelPassword type="UpdateOnlyTextField"/>
             <sentinelAddresses type="CSVListField">
                 <AsList>Y</AsList>
                 <FieldSeparator>,</FieldSeparator>

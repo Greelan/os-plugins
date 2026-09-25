@@ -91,11 +91,10 @@
         <help>Header read timeout of Blocky's own HTTP server (REST API, metrics, DoH). Blocky reads it from here, it does not apply to list downloads. Use -1 to disable.</help>
     </field>
     <field>
-        <id>blocky.general.downloadCachePath</id>
-        <label>Download cache path</label>
-        <type>text</type>
-        <hint>/var/cache/blocky/lists</hint>
+        <id>blocky.general.downloadCache</id>
+        <label>Download cache</label>
+        <type>checkbox</type>
         <advanced>true</advanced>
-        <help>Optional directory under /var for an on-disk cache of downloaded lists. When set, Blocky uses HTTP conditional requests to skip re-downloading unchanged lists, and can serve a list from disk when its source is temporarily unreachable. When empty (default), downloads are stateless and nothing is written to disk.</help>
+        <help>Keep downloaded lists in /var/cache/blocky/lists. Blocky then uses HTTP conditional requests to skip re-downloading unchanged lists, and can serve a list from disk when its source is temporarily unreachable. When off (default), downloads are stateless and nothing is written to disk.</help>
     </field>
 </form>

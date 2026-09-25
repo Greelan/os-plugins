@@ -159,8 +159,8 @@ blocking:
       readHeaderTimeout: {{ d(OPNsense.blocky.general.downloadReadHeaderTimeout|default('20s')) }}
       attempts: {{ OPNsense.blocky.general.downloadAttempts|default('3') }}
       cooldown: {{ OPNsense.blocky.general.downloadCooldown|default('500ms') }}
-{% if OPNsense.blocky.general.downloadCachePath %}
-      cachePath: {{ q(OPNsense.blocky.general.downloadCachePath) }}
+{% if OPNsense.blocky.general.downloadCache == '1' %}
+      cachePath: /var/cache/blocky/lists
 {% endif %}
 {% if sc_on %}
   schedules:
@@ -249,7 +249,11 @@ statistics:
 queryLog:
   type: {{ qltype }}
 {% if qltype not in ['none', 'console'] %}
-{% if OPNsense.blocky.queryLog.target %}
+{% if qltype in ['csv', 'csv-client'] %}
+  target: /var/db/blocky/querylog
+{% elif qltype == 'sqlite' %}
+  target: /var/db/blocky/querylog.db
+{% elif OPNsense.blocky.queryLog.target %}
   target: {{ q(OPNsense.blocky.queryLog.target) }}
 {% endif %}
   logRetentionDays: {{ OPNsense.blocky.queryLog.logRetentionDays|default('0') }}
@@ -288,13 +292,14 @@ redis:
   required: {{ 'true' if OPNsense.blocky.redis.required == '1' else 'false' }}
   connectionAttempts: {{ OPNsense.blocky.redis.connectionAttempts|default('3') }}
   connectionCooldown: {{ OPNsense.blocky.redis.connectionCooldown|default('1s') }}
+{% if OPNsense.blocky.redis.sentinelAddresses %}
+{# only with sentinels: a write-only password cannot be cleared, and Blocky loads it regardless #}
 {% if OPNsense.blocky.redis.sentinelUsername %}
   sentinelUsername: {{ q(OPNsense.blocky.redis.sentinelUsername) }}
 {% endif %}
 {% if OPNsense.blocky.redis.sentinelPassword %}
   sentinelPassword: {{ q(OPNsense.blocky.redis.sentinelPassword) }}
 {% endif %}
-{% if OPNsense.blocky.redis.sentinelAddresses %}
   sentinelAddresses:
 {% for a in OPNsense.blocky.redis.sentinelAddresses.split(',') if a|trim %}
     - {{ q(a|trim) }}
@@ -307,13 +312,6 @@ minTlsServeVersion: "{{ OPNsense.blocky.general.minTlsServeVersion }}"
 {% if OPNsense.blocky.general.certificate %}
 certFile: "/usr/local/etc/blocky/cert.pem"
 keyFile: "/usr/local/etc/blocky/key.pem"
-{% else %}
-{% if OPNsense.blocky.general.certFile %}
-certFile: {{ q(OPNsense.blocky.general.certFile) }}
-{% endif %}
-{% if OPNsense.blocky.general.keyFile %}
-keyFile: {{ q(OPNsense.blocky.general.keyFile) }}
-{% endif %}
 {% endif %}
 {% set bs = helpers.toList('OPNsense.blocky.bootstrap') %}
 {% set bs_on = [] %}
@@ -394,8 +392,8 @@ hostsFile:
       timeout: {{ OPNsense.blocky.hostsFile.downloadTimeout|default('5s') }}
       attempts: {{ OPNsense.blocky.hostsFile.downloadAttempts|default('3') }}
       cooldown: {{ OPNsense.blocky.hostsFile.downloadCooldown|default('500ms') }}
-{% if OPNsense.blocky.hostsFile.downloadCachePath %}
-      cachePath: {{ q(OPNsense.blocky.hostsFile.downloadCachePath) }}
+{% if OPNsense.blocky.hostsFile.downloadCache == '1' %}
+      cachePath: /var/cache/blocky/hosts
 {% endif %}
 {% endif %}
 ports:

@@ -1,6 +1,9 @@
-# generated config, the exported certificate and its key, and the rc switch are
-# ours alone; the settings stay in config.xml, so a reinstall rebuilds them
+# generated config, the exported certificate and its key, the download caches and
+# the rc switch are ours alone; the settings stay in config.xml, so a reinstall
+# rebuilds them. List and secret files and query logs are the user's, so they stay.
 if [ "${PKG_UPGRADE}" != "true" ]; then
-	rm -rf /usr/local/etc/blocky
+	rm -f /usr/local/etc/blocky/config.yml /usr/local/etc/blocky/cert.pem /usr/local/etc/blocky/key.pem
+	rmdir /usr/local/etc/blocky/lists /usr/local/etc/blocky/secrets /usr/local/etc/blocky 2>/dev/null || true
+	rm -rf /var/cache/blocky
 	rm -f /etc/rc.conf.d/blocky
 fi

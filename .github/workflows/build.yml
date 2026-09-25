@@ -44,7 +44,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y php-cli libxml2-utils
       - name: PHP syntax
-        run: find . -name '*.php' -o -name '*.inc' -print0 | xargs -0 -r -n1 php -l
+        run: find . \( -name '*.php' -o -name '*.inc' \) -print0 | xargs -0 -r -n1 php -l
       - name: XML well formed
         run: find . -name '*.xml' -print0 | xargs -0 -r -n1 xmllint --noout
       - name: Python syntax (excluding vendored libraries)
