@@ -108,6 +108,8 @@
             <url type="UpdateOnlyTextField">
                 <Required>Y</Required>
             </url>
+            <!-- key and template files the URL uses, as JSON; set from the dialog on save -->
+            <files type="UpdateOnlyTextField"/>
             <!-- set from the URL on save, for display without the secrets -->
             <service type="TextField"/>
             <target type="TextField"/>

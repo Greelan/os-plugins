@@ -133,6 +133,13 @@
                     $control.val(value || (field.default === undefined ? '' : field.values[0]));
                 } else if (field.type === 'bool') {
                     $control = $('<input type="checkbox">').attr('id', id).prop('checked', ['1', 'yes', 'true'].includes(String(value).toLowerCase()));
+                } else if (field.type === 'file') {
+                    /* a key or template: the saved file is never sent back, so an empty box keeps it */
+                    $control = $('<textarea class="form-control" rows="6" spellcheck="false" style="font-family: monospace;">')
+                        .attr('id', id).val(value === 'stored' ? '' : value)
+                        .attr('placeholder', saved.includes(field.key)
+                            ? "{{ lang._('Saved, leave empty to keep') }}"
+                            : "{{ lang._('Paste the file, or give an https:// address') }}");
                 } else {
                     $control = $('<input class="form-control">').attr('id', id)
                         .attr('type', field.private ? 'password' : 'text')
@@ -157,7 +164,7 @@
                             $input, $('<span class="input-group-btn">').append($show));
                     }
                 }
-                $control.find('input, select').addBack('input, select').on('input change', appriseMarkChanged);
+                $control.find('input, select, textarea').addBack('input, select, textarea').on('input change', appriseMarkChanged);
                 const $row = appriseRow(id, field.label, $control).addClass('apprise-field');
                 if (field.basic) {
                     $after.after($row);

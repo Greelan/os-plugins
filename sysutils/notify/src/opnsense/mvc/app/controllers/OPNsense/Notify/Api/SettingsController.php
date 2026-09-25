@@ -44,7 +44,7 @@ class SettingsController extends ApiMutableModelControllerBase
         $result = $this->searchBase('channels', null, 'description');
         /* a grid row carries every field, and the URL holds the channel's credentials */
         foreach ($result['rows'] as &$row) {
-            unset($row['url'], $row['%url']);
+            unset($row['url'], $row['%url'], $row['files'], $row['%files']);
         }
 
         return $result;
@@ -123,7 +123,13 @@ class SettingsController extends ApiMutableModelControllerBase
             }
             return ['validations' => [$field => $result['error']]];
         }
-        return ['url' => $result['url'], 'service' => $result['service'], 'target' => $result['target']];
+        return [
+            'url' => $result['url'],
+            'service' => $result['service'],
+            'target' => $result['target'],
+            /* an object even when empty, so a channel that stops using a file drops it */
+            'files' => json_encode((object)($result['files'] ?? [])),
+        ];
     }
 
     public function delChannelAction($uuid)

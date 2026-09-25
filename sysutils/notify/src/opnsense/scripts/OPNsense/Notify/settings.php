@@ -70,8 +70,9 @@ foreach ($model->channels->iterateItems() as $uuid => $channel) {
         'description' => (string)$channel->description,
         'service' => (string)$channel->service,
         'target' => (string)$channel->target,
-        /* write-only in the UI, but the backend has to send with it */
+        /* write-only in the UI, but the backend has to send with them */
         'url' => $channel->url->getValue(),
+        'files' => json_decode($channel->files->getValue(), true) ?: [],
         'events' => array_values(array_filter(explode(',', (string)$channel->events))),
         'monit' => $monit,
     ];

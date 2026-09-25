@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3 - 2026-09-25
+
+- Files a service uses, such as a Discord or Telegram template, FCM and VAPID keys or PGP keys, are pasted into the channel and stored with it; a URL can no longer point at a local file.
+- Text from outside, such as a failed login's user name, is escaped for services that show HTML.
+
 ## 1.2_1 - 2026-09-25
 
 - Channel URLs with headers or extra parameters are kept as custom URLs, so those values are not sent to the browser.

@@ -66,7 +66,7 @@ CONFIG = "/conf/config.xml"
 STATE = "/var/db/notify/state.json"
 SETTINGS_CACHE = "/var/db/notify/settings.json"
 SETTINGS_SCRIPT = "/usr/local/opnsense/scripts/OPNsense/Notify/settings.php"
-SETTINGS_FORMAT = 1
+SETTINGS_FORMAT = 2
 FIRMWARE = "/tmp/pkg_upgrade.json"
 MONIT_SOCKET = "/var/run/monit.sock"
 AUDIT_LOG = "/var/log/audit"
@@ -91,6 +91,19 @@ STATUS_INTERVAL = 300
 DEVICE_INTERVAL = 300
 # field holding the query part of a built URL, e.g. priority=high&format=markdown
 QUERY_FIELD = "__query"
+# URL arguments Apprise opens as a file on every send, by plugin class (subclasses included);
+# elsewhere, e.g. MSG91 or SendGrid, a template is only an ID. The dialog takes the file's
+# contents, which are stored with the channel and written under KEY_DIR at send time; the URL
+# then carries KEY_MARKER. Any other local path is refused, so a channel cannot make root read a
+# file of its choosing.
+FILE_ARGS = {
+    "NotifyDiscord": ("template",), "NotifyTelegram": ("template",), "NotifySlack": ("template",),
+    "NotifyWorkflows": ("template",), "NotifyFCM": ("keyfile",), "NotifyVapid": ("keyfile", "subfile"),
+    "NotifyEmail": ("pgppub", "pgpkey", "pgpprv"),
+}
+KEY_MARKER = "stored"
+KEY_DIR = "/var/db/notify/keys"
+KEY_MAX = 64 * 1024
 # recorded state older than this predates a pause (disabled, or the firewall was off),
 # so it is dropped rather than compared against
 STALE_SECONDS = 3600
@@ -830,17 +843,101 @@ COLLECTORS = (
 # ------------------------------------------------------------------ delivery
 
 
+def file_args(schema):
+    """The URL arguments the service behind a schema opens as files."""
+    from apprise.plugins import N_MGR
+    plugin = N_MGR[schema] if schema in N_MGR else None
+    names = {c.__name__ for c in plugin.__mro__} if plugin is not None else set()
+    return {arg for name, args in FILE_ARGS.items() if name in names for arg in args}
+
+
+def local_file_args(url):
+    """The arguments of a URL that would make Apprise read a file this plugin did not write."""
+    args = file_args(url_schema(url))
+    return [key for key, value in urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query)
+            if key.lower() in args and value != KEY_MARKER and not re.match(r"https?://", value, re.I)]
+
+
+def stored_file_args(url):
+    """The arguments of a URL whose file the channel stores."""
+    args = file_args(url_schema(url))
+    return [key.lower() for key, value in urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query)
+            if key.lower() in args and value == KEY_MARKER]
+
+
+def with_key_files(channel):
+    """The channel URL with each stored file written out and its marker replaced by the path."""
+    url, files = channel.get("url", ""), channel.get("files") or {}
+    args = file_args(url_schema(url))
+    base, sep, query = url.partition("?")
+    parts = []
+    for part in query.split("&") if sep else []:
+        key, eq, value = part.partition("=")
+        if eq and key.lower() in args and value == KEY_MARKER:
+            content = files.get(key.lower())
+            if not isinstance(content, str) or content == "":
+                raise ValueError(f"The file for {key} is not stored with this channel; paste it again.")
+            path = os.path.join(KEY_DIR, f"{channel['uuid']}-{key.lower()}")
+            write_private(path, content)
+            part = f"{key}={urllib.parse.quote(path, safe='')}"
+        parts.append(part)
+    return base + (sep + "&".join(parts) if sep else "")
+
+
+def write_private(path, content):
+    """A file only root can read, rewritten only when its contents change."""
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    try:
+        with open(path) as current:
+            if current.read() == content:
+                return
+    except OSError:
+        pass
+    tmp = path + ".tmp"
+    handle = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(handle, "w") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        stream.write(content)
+    os.replace(tmp, path)
+
+
+def prune_key_files(channels):
+    """Remove the key files of channels, or arguments, that no longer use them."""
+    wanted = {f"{c['uuid']}-{key}" for c in channels for key in stored_file_args(c.get("url", ""))}
+    try:
+        names = os.listdir(KEY_DIR)
+    except OSError:
+        return
+    for name in names:
+        if name not in wanted:
+            try:
+                os.unlink(os.path.join(KEY_DIR, name))
+            except OSError:
+                pass
+
+
 def deliver(channel, title, body, ntype):
     """Send one notification; returns (ok, error text)."""
     try:
         import apprise
     except ImportError as exc:
         return False, f"The bundled Apprise could not be loaded: {exc}"
+    local = local_file_args(channel.get("url", ""))
+    if local:
+        # also covers channels saved before such URLs were refused
+        return False, f"The URL names a local file in {', '.join(local)}; paste the file in the channel instead."
+    try:
+        url = with_key_files(channel)
+    except (ValueError, OSError) as exc:
+        return False, str(exc)
     with apprise.LogCapture(level=apprise.logging.WARNING, fmt="%(message)s") as captured:
         notifier = apprise.Apprise()
-        if not notifier.add(channel.get("url", "")):
+        if not notifier.add(url):
             return False, "The URL is not a valid Apprise URL."
-        ok = bool(notifier.notify(body=body, title=title, notify_type=ntype))
+        # the text carries outsiders' input, e.g. a failed login's user name, so services that
+        # render HTML get it escaped rather than as markup
+        ok = bool(notifier.notify(body=body, title=title, notify_type=ntype,
+                                  body_format=apprise.NotifyFormat.TEXT))
         errors = [line for line in captured.getvalue().splitlines() if line.strip()]
     return ok, "" if ok else (errors[-1] if errors else "Delivery failed.")
 
@@ -931,6 +1028,7 @@ def run_check():
             os.remove(STATE)
         return
     config, general, channels, hostname = prepared
+    prune_key_files(config["channels"])
     events = {e for c in channels for e in c["events"]}
     state = fresh_state()
     new_state, messages = {"stamp": int(time.time())}, []
@@ -1078,6 +1176,9 @@ def apprise_services():
                                    int(v) if v.lstrip("-").isdigit() else v))
             if arg.get("default") is not None:
                 field["default"] = default_text(arg["default"])
+            if str(key).lower() in file_args(protocols[0]):
+                # pasted into the dialog and stored with the channel, never shown again
+                field.update(type="file", private=True)
             options[str(key)] = field
         # free-form arguments such as +header or -param, which can carry credentials
         prefixes = tuple(str(k["prefix"]) for k in (entry["details"].get("kwargs") or {}).values()
@@ -1125,12 +1226,15 @@ def parse_saved(url, services, schemas):
     return (service_id, results, query) if isinstance(results, dict) else (None, {}, "")
 
 
-def saved_url(uuid):
+def saved_channel(uuid):
     if not uuid:
-        return ""
+        return {}
     channels = (load_config() or {}).get("channels", [])
-    channel = next((c for c in channels if c["uuid"] == uuid), None)
-    return channel.get("url", "") if channel else ""
+    return next((c for c in channels if c["uuid"] == uuid), None) or {}
+
+
+def saved_url(uuid):
+    return saved_channel(uuid).get("url", "")
 
 
 def field_text(value):
@@ -1337,6 +1441,10 @@ def split_list(value):
 def check_url(url):
     """(apprise plugin, error text) for a URL."""
     import apprise
+    local = local_file_args(url)
+    if local:
+        return None, (f"The URL names a local file in {', '.join(local)}; choose the service and paste "
+                      f"the file instead, or give an http(s) address.")
     with apprise.LogCapture(level=apprise.logging.WARNING, fmt="%(message)s") as captured:
         try:
             plugin = apprise.Apprise.instantiate(url)
@@ -1349,11 +1457,11 @@ def check_url(url):
 
 
 def from_service(service_id, fields, stored):
-    """Compose a URL from the dialog's service fields; returns (url, error text)."""
+    """Compose a URL from the dialog's service fields; returns (url, pasted files, error text)."""
     services, schemas = apprise_services()
     service = services.get(service_id)
     if service is None:
-        return "", "Apprise does not know this service."
+        return "", {}, "Apprise does not know this service."
     saved_id, results, _ = parse_saved(stored, services, schemas) if stored else (None, {}, "")
     known = set(service["tokens"]) | set(service["options"]) | {QUERY_FIELD}
     values = {k: v for k, v in fields.items() if k in known and v != ""}
@@ -1365,12 +1473,21 @@ def from_service(service_id, fields, stored):
         for key, value in stored_options.items():
             if service["options"][key]["private"] and key not in values:
                 values[key] = value
+    files = {}
+    for key in [k for k, f in service["options"].items() if f["type"] == "file" and k in values]:
+        value = values[key]
+        if value == KEY_MARKER or re.match(r"https?://\S+$", value, re.I):
+            continue  # already stored, or fetched from that address
+        if len(value) > KEY_MAX:
+            return "", {}, f"The {service['options'][key]['label']} is larger than a key or template should be."
+        files[key.lower()] = value.replace("\r\n", "\n") + ("" if value.endswith("\n") else "\n")
+        values[key] = KEY_MARKER
     url, wanted = compose(service, values)
     if url is None:
         needed = ", ".join(wanted) if wanted else "the fields this service needs"
-        return "", f"Fill in {needed}; see the setup guide if you are unsure."
+        return "", {}, f"Fill in {needed}; see the setup guide if you are unsure."
     query = query_from(service, values)
-    return (url + "?" + query if query else url), ""
+    return (url + "?" + query if query else url), files, ""
 
 
 def run_build(path):
@@ -1380,12 +1497,14 @@ def run_build(path):
     except (OSError, ValueError):
         return {"error": "The request could not be read.", "field": "channel.url"}
     uuid = str(request.get("uuid") or "")
-    stored = saved_url(uuid)
+    channel = saved_channel(uuid)
+    stored = channel.get("url", "")
     service_id = str(request.get("service") or "")
     fields = {str(k): str(v).strip() for k, v in (request.get("fields") or {}).items()}
 
+    files: dict = {}
     if service_id and (fields.get("changed") == "1" or not stored):
-        url, error = from_service(service_id, fields, stored)
+        url, files, error = from_service(service_id, fields, stored)
         target_field = "apprise_service"
     else:
         url = str(request.get("url") or "").strip() or stored
@@ -1398,7 +1517,13 @@ def run_build(path):
     if plugin is None:
         return {"error": error, "field": target_field}
     masked = plugin.url(privacy=True).split("?", 1)[0]
-    return {"url": url, "service": str(plugin.service_name), "target": masked}
+    # keep the stored files the URL still points at, with anything newly pasted on top
+    kept = {key: value for key, value in (channel.get("files") or {}).items() if key in stored_file_args(url)}
+    kept.update(files)
+    missing = [key for key in stored_file_args(url) if key not in kept]
+    if missing:
+        return {"error": f"Paste the file for {', '.join(missing)}.", "field": target_field}
+    return {"url": url, "service": str(plugin.service_name), "target": masked, "files": kept}
 
 
 if __name__ == "__main__":
