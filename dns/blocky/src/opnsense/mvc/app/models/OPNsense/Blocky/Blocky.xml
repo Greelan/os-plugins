@@ -1,7 +1,7 @@
 <model>
     <mount>//OPNsense/blocky</mount>
     <description>Blocky DNS proxy</description>
-    <version>1.0.2</version>
+    <version>1.0.3</version>
     <items>
         <general>
             <enabled type="BooleanField">

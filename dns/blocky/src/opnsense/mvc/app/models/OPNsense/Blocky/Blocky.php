@@ -41,6 +41,8 @@ class Blocky extends BaseModel
 {
     /* Blocky runs as root, so a list it reads from disk lives in the plugin's own directory */
     public const HOSTS_FILES = ['/etc/hosts'];
+    /* the socket the Redis plugin (databases/redis) opens */
+    public const REDIS_SOCKETS = ['/var/run/redis/redis.sock'];
     private const LIST_DIR = '/^\/usr\/local\/etc\/blocky\/lists(\/(?!\.\.?(\/|$))[^\/\0]+)+$/u';
     private const SECRET_DIR = '/^\/usr\/local\/etc\/blocky\/secrets(\/(?!\.\.?(\/|$))[^\/\0]+)+$/u';
 
@@ -335,6 +337,65 @@ class Blocky extends BaseModel
             }
         }
 
+        /* Blocky reads a zone $INCLUDE from disk as root */
+        if (
+            ($validateFullModel || $this->general->customZone->isFieldChanged()) &&
+            self::hasZoneInclude((string)$this->general->customZone)
+        ) {
+            $messages->appendMessage(new Message(
+                gettext('Enter the records themselves; Blocky would read an $INCLUDE file from disk.'),
+                'general.customZone'
+            ));
+        }
+
+        /* a resolv file Blocky reads is one the plugin keeps */
+        foreach ($this->bootstrap->iterateItems() as $bootstrap) {
+            if (
+                (string)$bootstrap->type == 'resolvfile' &&
+                ($validateFullModel || $bootstrap->content->isFieldChanged() || $bootstrap->type->isFieldChanged()) &&
+                !self::isListFile((string)$bootstrap->content)
+            ) {
+                $messages->appendMessage(new Message(
+                    gettext('A resolv file must be in /usr/local/etc/blocky/lists.'),
+                    $bootstrap->content->__reference
+                ));
+            }
+        }
+
+        /* Blocky connects to a Unix socket as root, so only network addresses and the Redis
+         * plugin's socket are taken */
+        if (
+            ($validateFullModel || $this->redis->address->isFieldChanged()) &&
+            !self::isAllowedRedisAddress((string)$this->redis->address)
+        ) {
+            $messages->appendMessage(new Message(
+                gettext('Enter a host and port, or the Redis plugin socket /var/run/redis/redis.sock.'),
+                'redis.address'
+            ));
+        }
+        if ($validateFullModel || $this->redis->sentinelAddresses->isFieldChanged()) {
+            foreach (explode(',', (string)$this->redis->sentinelAddresses) as $address) {
+                if (self::isSocket(trim($address))) {
+                    $messages->appendMessage(new Message(
+                        gettext('Enter hosts and ports, not Unix sockets.'),
+                        'redis.sentinelAddresses'
+                    ));
+                    break;
+                }
+            }
+        }
+        if (
+            ($validateFullModel || $this->queryLog->type->isFieldChanged() ||
+                $this->queryLog->target->isFieldChanged()) &&
+            (string)$this->queryLog->type == 'dnstap' &&
+            !self::isDnstapTarget($this->queryLog->target->getValue())
+        ) {
+            $messages->appendMessage(new Message(
+                gettext('Enter a tcp:// address, not a Unix socket.'),
+                'queryLog.target'
+            ));
+        }
+
         /* a list or hosts file on disk must be one the plugin keeps, or the system hosts file */
         foreach (['denylists', 'allowlists'] as $section) {
             foreach ($this->$section->iterateItems() as $item) {
@@ -362,6 +423,48 @@ class Blocky extends BaseModel
         }
 
         return $messages;
+    }
+
+    /**
+     * Does this custom zone pull in a file? The directive is matched case-insensitively.
+     */
+    public static function hasZoneInclude($zone)
+    {
+        return preg_match('/^\s*\$INCLUDE\b/mi', (string)$zone) === 1;
+    }
+
+    /**
+     * Is this a file in the plugin's list directory?
+     */
+    public static function isListFile($path)
+    {
+        return preg_match(self::LIST_DIR, (string)$path) === 1;
+    }
+
+    /**
+     * Would Blocky read this address as a Unix socket? It does for a leading slash.
+     */
+    public static function isSocket($address)
+    {
+        return substr((string)$address, 0, 1) === '/';
+    }
+
+    /**
+     * Is this Redis address a network address, or the Redis plugin's own socket?
+     */
+    public static function isAllowedRedisAddress($address)
+    {
+        return !self::isSocket($address) || in_array((string)$address, self::REDIS_SOCKETS, true);
+    }
+
+    /**
+     * Is this dnstap target empty, a tcp:// address, or a file: secret the plugin allows?
+     */
+    public static function isDnstapTarget($target)
+    {
+        $target = trim((string)$target);
+        return $target === '' || strpos($target, 'tcp://') === 0 ||
+            (self::secretFile($target) !== null && self::isAllowedSecret($target));
     }
 
     /**

@@ -169,7 +169,7 @@
         <id>blocky.redis.address</id>
         <label>Address</label>
         <type>text</type>
-        <help>Redis server as host:port, a unix socket path (starting with /), or (when using Sentinel) the master name. Lets multiple Blocky instances synchronize their cache and blocking state. Leave empty to disable Redis.</help>
+        <help>Redis server as host:port, or (when using Sentinel) the master name. The only Unix socket accepted is /var/run/redis/redis.sock, the one the Redis plugin opens. Lets multiple Blocky instances synchronize their cache and blocking state. Leave empty to disable Redis.</help>
     </field>
     <field>
         <id>blocky.redis.username</id>

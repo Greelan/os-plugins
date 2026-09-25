@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4_4 - 2026-09-25
+
+- Blocky no longer reads or connects to what free text names: zone $INCLUDE lines, resolv files outside the list directory, and Unix sockets for Redis (other than the Redis plugin's) or dnstap are refused, and removed or switched off on upgrade.
+
 ## 1.4_3 - 2026-09-25
 
 - The unauthenticated HTTP API is off by default, as upstream has it, and the old default port 4000 is switched off on upgrade.

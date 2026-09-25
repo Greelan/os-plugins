@@ -73,6 +73,8 @@ DOWNLOAD_FIELDS = (
 LIST_DIR = "/usr/local/etc/blocky/lists/"
 # and a secret blocky reads from a file: value lives here
 SECRET_DIR = "/usr/local/etc/blocky/secrets/"
+# the one unix socket blocky may use for redis: the one the Redis plugin opens
+REDIS_SOCKET = "/var/run/redis/redis.sock"
 
 # blocky takes these from blocking.loading.downloads for its own HTTP server
 SERVER_TIMEOUT_FIELDS = (
@@ -193,6 +195,17 @@ def allowed_file(source, extra=()):
 def in_directory(path, directory):
     rest = path[len(directory):] if path.startswith(directory) else ""
     return rest != "" and all(part not in ("", ".", "..") for part in rest.split("/"))
+
+
+def zone_without_includes(zone):
+    """The zone with its $INCLUDE lines removed, and whether there were any; mirrors the model."""
+    stripped = re.sub(r"^\s*\$INCLUDE\b.*(\r?\n|$)", "", zone, flags=re.I | re.M)
+    return stripped, stripped != zone
+
+
+def dnstap_target(value):
+    """A tcp:// address or an allowed file: secret; blocky's own prefix check is case-sensitive."""
+    return value.startswith("tcp://") or (value.startswith("file:") and allowed_secret(value))
 
 
 def allowed_secret(value):
@@ -490,6 +503,10 @@ class Mapper:
                 for key in sorted(set(entry) - BOOTSTRAP_KEYS):
                     self.warnings.append("bootstrapDns.%s: not recognized; not imported." % key)
                 path = self._scalar(entry.get("resolvFile"), "bootstrapDns.resolvFile")
+                if path and not in_directory(path, LIST_DIR):
+                    self.warnings.append("bootstrapDns.resolvFile: %s is outside %s; not imported."
+                                         % (path, LIST_DIR.rstrip("/")))
+                    path = None
                 if path:
                     self._row("bootstrap", {"enabled": "1", "type": "resolvfile", "content": path}, "bootstrapDns: %s" % path)
                     if entry.get("upstream") is not None or entry.get("ips") is not None:
@@ -646,7 +663,13 @@ class Mapper:
                 self._row("customdnsrewrite", {
                     "enabled": "1", "fromDomain": str(src), "toDomain": value,
                 }, label)
-        self._map("customDNS.zone", "general", "customZone")
+        zone = self._scalar(self._get("customDNS", "zone"), "customDNS.zone")
+        if zone:
+            zone, included = zone_without_includes(zone)
+            if included:
+                self.warnings.append("customDNS.zone: $INCLUDE lines would make blocky read other files; "
+                                     "they were left out.")
+            self._put("general", "customZone", zone, "customDNS.zone")
 
     def _conditional(self):
         self._map("conditional.fallbackUpstream", "general", "conditionalFallback", self._bool)
@@ -670,7 +693,13 @@ class Mapper:
             self._map("queryLog.%s" % field, "queryLog", field)
         fixed = {"csv": "/var/db/blocky/querylog", "csv-client": "/var/db/blocky/querylog",
                  "sqlite": "/var/db/blocky/querylog.db"}.get(str(self._get("queryLog", "type") or "").strip())
-        if fixed is None:
+        target = self._get("queryLog", "target")
+        if self._get("queryLog", "type") == "dnstap" and isinstance(target, str) and not dnstap_target(target):
+            # a unix socket would be connected to as root, so the log is left off
+            self.warnings.append("queryLog.target: only a tcp:// address is taken for dnstap; query logging "
+                                 "was left off.")
+            self.scalars.setdefault("queryLog", {})["type"] = "none"
+        elif fixed is None:
             self._secret("queryLog.target", "queryLog", "target")
         elif self._get("queryLog", "target") is not None:
             self.warnings.append("queryLog.target: this log type is written to %s; not imported." % fixed)
@@ -679,13 +708,25 @@ class Mapper:
         self._map("queryLog.ignore.domains", "queryLog", "ignoreDomains", self._list)
 
     def _redis(self):
-        for field in ("address", "username", "database", "connectionAttempts", "connectionCooldown",
-                      "sentinelUsername"):
+        address = self._get("redis", "address")
+        if isinstance(address, str) and address.startswith("/") and address != REDIS_SOCKET:
+            self.warnings.append("redis.address: only the Redis plugin socket %s is taken; not imported."
+                                 % REDIS_SOCKET)
+        else:
+            self._map("redis.address", "redis", "address")
+        for field in ("username", "database", "connectionAttempts", "connectionCooldown", "sentinelUsername"):
             self._map("redis.%s" % field, "redis", field)
         for field in ("password", "sentinelPassword"):
             self._secret("redis.%s" % field, "redis", field)
-        self._map("redis.required", "redis", "required", self._bool)
-        self._map("redis.sentinelAddresses", "redis", "sentinelAddresses", self._list)
+        if "address" in self.scalars.get("redis", {}):
+            self._map("redis.required", "redis", "required", self._bool)
+        sentinels = self._list(self._get("redis", "sentinelAddresses"), "redis.sentinelAddresses")
+        kept = [one for one in (sentinels or "").split(",") if one and not one.startswith("/")]
+        if sentinels and len(kept) < len(sentinels.split(",")):
+            self.warnings.append("redis.sentinelAddresses: unix sockets would be connected to as root; "
+                                 "not imported.")
+        if kept:
+            self.scalars.setdefault("redis", {})["sentinelAddresses"] = ",".join(kept)
 
     def _filtering(self):
         self._map("filtering.queryTypes", "filtering", "queryTypes", self._list)

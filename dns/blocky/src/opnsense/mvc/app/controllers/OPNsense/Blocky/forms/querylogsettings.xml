@@ -9,7 +9,7 @@
         <id>blocky.queryLog.target</id>
         <label>Target</label>
         <type>password</type>
-        <help>Where the log goes, by type. MySQL/MariaDB, PostgreSQL, TimescaleDB: a connection string, e.g. postgres://user:password@host:5432/blocky. dnstap: unix:/var/run/dnstap.sock, tcp://127.0.0.1:6000, or a bare socket path. A value of file:/usr/local/etc/blocky/secrets/name reads the target from that file, keeping credentials out of the configuration. A connection string can hold a password, so the target is never shown again; leave the field empty to keep the saved one. Unused for Console, and for CSV and SQLite, which are written to /var/db/blocky/querylog (a 2026-09-14_ALL.log file per day, or one per client) and /var/db/blocky/querylog.db.</help>
+        <help>Where the log goes, by type. MySQL/MariaDB, PostgreSQL, TimescaleDB: a connection string, e.g. postgres://user:password@host:5432/blocky. dnstap: a tcp:// address such as tcp://127.0.0.1:6000; Unix sockets are not accepted. A value of file:/usr/local/etc/blocky/secrets/name reads the target from that file, keeping credentials out of the configuration. A connection string can hold a password, so the target is never shown again; leave the field empty to keep the saved one. Unused for Console, and for CSV and SQLite, which are written to /var/db/blocky/querylog (a 2026-09-14_ALL.log file per day, or one per client) and /var/db/blocky/querylog.db.</help>
     </field>
     <field>
         <id>blocky.queryLog.logRetentionDays</id>
