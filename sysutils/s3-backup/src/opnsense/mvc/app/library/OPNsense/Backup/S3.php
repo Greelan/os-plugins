@@ -203,7 +203,8 @@ class S3 extends Base implements IBackupProvider
             syslog(LOG_ERR, 's3-backup: ' . $e->getMessage());
             /* the page shows the reason; the nightly run carries on with the other providers */
             if (PHP_SAPI !== 'cli') {
-                throw $e;
+                /* the page only catches Exception */
+                throw $e instanceof \Exception ? $e : new \Exception($e->getMessage(), 0, $e);
             }
             return [];
         }
@@ -299,6 +300,9 @@ class S3 extends Base implements IBackupProvider
                 }
             }
             $token = (string)$xml->IsTruncated === 'true' ? (string)$xml->NextContinuationToken : null;
+            if ($token === '') {
+                $this->fail(gettext('S3 returned a partial bucket listing without a way to continue it.'));
+            }
             if ($token !== null && (isset($seen[$token]) || count($seen) >= self::MAX_PAGES)) {
                 $this->fail(gettext('S3 kept returning more of the bucket listing than a backup folder holds.'));
             }
