@@ -126,5 +126,35 @@ class Escaping(unittest.TestCase):
         self.assertIn("&lt;a", received["message"])
 
 
+class Collectors(Case):
+    def test_auth_reads_the_end_of_yesterday(self):
+        config = {"general": {}}
+        days = [os.path.join(self.keys, f"audit_{d}.log") for d in ("20260925", "20260926")]
+        def write(path, mode, text):
+            with open(path, mode) as handle:
+                handle.write(text)
+        write(days[0], "w", "start\n")
+        notify.audit_log = lambda: days[0]
+        state, _ = notify.check_auth(config, None)
+        write(days[0], "a", "user admin: authentication failed\n")
+        write(days[1], "w", "user root: authentication failed\n")
+        notify.audit_log = lambda: days[1]
+        _, messages = notify.check_auth(config, state)
+        self.assertEqual([m["body"] for m in messages],
+                         ["user admin: authentication failed", "user root: authentication failed"])
+
+    def test_status_below_level_is_not_resolved(self):
+        item = {"statusCode": 0, "title": "Firmware", "message": "stale"}
+        notify.configctl_json = lambda *args: {"firmware": item}
+        state, _ = notify.check_status({"general": {"statusLevel": "warning"}}, None)
+        state["checked"] = 0
+        state, messages = notify.check_status({"general": {"statusLevel": "error"}}, state)
+        self.assertEqual(messages, [])
+        notify.configctl_json = lambda *args: {}
+        state["checked"] = 0
+        _, messages = notify.check_status({"general": {"statusLevel": "error"}}, state)
+        self.assertEqual(messages, [])  # no longer tracked, so its recovery is not news either
+
+
 if __name__ == "__main__":
     unittest.main()

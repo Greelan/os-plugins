@@ -79,22 +79,25 @@
             );
         }
 
-        /* core renders the URL masked; it is worth seeing what an import just put there */
-        function appriseRevealUrl() {
-            const $input = $('#channel\\.url');
-            if ($input.closest('.input-group').length) {
-                return;
-            }
-            const $show = $('<button type="button" class="btn btn-default">')
+        /* a button that shows or hides what is typed in a masked input */
+        function appriseRevealButton($input) {
+            return $('<span class="input-group-btn">').append($('<button type="button" class="btn btn-default">')
                 .attr('title', "{{ lang._('Show or hide') }}")
                 .append($('<i class="fa fa-eye">'))
                 .on('click', function () {
                     const hidden = $input.attr('type') === 'password';
                     $input.attr('type', hidden ? 'text' : 'password');
                     $(this).find('i').toggleClass('fa-eye', !hidden).toggleClass('fa-eye-slash', hidden);
-                });
-            $input.wrap($('<div class="input-group">')).after(
-                $('<span class="input-group-btn">').append($show));
+                }));
+        }
+
+        /* core renders the URL masked; it is worth seeing what an import just put there */
+        function appriseRevealUrl() {
+            const $input = $('#channel\\.url');
+            if ($input.closest('.input-group').length) {
+                return;
+            }
+            $input.wrap($('<div class="input-group">')).after(appriseRevealButton($input));
         }
 
         function appriseMarkChanged() {
@@ -151,17 +154,7 @@
                     }
                     if (field.private) {
                         /* masked by default, but typing a webhook id blind is no fun */
-                        const $input = $control;
-                        const $show = $('<button type="button" class="btn btn-default">')
-                            .attr('title', "{{ lang._('Show or hide') }}")
-                            .append($('<i class="fa fa-eye">'))
-                            .on('click', function () {
-                                const hidden = $input.attr('type') === 'password';
-                                $input.attr('type', hidden ? 'text' : 'password');
-                                $(this).find('i').toggleClass('fa-eye', !hidden).toggleClass('fa-eye-slash', hidden);
-                            });
-                        $control = $('<div class="input-group">').append(
-                            $input, $('<span class="input-group-btn">').append($show));
+                        $control = $('<div class="input-group">').append($control, appriseRevealButton($control));
                     }
                 }
                 if (field.clearable && saved.includes(field.key)) {

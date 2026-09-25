@@ -433,7 +433,12 @@ def check_firmware(config, previous):
 
 def check_auth(config, previous):
     logins = config["general"].get("authLogins", "0") == "1"
-    lines, state = follow(audit_log(), previous or {})
+    previous, path, lines = previous or {}, audit_log(), []
+    if previous.get("path") and previous["path"] != path:
+        lines, _ = follow(previous["path"], previous)  # the rest of the day before
+        previous = {"inode": 0}  # read the new day's file from its start
+    more, state = follow(path, previous)
+    lines += more
     messages = []
     for line in lines:
         body = line.strip()
@@ -502,9 +507,9 @@ def check_status(config, previous):
             continue
         messages.append(message("status", STATUS_TYPES.get(code, "info"), title, body))
     for name, was in (seen or {}).items():
-        if name in current:
-            continue
-        gone = was[3] if len(was) > 3 else name
+        if name in data:
+            continue  # still listed, if now below the level; core leaves out what is OK
+        gone =was[3] if len(was) > 3 else name
         messages.append(message("status", "success", f"{gone} is resolved",
                                 f"Was: {was[1]}" if was[1] else ""))
     return {"checked": now, "items": current}, messages
@@ -854,11 +859,16 @@ COLLECTORS = (
 # ------------------------------------------------------------------ delivery
 
 
-def file_args(schema):
-    """The URL arguments the service behind a schema opens as files."""
+def plugin_classes(schema):
+    """Class names of the service behind a schema, its bases included."""
     from apprise.plugins import N_MGR
     plugin = N_MGR[schema] if schema in N_MGR else None
-    names = {c.__name__ for c in plugin.__mro__} if plugin is not None else set()
+    return {c.__name__ for c in plugin.__mro__} if plugin is not None else set()
+
+
+def file_args(schema):
+    """The URL arguments the service behind a schema opens as files."""
+    names = plugin_classes(schema)
     return {arg for name, args in FILE_ARGS.items() if name in names for arg in args}
 
 
@@ -873,9 +883,7 @@ def local_file_args(url):
 
 def file_label(schema, arg):
     """(label, hint) for a file argument, or None."""
-    from apprise.plugins import N_MGR
-    plugin = N_MGR[schema] if schema in N_MGR else None
-    names = {c.__name__ for c in plugin.__mro__} if plugin is not None else set()
+    names = plugin_classes(schema)
     for (name, key), label in FILE_LABELS.items():
         if key == arg and (name is None or name in names):
             return label
@@ -962,8 +970,13 @@ def deliver(channel, title, body, ntype):
         # render HTML get it escaped rather than as markup
         ok = bool(notifier.notify(body=body, title=title, notify_type=ntype,
                                   body_format=apprise.NotifyFormat.TEXT))
-        errors = [line for line in captured.getvalue().splitlines() if line.strip()]
-    return ok, "" if ok else (errors[-1] if errors else "Delivery failed.")
+    return ok, "" if ok else last_warning(captured, "Delivery failed.")
+
+
+def last_warning(captured, fallback):
+    """The last line Apprise logged, which says why it failed."""
+    errors = [line for line in captured.getvalue().splitlines() if line.strip()]
+    return errors[-1] if errors else fallback
 
 
 def title_prefix(general, hostname):
@@ -1029,6 +1042,9 @@ def send(channels, prefix, messages, queue, threshold=0):
         log(syslog.LOG_ERR, f"could not send \"{item['title']}\" to {name}, "
                             f"retrying in {duration(delay)}: {error}")
         pending.append(item)
+    if len(pending) > QUEUE_MAX:
+        log(syslog.LOG_ERR, f"dropped the {len(pending) - QUEUE_MAX} oldest queued notification(s), "
+                            f"over the limit of {QUEUE_MAX}")
     return pending[-QUEUE_MAX:]
 
 
@@ -1479,9 +1495,8 @@ def check_url(url):
             plugin = apprise.Apprise.instantiate(url)
         except Exception:
             plugin = None  # a plugin tripping over the URL still means a bad URL
-        errors = [line for line in captured.getvalue().splitlines() if line.strip()]
     if plugin is None:
-        return None, errors[-1] if errors else "This is not a valid Apprise URL."
+        return None, last_warning(captured, "This is not a valid Apprise URL.")
     return plugin, ""
 
 

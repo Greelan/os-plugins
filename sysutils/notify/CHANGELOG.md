@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3_3 - 2026-09-25
+
+- Failed logins shortly before midnight are no longer missed when the audit log moves to a new day.
+- Raising the System Status level no longer reports the items it hides as resolved.
+- Queued notifications dropped over the queue limit are logged.
+
 ## 1.3_2 - 2026-09-25
 
 - A saved template, key or other optional secret on a channel can be removed with the Remove link under it; typing a new value replaces it.
