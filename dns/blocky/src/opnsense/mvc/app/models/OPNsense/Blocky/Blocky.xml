@@ -1,7 +1,7 @@
 <model>
     <mount>//OPNsense/blocky</mount>
     <description>Blocky DNS proxy</description>
-    <version>1.0.1</version>
+    <version>1.0.2</version>
     <items>
         <general>
             <enabled type="BooleanField">
@@ -17,7 +17,6 @@
                 <ValidationMessage>Enter one or more listeners as port, :port, ip:port or [ipv6]:port. Examples: 53, :53, 127.0.0.1:53, [::1]:53.</ValidationMessage>
             </dnsPort>
             <httpPort type="CSVListField">
-                <Default>4000</Default>
                 <AsList>Y</AsList>
                 <FieldSeparator>,</FieldSeparator>
                 <Mask>/^(\[[0-9A-Fa-f:]+\]:[0-9]{1,5}|[0-9A-Za-z._-]+:[0-9]{1,5}|:?[0-9]{1,5})$/</Mask>

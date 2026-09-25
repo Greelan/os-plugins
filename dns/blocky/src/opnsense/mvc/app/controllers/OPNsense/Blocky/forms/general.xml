@@ -24,8 +24,8 @@
         <type>select_multiple</type>
         <style>tokenize</style>
         <allownew>true</allownew>
-        <hint>4000</hint>
-        <help>Plain HTTP listeners for the REST API, Prometheus metrics, the Go profiler at /debug and the DoH query path. Traffic here is unencrypted and unauthenticated, so the DoH path is only useful behind a TLS-terminating proxy and the listener belongs on a trusted address. Examples: 4000, :4000, 127.0.0.1:4000, [::1]:4000. Leave empty to disable.</help>
+        <hint>127.0.0.1:4000</hint>
+        <help>Plain HTTP listeners for the REST API, Prometheus metrics, the Go profiler at /debug and the DoH query path. None of it is authenticated and the API can turn blocking off, so keep the listener on a loopback address unless something else must reach it. Traffic is unencrypted, so the DoH path is only useful behind a TLS-terminating proxy. Examples: 127.0.0.1:4000, [::1]:4000, or 4000 for every interface. Empty (the default) disables it.</help>
     </field>
     <field>
         <id>blocky.general.logLevel</id>
@@ -78,7 +78,7 @@
         <allownew>true</allownew>
         <advanced>true</advanced>
         <hint>443</hint>
-        <help>HTTPS listeners serving DNS-over-HTTPS, plus the same REST API, Prometheus metrics and Go profiler endpoints as the HTTP port. Examples: 443, :443, 127.0.0.1:443, [::1]:443. Leave empty to disable.</help>
+        <help>HTTPS listeners serving DNS-over-HTTPS, plus the same REST API, Prometheus metrics and Go profiler endpoints as the HTTP port. Those are not authenticated and Blocky cannot serve DoH without them, so any client that can use DoH here can also turn blocking off. Examples: 443, :443, 127.0.0.1:443, [::1]:443. Leave empty to disable.</help>
     </field>
     <field>
         <id>blocky.general.dohPath</id>

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4_3 - 2026-09-25
+
+- The unauthenticated HTTP API is off by default, as upstream has it, and the old default port 4000 is switched off on upgrade.
+
 ## 1.4_2 - 2026-09-25
 
 - Files Blocky writes or reads from disk use fixed locations; see the field help.
