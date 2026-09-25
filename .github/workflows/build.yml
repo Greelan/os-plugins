@@ -92,6 +92,12 @@ jobs:
           python notify.py build "${RUNNER_TEMP}/build.json" |
             python -c 'import json, sys; d = json.load(sys.stdin); assert d.get("service") == "Telegram", d'
           python -c 'import sys; sys.path.insert(0, "lib"); import markdown; assert "<em>" in markdown.markdown("*ok*")'
+      - name: Regression tests
+        run: |
+          sudo apt-get install -y php-cli
+          pip install jinja2
+          git clone --depth 1 https://github.com/opnsense/core "${RUNNER_TEMP}/opnsense-core"
+          OPNSENSE_CORE="${RUNNER_TEMP}/opnsense-core" PYTHON=python sh tools/run-tests.sh
 
   build:
     # the nightly (schedule) only runs the notify version-check; build on push/dispatch
