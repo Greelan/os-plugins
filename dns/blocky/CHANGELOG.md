@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4_6 - 2026-09-25
+
+- The Redis passwords and query log target have a button to show what is being typed.
+
 ## 1.4_5 - 2026-09-25
 
 - The saved Redis passwords and query log target can be removed with the Remove link under them; typing a new value replaces them.
