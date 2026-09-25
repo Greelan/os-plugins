@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3_2 - 2026-09-25
+
+- A saved template, key or other optional secret on a channel can be removed with the Remove link under it; typing a new value replaces it.
+
 ## 1.3 - 2026-09-25
 
 - Files a service uses, such as a Discord or Telegram template, FCM and VAPID keys or PGP keys, are pasted into the channel and stored with it, and templates and public keys may be an https address; a URL can no longer point at a local file.

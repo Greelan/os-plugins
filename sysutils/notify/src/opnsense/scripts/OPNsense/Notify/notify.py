@@ -1192,6 +1192,8 @@ def apprise_services():
             kind = str(arg.get("type", "string"))
             field = {"key": str(key), "label": str(arg.get("name", key)), "type": kind.split(":")[0],
                      "private": bool(arg.get("private")), "basic": False}
+            # an optional secret is never shown again, so the dialog offers to remove it instead
+            field["clearable"] = field["private"]
             if kind.startswith("choice"):
                 # Apprise hands some over as a set; numbers sort as numbers
                 field["values"] = sorted(
@@ -1491,14 +1493,17 @@ def from_service(service_id, fields, stored):
         return "", {}, "Apprise does not know this service."
     saved_id, results, _ = parse_saved(stored, services, schemas) if stored else (None, {}, "")
     known = set(service["tokens"]) | set(service["options"]) | {QUERY_FIELD}
-    values = {k: v for k, v in fields.items() if k in known and v != ""}
+    # optional secrets the dialog was told to remove, unless a new value was typed to replace them
+    cleared = {k for k, f in service["options"].items()
+               if f["private"] and fields.get(f"__clear_{k}") == "1" and fields.get(k, "") == ""}
+    values = {k: v for k, v in fields.items() if k in known and v != "" and k not in cleared}
     if saved_id == service_id:
         private = [k for k, t in service["tokens"].items() if t["private"] and k not in values]
         values.update(saved_values(service, results, private))
         # secret options are masked too, so keep what was stored
         stored_options, _ = split_query(service, urllib.parse.urlsplit(stored).query)
         for key, value in stored_options.items():
-            if service["options"][key]["private"] and key not in values:
+            if service["options"][key]["private"] and key not in values and key not in cleared:
                 values[key] = value
     files = {}
     for key in [k for k, f in service["options"].items() if f["type"] == "file" and k in values]:

@@ -164,6 +164,34 @@
                             $input, $('<span class="input-group-btn">').append($show));
                     }
                 }
+                if (field.clearable && saved.includes(field.key)) {
+                    /* the saved value never reaches the page, so like core's Clear All it goes on save;
+                       typing a new value instead replaces it */
+                    const $flag = $('<input type="hidden" value="">').attr('id', 'apprise.__clear_' + field.key);
+                    const $box = $control.find('input, textarea').addBack('input, textarea');
+                    const $link = $('<a href="#" class="text-danger">');
+                    const label = () => $link.empty().append($('<i class="fa fa-times-circle"></i>'), ' ',
+                        $('<small>').text($flag.val() === '1' ? "{{ lang._('Undo') }}" : "{{ lang._('Remove') }}"));
+                    label();
+                    const mark = function (removing) {
+                        $flag.val(removing ? '1' : '');
+                        $box.attr('placeholder', removing
+                            ? "{{ lang._('Removed when saved') }}" : "{{ lang._('Saved, leave empty to keep') }}");
+                        label();
+                        appriseMarkChanged();
+                    };
+                    $link.on('click', function (event) {
+                        event.preventDefault();
+                        $box.val('');
+                        mark($flag.val() !== '1');
+                    });
+                    $box.on('input', function () {
+                        if ($flag.val() === '1') {
+                            mark(false);
+                        }
+                    });
+                    $control = $('<div>').append($control, $flag, $('<div style="margin-top: 0.3em;">').append($link));
+                }
                 $control.find('input, select, textarea').addBack('input, select, textarea').on('input change', appriseMarkChanged);
                 const $row = appriseRow(id, field.label, $control).addClass('apprise-field');
                 if (field.basic) {
