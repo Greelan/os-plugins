@@ -109,11 +109,13 @@ class S3(unittest.TestCase):
             ["upload", self.local("config-1727000002.xml")],
             ["upload", self.local("config-1727000002.xml")],
             ["list", "fw1/sub/"],
+            ["list", "fw1/"],
         ], prefix="fw1")
         kept = ["config-1727000002.xml", "config-1727000001.25_123456.xml", "config-1727000000.5.xml"]
         self.assertEqual(answers[5], kept, "newest three, by timestamp, whatever core's name form")
         self.assertEqual(answers[6], kept, "nothing new to send")
         self.assertEqual(answers[7], ["config-1.xml"], "another folder's backups are left alone")
+        self.assertEqual(sorted(answers[8]), sorted(kept), "the bucket holds only what is kept")
 
     def test_new_backup_survives_names_from_a_clock_ahead(self):
         answers = self.run_steps([["put", f"fw2/config-199999999{i}.xml"] for i in range(1, 4)] +

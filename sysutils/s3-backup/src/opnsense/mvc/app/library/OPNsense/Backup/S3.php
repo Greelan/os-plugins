@@ -48,6 +48,12 @@ class S3 extends Base implements IBackupProvider
     private const MAX_PAGES = 100;
     private const MAX_RESPONSE = 8 * 1024 * 1024;
 
+    /* the most keys one DeleteObjects request takes */
+    private const MAX_DELETE = 1000;
+
+    /* one handle for the run, so requests share a connection */
+    private $curl = null;
+
     private $model = null;
 
     public function __construct()
@@ -251,14 +257,45 @@ class S3 extends Base implements IBackupProvider
         /* the backup just sent stays even if the bucket holds names from a clock that ran ahead */
         $remote = array_merge([$name], array_values(array_diff($remote, [$name])));
         if ($keep > 0) {
-            foreach (array_slice($remote, $keep) as $old) {
-                $this->request('DELETE', $folder . $old);
-                syslog(LOG_NOTICE, 's3-backup: removed ' . $folder . $old);
+            foreach (array_chunk(array_slice($remote, $keep), self::MAX_DELETE) as $old) {
+                $this->delete($folder, $old);
             }
             $remote = array_slice($remote, 0, $keep);
         }
 
         return $remote;
+    }
+
+    /**
+     * Remove backups in one DeleteObjects request; S3 answers 200 and lists any key it could not remove.
+     * Services without DeleteObjects, e.g. Google Cloud Storage, get one DELETE per backup.
+     */
+    private function delete($folder, $names)
+    {
+        $body = '<?xml version="1.0" encoding="UTF-8"?><Delete><Quiet>true</Quiet>';
+        foreach ($names as $name) {
+            $body .= '<Object><Key>' . htmlspecialchars($folder . $name, ENT_XML1) . '</Key></Object>';
+        }
+        try {
+            $response = $this->request('POST', '', ['delete' => ''], $body . '</Delete>');
+        } catch (\Exception $e) {
+            foreach ($names as $name) {
+                $this->request('DELETE', $folder . $name);
+                syslog(LOG_NOTICE, 's3-backup: removed ' . $folder . $name);
+            }
+            return;
+        }
+        $xml = $this->parse($response);
+        foreach ($xml->Error ?? [] as $error) {
+            $this->fail(sprintf(
+                gettext('S3 could not remove %s: %s'),
+                self::clean((string)$error->Key),
+                self::clean((string)$error->Code . ': ' . (string)$error->Message)
+            ));
+        }
+        foreach ($names as $name) {
+            syslog(LOG_NOTICE, 's3-backup: removed ' . $folder . $name);
+        }
     }
 
     /**
@@ -349,8 +386,23 @@ class S3 extends Base implements IBackupProvider
 
         $response = '';
         $tooLarge = false;
-        $curl = curl_init('https://' . $host . $path . ($canonicalQuery !== '' ? '?' . $canonicalQuery : ''));
+        $headers = [
+            "Host: {$host}",
+            "x-amz-content-sha256: {$payload}",
+            "x-amz-date: {$stamp}",
+            'Content-Type: application/octet-stream',
+            'Authorization: AWS4-HMAC-SHA256 Credential=' . (string)$this->model->accessKey .
+                "/{$scope}, SignedHeaders={$signed}, Signature={$signature}",
+        ];
+        if ($method == 'POST') {
+            /* DeleteObjects requires it */
+            $headers[] = 'Content-MD5: ' . base64_encode(md5($body, true));
+        }
+        $this->curl = $this->curl ?? curl_init();
+        $curl = $this->curl;
+        curl_reset($curl);
         curl_setopt_array($curl, [
+            CURLOPT_URL => 'https://' . $host . $path . ($canonicalQuery !== '' ? '?' . $canonicalQuery : ''),
             CURLOPT_WRITEFUNCTION => function ($curl, $chunk) use (&$response, &$tooLarge) {
                 if (strlen($response) + strlen($chunk) > self::MAX_RESPONSE) {
                     $tooLarge = true;
@@ -366,16 +418,9 @@ class S3 extends Base implements IBackupProvider
             CURLOPT_SSL_VERIFYHOST => 2,
             CURLOPT_CONNECTTIMEOUT => 15,
             CURLOPT_TIMEOUT => 120,
-            CURLOPT_HTTPHEADER => [
-                "Host: {$host}",
-                "x-amz-content-sha256: {$payload}",
-                "x-amz-date: {$stamp}",
-                'Content-Type: application/octet-stream',
-                'Authorization: AWS4-HMAC-SHA256 Credential=' . (string)$this->model->accessKey .
-                    "/{$scope}, SignedHeaders={$signed}, Signature={$signature}",
-            ],
+            CURLOPT_HTTPHEADER => $headers,
         ]);
-        if ($method == 'PUT') {
+        if ($method == 'PUT' || $method == 'POST') {
             curl_setopt($curl, CURLOPT_POSTFIELDS, $body);
         }
         $done = curl_exec($curl);
