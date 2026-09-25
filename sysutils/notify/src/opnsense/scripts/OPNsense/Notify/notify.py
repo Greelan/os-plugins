@@ -101,6 +101,17 @@ FILE_ARGS = {
     "NotifyWorkflows": ("template",), "NotifyFCM": ("keyfile",), "NotifyVapid": ("keyfile", "subfile"),
     "NotifyEmail": ("pgppub", "pgpkey", "pgpprv"),
 }
+# files that may instead be fetched from an https address; private keys are never fetched
+REMOTE_FILE_ARGS = ("template", "pgppub", "pgpkey")
+# what each file holds, as the dialog labels it and hints at it: (plugin class or None, argument)
+FILE_LABELS = {
+    (None, "template"): ("Template (JSON)", "Paste the JSON message template, or give an https:// address"),
+    ("NotifyFCM", "keyfile"): ("Service account key (JSON)", "Paste the Firebase service account key"),
+    ("NotifyVapid", "keyfile"): ("Private key (PEM)", "Paste the VAPID private key"),
+    ("NotifyVapid", "subfile"): ("Subscriptions (JSON)", "Paste the push subscriptions"),
+    (None, "pgppub"): ("PGP public key", "Paste the ASCII-armored public key, or give an https:// address"),
+    (None, "pgpprv"): ("PGP private key", "Paste the ASCII-armored private key"),
+}
 KEY_MARKER = "stored"
 KEY_DIR = "/var/db/notify/keys"
 KEY_MAX = 64 * 1024
@@ -852,10 +863,23 @@ def file_args(schema):
 
 
 def local_file_args(url):
-    """The arguments of a URL that would make Apprise read a file this plugin did not write."""
+    """The arguments of a URL that would make Apprise read a file this plugin did not write, or
+    fetch a private key from elsewhere."""
     args = file_args(url_schema(url))
     return [key for key, value in urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query)
-            if key.lower() in args and value != KEY_MARKER and not re.match(r"https?://", value, re.I)]
+            if key.lower() in args and value != KEY_MARKER
+            and not (key.lower() in REMOTE_FILE_ARGS and re.match(r"https?://", value, re.I))]
+
+
+def file_label(schema, arg):
+    """(label, hint) for a file argument, or None."""
+    from apprise.plugins import N_MGR
+    plugin = N_MGR[schema] if schema in N_MGR else None
+    names = {c.__name__ for c in plugin.__mro__} if plugin is not None else set()
+    for (name, key), label in FILE_LABELS.items():
+        if key == arg and (name is None or name in names):
+            return label
+    return None
 
 
 def stored_file_args(url):
@@ -925,7 +949,7 @@ def deliver(channel, title, body, ntype):
     local = local_file_args(channel.get("url", ""))
     if local:
         # also covers channels saved before such URLs were refused
-        return False, f"The URL names a local file in {', '.join(local)}; paste the file in the channel instead."
+        return False, f"The URL names a file in {', '.join(local)}; paste its contents in the channel instead."
     try:
         url = with_key_files(channel)
     except (ValueError, OSError) as exc:
@@ -1179,6 +1203,9 @@ def apprise_services():
             if str(key).lower() in file_args(protocols[0]):
                 # pasted into the dialog and stored with the channel, never shown again
                 field.update(type="file", private=True)
+                label = file_label(protocols[0], str(key).lower())
+                if label:
+                    field.update(label=label[0], hint=label[1])
             options[str(key)] = field
         # free-form arguments such as +header or -param, which can carry credentials
         prefixes = tuple(str(k["prefix"]) for k in (entry["details"].get("kwargs") or {}).values()
@@ -1443,8 +1470,8 @@ def check_url(url):
     import apprise
     local = local_file_args(url)
     if local:
-        return None, (f"The URL names a local file in {', '.join(local)}; choose the service and paste "
-                      f"the file instead, or give an http(s) address.")
+        return None, (f"The URL names a file in {', '.join(local)}; choose the service and paste the "
+                      f"file's contents instead.")
     with apprise.LogCapture(level=apprise.logging.WARNING, fmt="%(message)s") as captured:
         try:
             plugin = apprise.Apprise.instantiate(url)
@@ -1476,8 +1503,12 @@ def from_service(service_id, fields, stored):
     files = {}
     for key in [k for k, f in service["options"].items() if f["type"] == "file" and k in values]:
         value = values[key]
-        if value == KEY_MARKER or re.match(r"https?://\S+$", value, re.I):
-            continue  # already stored, or fetched from that address
+        if value == KEY_MARKER:
+            continue  # already stored
+        if re.match(r"https?://\S+$", value, re.I):
+            if key.lower() not in REMOTE_FILE_ARGS:
+                return "", {}, f"Paste the {service['options'][key]['label']} itself; a private key is not fetched."
+            continue  # fetched from that address
         if len(value) > KEY_MAX:
             return "", {}, f"The {service['options'][key]['label']} is larger than a key or template should be."
         files[key.lower()] = value.replace("\r\n", "\n") + ("" if value.endswith("\n") else "\n")

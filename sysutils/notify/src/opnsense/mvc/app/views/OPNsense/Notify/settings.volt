@@ -139,7 +139,7 @@
                         .attr('id', id).val(value === 'stored' ? '' : value)
                         .attr('placeholder', saved.includes(field.key)
                             ? "{{ lang._('Saved, leave empty to keep') }}"
-                            : "{{ lang._('Paste the file, or give an https:// address') }}");
+                            : (field.hint || "{{ lang._('Paste the file') }}"));
                 } else {
                     $control = $('<input class="form-control">').attr('id', id)
                         .attr('type', field.private ? 'password' : 'text')
