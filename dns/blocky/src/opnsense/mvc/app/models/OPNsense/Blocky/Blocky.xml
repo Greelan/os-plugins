@@ -602,7 +602,7 @@
                     <dnstap>dnstap</dnstap>
                 </OptionValues>
             </type>
-            <target type="UpdateOnlyTextField"/>
+            <target type=".\SecretField"/>
             <logRetentionDays type="IntegerField">
                 <Default>0</Default>
                 <MinimumValue>0</MinimumValue>
@@ -750,7 +750,7 @@
         <redis>
             <address type="TextField"/>
             <username type="TextField"/>
-            <password type="UpdateOnlyTextField"/>
+            <password type=".\SecretField"/>
             <database type="IntegerField">
                 <Default>0</Default>
                 <MinimumValue>0</MinimumValue>
@@ -771,7 +771,7 @@
                 <ValidationMessage>Enter a duration such as 1s. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </connectionCooldown>
             <sentinelUsername type="TextField"/>
-            <sentinelPassword type="UpdateOnlyTextField"/>
+            <sentinelPassword type=".\SecretField"/>
             <sentinelAddresses type="CSVListField">
                 <AsList>Y</AsList>
                 <FieldSeparator>,</FieldSeparator>

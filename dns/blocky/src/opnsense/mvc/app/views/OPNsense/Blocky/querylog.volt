@@ -24,8 +24,10 @@
  # POSSIBILITY OF SUCH DAMAGE.
  #}
 
+{{ partial("OPNsense/Blocky/secrets") }}
 <script>
     $( document ).ready(function() {
+        const secrets = blockySecrets();
         mapDataToFormUI({'frm_querylogsettings':"/api/blocky/settings/get"}).done(function(){
             formatTokenizersUI();
             $('.selectpicker').selectpicker('refresh');
@@ -35,7 +37,7 @@
         $("#reconfigureAct").SimpleActionButton({
             onPreAction: function() {
                 const dfObj = new $.Deferred();
-                saveFormToEndpoint("/api/blocky/settings/set", 'frm_querylogsettings', function () { dfObj.resolve(); }, true, function () { dfObj.reject(); });
+                secrets.save("/api/blocky/settings/set", 'frm_querylogsettings', function () { dfObj.resolve(); }, function () { dfObj.reject(); });
                 return dfObj;
             },
             onAction: function(data, status) {

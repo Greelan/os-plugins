@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4_5 - 2026-09-25
+
+- The saved Redis passwords and query log target can be removed with the Remove link under them; typing a new value replaces them.
+
 ## 1.4_4 - 2026-09-25
 
 - Blocky no longer reads or connects to what free text names: zone $INCLUDE lines, resolv files outside the list directory, and Unix sockets for Redis (other than the Redis plugin's) or dnstap are refused, and removed or switched off on upgrade.

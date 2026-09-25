@@ -130,6 +130,19 @@ class SettingsController extends ApiMutableModelControllerBase
         ];
     }
 
+    /**
+     * Which write-only secrets hold a value, so the page can offer to remove them. Never the values.
+     */
+    public function secretsAction()
+    {
+        $model = $this->getModel();
+        $result = [];
+        foreach (['redis.password', 'redis.sentinelPassword', 'queryLog.target'] as $ref) {
+            $result[$ref] = $model->getNodeByReference($ref)->getValue() !== '';
+        }
+        return $result;
+    }
+
     /* upstreams */
     public function searchUpstreamAction()
     {
