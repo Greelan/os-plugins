@@ -85,7 +85,9 @@ def vendor(libdir, name, version, package_dir, license_file):
         for member in archive.getmembers():
             if not member.isfile() or not member.name.startswith(prefix) or "__pycache__" in member.name:
                 continue
-            dest = os.path.join(target, member.name[len(prefix):])
+            dest = os.path.realpath(os.path.join(target, member.name[len(prefix):]))
+            if not dest.startswith(os.path.realpath(target) + os.sep):
+                sys.exit(f"{sdist['filename']} has a member outside {package_dir}: {member.name}")
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             with open(dest, "wb") as handle:
                 handle.write(archive.extractfile(member).read())

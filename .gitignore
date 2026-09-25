@@ -16,3 +16,6 @@ work/
 
 # python bytecode
 __pycache__/
+
+# local test environment
+.venv/

@@ -21,7 +21,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: build
+  # the nightly check must not cancel a push or dispatch mid-deploy
+  group: build-${{ github.event_name == 'schedule' && 'schedule' || 'build' }}
   cancel-in-progress: true
 
 jobs:
@@ -235,6 +236,8 @@ jobs:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
     steps:
+      # first: checkout empties a workspace that is not a repo, state files included
+      - uses: actions/checkout@v7
       - name: Resolve latest blocky version
         id: v
         env:
@@ -281,7 +284,6 @@ jobs:
       - name: Record state
         if: steps.v.outputs.version != '' && steps.seen.outputs.cache-hit != 'true'
         run: touch .notified .init
-      - uses: actions/checkout@v7
       - name: Check vendored libraries
         id: vendored
         run: |
