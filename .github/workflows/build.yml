@@ -68,6 +68,8 @@ jobs:
 
   vendored:
     # vendored pure-Python libraries must run on every Python an OPNsense series ships
+    # after lint, so a missing version bump fails before the tests run
+    needs: lint
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     strategy:
