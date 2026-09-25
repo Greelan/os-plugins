@@ -1,5 +1,6 @@
 """The S3 provider against a real S3 server (rclone serve s3, over TLS) and a hostile one."""
 
+import fcntl
 import http.server
 import json
 import os
@@ -94,12 +95,12 @@ class S3(unittest.TestCase):
                                 env=dict(os.environ, OPNSENSE_CORE=CORE))
         return [json.loads(line) for line in answer.stdout.splitlines()[:len(steps)]]
 
-    def local(self, *names):
+    def local(self, *names, contents="<opnsense/>"):
         """Local backups, newest first, as core lists them."""
         paths = [os.path.join(self.tmp, name) for name in names]
         for path in paths:
             with open(path, "w") as handle:
-                handle.write("<opnsense/>")
+                handle.write(contents)
         return paths
 
     def test_upload_and_retention(self):
@@ -127,6 +128,27 @@ class S3(unittest.TestCase):
         answers = self.run_steps([["upload", self.local("config-20260924.xml", "config-1790337832.0334.xml")]],
                                  prefix="fw4")
         self.assertEqual(answers[0][0], "config-1790337832.0334.xml")
+
+    def test_running_config_not_a_copied_backup(self):
+        # an older backup copied in under a newer name is not what runs
+        running = self.local("config-1790000000.xml", contents="<opnsense><a/></opnsense>")
+        copied = self.local("config-1790000099.xml", contents="<opnsense><b/></opnsense>")
+        answers = self.run_steps([["upload", copied + running, running[0]]], prefix="fw5")
+        self.assertEqual(answers[0][0], "config-1790000000.xml")
+
+    def test_running_config_without_a_backup(self):
+        running = self.local("running.xml",
+                             contents="<opnsense><revision><time>1790000123.45</time></revision></opnsense>")
+        answers = self.run_steps([["upload", self.local("config-1790000000.xml"), running[0]]], prefix="fw6")
+        self.assertEqual(answers[0][0], "config-1790000123.45.xml")
+
+    def test_waits_for_a_save_to_finish(self):
+        running = self.local("config-1790000200.xml")
+        with open(running[0]) as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            threading.Timer(1, fcntl.flock, (handle, fcntl.LOCK_UN)).start()
+            answers = self.run_steps([["upload", running]], prefix="fw7")
+        self.assertEqual(answers[0][0], "config-1790000200.xml")
 
     def test_listing_follows_pages(self):
         answers = self.run_steps([["put", f"fw3/config-17000{i}.xml"] for i in range(10000, 11005)] +

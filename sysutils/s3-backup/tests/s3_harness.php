@@ -58,6 +58,13 @@ class StubConfig
 /* core's encryption needs openssl and opnsense-version, so a marker stands in for it */
 class TestS3 extends OPNsense\Backup\S3
 {
+    public static $config = null;
+
+    protected function configFile()
+    {
+        return self::$config;
+    }
+
     public function encrypt($data, $pass, $tag = 'config.xml')
     {
         return "---- BEGIN config.xml ----\n" . base64_encode($data) . "\n---- END config.xml ----\n";
@@ -84,6 +91,8 @@ foreach ($spec['steps'] as $step) {
                 $answer = $call('listBackups', $step[1]);
                 break;
             case 'upload':
+                /* the running config: the one given, else the first local backup */
+                TestS3::$config = $step[2] ?? $step[1][0];
                 $answer = $call('upload', new StubConfig($step[1]));
                 break;
             case 'fields':

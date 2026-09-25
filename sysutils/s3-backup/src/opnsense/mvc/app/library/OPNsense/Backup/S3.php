@@ -226,29 +226,14 @@ class S3 extends Base implements IBackupProvider
             throw new \Exception(sprintf(gettext('The S3 settings are not valid: %s'), (string)$message));
         }
 
-        /* newest by the time in the name: core sorts the names as text, which puts e.g.
-         * config-20260924.xml above config-1790337832.xml */
-        $backups = $cnf->getBackups();
-        usort($backups, function ($a, $b) {
-            return self::stamp(basename($b)) <=> self::stamp(basename($a));
-        });
-        $latest = $backups[0] ?? null;
-        if ($latest === null) {
-            return [];
-        }
-        $name = basename($latest);
-        if (!preg_match(self::BACKUP_NAME, $name)) {
-            /* it would never show in the listing, so it would be sent again every time */
-            throw new \Exception(sprintf(gettext('Unexpected backup name %s.'), $name));
-        }
+        [$plain, $name] = $this->running($cnf);
 
         $folder = $this->folder();
         $remote = $this->listBackups($folder);
         if (!in_array($name, $remote)) {
-            $plain = @file_get_contents($latest);
-            $data = $plain === false ? null : $this->encrypt($plain, $this->model->password->getValue());
+            $data = $this->encrypt($plain, $this->model->password->getValue());
             if ($data === null) {
-                throw new \Exception(gettext('The backup could not be read and encrypted.'));
+                throw new \Exception(gettext('The configuration could not be encrypted.'));
             }
             $this->request('PUT', $folder . $name, [], $data);
             syslog(LOG_NOTICE, 's3-backup: uploaded ' . $folder . $name);
@@ -301,6 +286,63 @@ class S3 extends Base implements IBackupProvider
         foreach ($names as $name) {
             syslog(LOG_NOTICE, 's3-backup: removed ' . $folder . $name);
         }
+    }
+
+    /**
+     * The running config and the name to store it under: that of the backup core wrote with it
+     * on save. A file merely copied into the backup directory holds other contents, whatever
+     * its name says.
+     */
+    private function running($cnf)
+    {
+        $handle = @fopen($this->configFile(), 'r');
+        if ($handle === false) {
+            throw new \Exception(gettext('The configuration could not be read.'));
+        }
+        /* a save holds an exclusive lock while it writes config.xml and its backup; like core,
+         * never wait outright, as this process may be the one holding it */
+        for ($try = 0; !flock($handle, LOCK_SH | LOCK_NB); $try++) {
+            if ($try >= 50) {
+                fclose($handle);
+                throw new \Exception(gettext('The configuration is being saved; try again in a moment.'));
+            }
+            usleep(200000);
+        }
+        try {
+            $plain = stream_get_contents($handle);
+            $backups = $cnf->getBackups();
+            usort($backups, function ($a, $b) {
+                return self::stamp(basename($b)) <=> self::stamp(basename($a));
+            });
+            $name = null;
+            foreach ($backups as $backup) {
+                if (@filesize($backup) === strlen($plain) && @file_get_contents($backup) === $plain) {
+                    $name = basename($backup);
+                    break;
+                }
+            }
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
+        if ($name === null || !preg_match(self::BACKUP_NAME, $name)) {
+            /* saved without a backup of its own: named by the save time it records */
+            $xml = @simplexml_load_string($plain, 'SimpleXMLElement', LIBXML_NONET);
+            $name = sprintf('config-%s.xml', $xml !== false ? (string)$xml->revision->time : '');
+        }
+        if (!preg_match(self::BACKUP_NAME, $name)) {
+            /* it would never show in the listing, so it would be sent again every time */
+            throw new \Exception(gettext('The configuration records no save time.'));
+        }
+        return [$plain, $name];
+    }
+
+    /**
+     * The configuration the firewall runs.
+     */
+    protected function configFile()
+    {
+        return (new \OPNsense\Core\AppConfig())->application->configDir . '/config.xml';
     }
 
     /**
