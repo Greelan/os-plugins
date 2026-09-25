@@ -114,6 +114,17 @@ class Blocky extends BaseModel
                 ));
             }
         }
+        foreach ($this->upstreams->iterateItems() as $upstream) {
+            if (
+                (string)$upstream->enabled == '1' && ($validateFullModel || $upstream->server->isFieldChanged()) &&
+                !$this->isUpstream((string)$upstream->server)
+            ) {
+                $messages->appendMessage(new Message(
+                    gettext('Enter a resolver, e.g. 192.168.1.1 or tcp-tls:dns.quad9.net.'),
+                    $upstream->server->__reference
+                ));
+            }
+        }
         foreach ($this->conditional->iterateItems() as $mapping) {
             if ((string)$mapping->enabled != '1' || !($validateFullModel || $mapping->resolver->isFieldChanged())) {
                 continue;

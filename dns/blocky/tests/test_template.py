@@ -126,6 +126,10 @@ class Template(unittest.TestCase):
         with_sentinels = render(redis=dict(redis, sentinelAddresses="s1:26379"))["redis"]
         self.assertEqual(with_sentinels["sentinelPassword"], "s")
 
+    def test_zone_first_line_indented(self):
+        zone = "  IN A 10.0.0.1\nhost IN A 10.0.0.2"
+        self.assertEqual(render(general={"customZone": zone})["customDNS"]["zone"], zone + "\n")
+
     def test_certificate_from_trust_store(self):
         doc = render(general={"certificate": "abc123"})
         self.assertEqual((doc["certFile"], doc["keyFile"]),

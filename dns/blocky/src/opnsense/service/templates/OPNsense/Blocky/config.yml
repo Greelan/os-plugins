@@ -38,11 +38,9 @@ upstreams:
 
 connectIPVersion: {{ OPNsense.blocky.general.connectIPVersion|default('dual') }}
 {% set cd = helpers.toList('OPNsense.blocky.customdns') %}
-{% set cd_on = [] %}
-{% for m in cd if m.enabled == '1' %}{% do cd_on.append(1) %}{% endfor %}
+{% set cd_on = cd|selectattr('enabled', 'equalto', '1')|list %}
 {% set cdr = helpers.toList('OPNsense.blocky.customdnsrewrite') %}
-{% set cdr_on = [] %}
-{% for r in cdr if r.enabled == '1' %}{% do cdr_on.append(1) %}{% endfor %}
+{% set cdr_on = cdr|selectattr('enabled', 'equalto', '1')|list %}
 {% if cd_on or cdr_on or OPNsense.blocky.general.customZone %}
 customDNS:
   customTTL: {{ d(OPNsense.blocky.general.customTTL|default('1h')) }}
@@ -60,20 +58,18 @@ customDNS:
 {% endfor %}
 {% endif %}
 {% if OPNsense.blocky.general.customZone %}
-  zone: |
+  zone: |2
     {{ OPNsense.blocky.general.customZone|replace('\r', '')|indent(4) }}
 {% endif %}
 
 {% endif %}
 {% set cf = helpers.toList('OPNsense.blocky.conditional') %}
-{% set cf_on = [] %}
-{% for m in cf if m.enabled == '1' %}{% do cf_on.append(1) %}{% endfor %}
+{% set cf_on = cf|selectattr('enabled', 'equalto', '1')|list %}
 {% if cf_on %}
 conditional:
   fallbackUpstream: {{ 'true' if OPNsense.blocky.general.conditionalFallback == '1' else 'false' }}
 {% set cfr = helpers.toList('OPNsense.blocky.conditionalrewrite') %}
-{% set cfr_on = [] %}
-{% for r in cfr if r.enabled == '1' %}{% do cfr_on.append(1) %}{% endfor %}
+{% set cfr_on = cfr|selectattr('enabled', 'equalto', '1')|list %}
 {% if cfr_on %}
   rewrite:
 {% for r in cfr if r.enabled == '1' %}
@@ -89,8 +85,7 @@ conditional:
 {% set dl = helpers.toList('OPNsense.blocky.denylists') %}
 {% set al = helpers.toList('OPNsense.blocky.allowlists') %}
 {% set sc = helpers.toList('OPNsense.blocky.schedules') %}
-{% set sc_on = [] %}
-{% for s in sc if s.enabled == '1' %}{% do sc_on.append(1) %}{% endfor %}
+{% set sc_on = sc|selectattr('enabled', 'equalto', '1')|list %}
 {% set dg = [] %}
 {% for b in dl if b.enabled == '1' %}
 {% if b.group not in dg %}{% do dg.append(b.group) %}{% endif %}
@@ -130,8 +125,7 @@ blocking:
 {% endfor %}
 {% endif %}
 {% set cg = helpers.toList('OPNsense.blocky.clientgroups') %}
-{% set cg_on = [] %}
-{% for c in cg if c.enabled == '1' %}{% do cg_on.append(1) %}{% endfor %}
+{% set cg_on = cg|selectattr('enabled', 'equalto', '1')|list %}
 {% if cg_on %}
   clientGroupsBlock:
 {% for c in cg if c.enabled == '1' %}
@@ -208,8 +202,7 @@ caching:
 {% endif %}
 
 {% set clc = helpers.toList('OPNsense.blocky.clientlookupclients') %}
-{% set clc_on = [] %}
-{% for c in clc if c.enabled == '1' %}{% do clc_on.append(1) %}{% endfor %}
+{% set clc_on = clc|selectattr('enabled', 'equalto', '1')|list %}
 {% if OPNsense.blocky.general.clientLookupUpstream or clc_on %}
 clientLookup:
 {% if OPNsense.blocky.general.clientLookupUpstream %}
@@ -314,8 +307,7 @@ certFile: "/usr/local/etc/blocky/cert.pem"
 keyFile: "/usr/local/etc/blocky/key.pem"
 {% endif %}
 {% set bs = helpers.toList('OPNsense.blocky.bootstrap') %}
-{% set bs_on = [] %}
-{% for b in bs if b.enabled == '1' %}{% do bs_on.append(1) %}{% endfor %}
+{% set bs_on = bs|selectattr('enabled', 'equalto', '1')|list %}
 {% if bs_on %}
 bootstrapDns:
 {% for b in bs if b.enabled == '1' %}

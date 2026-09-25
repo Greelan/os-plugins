@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4_7 - 2026-09-25
+
+- Upstream resolvers are checked when saved, so a mistyped one no longer stops Blocky from starting.
+- A custom zone whose first line starts with a space no longer stops Blocky from starting.
+
 ## 1.4_6 - 2026-09-25
 
 - The Redis passwords and query log target have a button to show what is being typed.
