@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3_4 - 2026-09-25
+
+- Importing a URL is faster: the list of Apprise services is built once per request.
+
 ## 1.3_3 - 2026-09-25
 
 - Failed logins shortly before midnight are no longer missed when the audit log moves to a new day.

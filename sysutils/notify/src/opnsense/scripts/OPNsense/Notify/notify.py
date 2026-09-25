@@ -1162,8 +1162,10 @@ def run_test(uuid):
 # service details, so new or changed services need no plugin changes
 
 
+@functools.lru_cache(maxsize=1)
 def apprise_services():
-    """Apprise services keyed by id, with a lookup from every schema to the id."""
+    """Apprise services keyed by id, with a lookup from every schema to the id; built once, never
+    changed by callers."""
     import apprise
     services: dict = {}
     schemas: dict = {}
