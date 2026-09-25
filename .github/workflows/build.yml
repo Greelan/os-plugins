@@ -113,6 +113,7 @@ jobs:
 
   build:
     # the nightly (schedule) only runs the notify version-check; build on push/dispatch
+    needs: [lint, vendored]
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     strategy:
