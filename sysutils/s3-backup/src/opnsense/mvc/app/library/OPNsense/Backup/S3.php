@@ -226,8 +226,13 @@ class S3 extends Base implements IBackupProvider
             throw new \Exception(sprintf(gettext('The S3 settings are not valid: %s'), (string)$message));
         }
 
-        /* newest first, as core orders them */
-        $latest = $cnf->getBackups()[0] ?? null;
+        /* newest by the time in the name: core sorts the names as text, which puts e.g.
+         * config-20260924.xml above config-1790337832.xml */
+        $backups = $cnf->getBackups();
+        usort($backups, function ($a, $b) {
+            return self::stamp(basename($b)) <=> self::stamp(basename($a));
+        });
+        $latest = $backups[0] ?? null;
         if ($latest === null) {
             return [];
         }

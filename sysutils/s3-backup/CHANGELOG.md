@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0_3 - 2026-09-26
+
+- The newest local backup is found by its time, so a backup with a shorter name no longer stops later ones being sent.
+
 ## 1.0_2 - 2026-09-25
 
 - Old backups are removed in one request where the service supports it, and requests share one connection, so lowering the backup count a lot no longer risks a timeout.

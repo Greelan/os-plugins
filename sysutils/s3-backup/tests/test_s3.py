@@ -122,6 +122,12 @@ class S3(unittest.TestCase):
                                  [["upload", self.local("config-1727000009.xml")]], prefix="fw2")
         self.assertIn("config-1727000009.xml", answers[-1])
 
+    def test_newest_by_time_not_by_text(self):
+        # core lists names sorted as text, so a shorter stamp can come first
+        answers = self.run_steps([["upload", self.local("config-20260924.xml", "config-1790337832.0334.xml")]],
+                                 prefix="fw4")
+        self.assertEqual(answers[0][0], "config-1790337832.0334.xml")
+
     def test_listing_follows_pages(self):
         answers = self.run_steps([["put", f"fw3/config-17000{i}.xml"] for i in range(10000, 11005)] +
                                  [["list", "fw3/"]], prefix="fw3")
