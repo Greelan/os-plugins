@@ -53,8 +53,10 @@ customDNS:
 {% endif %}
 {% if cd_on %}
   mapping:
-{% for m in cd if m.enabled == '1' %}
-    {{ q(m.domain) }}: {{ q(m.ip) }}
+{% set domains = [] %}
+{% for m in cd_on if m.domain not in domains %}{% do domains.append(m.domain) %}{% endfor %}
+{% for domain in domains %}
+    {{ q(domain) }}: {{ q(cd_on|selectattr('domain', 'equalto', domain)|map(attribute='ip')|join(',')) }}
 {% endfor %}
 {% endif %}
 {% if OPNsense.blocky.general.customZone %}
@@ -77,8 +79,10 @@ conditional:
 {% endfor %}
 {% endif %}
   mapping:
-{% for m in cf if m.enabled == '1' %}
-    {{ q(m.domain) }}: {{ q(m.resolver) }}
+{% set domains = [] %}
+{% for m in cf_on if m.domain not in domains %}{% do domains.append(m.domain) %}{% endfor %}
+{% for domain in domains %}
+    {{ q(domain) }}: {{ q(cf_on|selectattr('domain', 'equalto', domain)|map(attribute='resolver')|join(',')) }}
 {% endfor %}
 
 {% endif %}
@@ -128,10 +132,16 @@ blocking:
 {% set cg_on = cg|selectattr('enabled', 'equalto', '1')|list %}
 {% if cg_on %}
   clientGroupsBlock:
-{% for c in cg if c.enabled == '1' %}
-    {{ q(c.client) }}:
-{% for g in c.groups.split(',') %}
-      - {{ g|trim }}
+{% set clients = [] %}
+{% for c in cg_on if c.client not in clients %}{% do clients.append(c.client) %}{% endfor %}
+{% for client in clients %}
+    {{ q(client) }}:
+{% set groups = [] %}
+{% for c in cg_on if c.client == client %}
+{% for g in c.groups.split(',') if g|trim and g|trim not in groups %}{% do groups.append(g|trim) %}{% endfor %}
+{% endfor %}
+{% for g in groups %}
+      - {{ q(g) }}
 {% endfor %}
 {% endfor %}
 {% else %}
@@ -217,10 +227,14 @@ clientLookup:
 {% endif %}
 {% if clc_on %}
   clients:
-{% for c in clc if c.enabled == '1' %}
-    "{{ c.name }}":
+{% set names = [] %}
+{% for c in clc_on if c.name not in names %}{% do names.append(c.name) %}{% endfor %}
+{% for name in names %}
+    "{{ name }}":
+{% for c in clc_on if c.name == name %}
 {% for ip in c.ips.split(',') if ip|trim %}
       - {{ ip|trim }}
+{% endfor %}
 {% endfor %}
 {% endfor %}
 {% endif %}
@@ -338,8 +352,8 @@ rebindingProtection:
   enable: true
 {% if OPNsense.blocky.rebindingProtection.allowedDomains %}
   allowedDomains:
-{% for d in OPNsense.blocky.rebindingProtection.allowedDomains.split(',') %}
-    - "{{ d|trim }}"
+{% for d in OPNsense.blocky.rebindingProtection.allowedDomains.split(',') if d|trim %}
+    - {{ q(d|trim) }}
 {% endfor %}
 {% endif %}
 {% endif %}

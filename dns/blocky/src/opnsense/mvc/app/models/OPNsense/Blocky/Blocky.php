@@ -52,6 +52,14 @@ class Blocky extends BaseModel
         'NSAP-PTR', 'NSEC', 'NSEC3', 'NSEC3PARAM', 'NULL', 'NXNAME', 'NXT', 'OPENPGPKEY', 'OPT', 'PTR', 'PX', 'RESINFO',
         'RKEY', 'RP', 'RRSIG', 'RT', 'SIG', 'SMIMEA', 'SOA', 'SPF', 'SRV', 'SSHFP', 'SVCB', 'TA', 'TALINK', 'TKEY',
         'TLSA', 'TSIG', 'TXT', 'UID', 'UINFO', 'UNSPEC', 'URI', 'X25', 'ZONEMD'];
+    /* the fields Blocky reads as a Go duration; a bare number is minutes, as the template writes it */
+    private const DURATION_FIELDS = ['general.timeout', 'general.quicMaxIdleTimeout', 'general.quicKeepAlivePeriod',
+        'general.blockTTL', 'general.refreshPeriod', 'general.downloadTimeout', 'general.downloadCooldown',
+        'general.downloadWriteTimeout', 'general.downloadReadTimeout', 'general.downloadReadHeaderTimeout',
+        'general.cacheMinTime', 'general.cacheMaxTime', 'general.cacheTimeNegative', 'general.prefetchExpires',
+        'general.customTTL', 'queryLog.creationCooldown', 'queryLog.flushInterval', 'hostsFile.hostsTTL',
+        'hostsFile.refreshPeriod', 'hostsFile.downloadTimeout', 'hostsFile.downloadCooldown',
+        'redis.connectionCooldown'];
     private const SECRET_DIR = '/^\/usr\/local\/etc\/blocky\/secrets(\/(?!\.\.?(\/|$))[^\/\0]+)+$/u';
 
     /**
@@ -96,6 +104,53 @@ class Blocky extends BaseModel
                     ));
                     break;
                 }
+            }
+        }
+
+        /* each of these is a key in config.yml, and Blocky refuses a key given twice */
+        foreach ([['customdnsrewrite', 'fromDomain'], ['conditionalrewrite', 'fromDomain'], ['schedules', 'name']] as [$array, $key]) {
+            $seen = [];
+            foreach ($this->$array->iterateItems() as $row) {
+                if ((string)$row->enabled != '1') {
+                    continue;
+                }
+                if (isset($seen[(string)$row->$key])) {
+                    $messages->appendMessage(new Message(
+                        gettext('Another enabled entry already uses this; combine them or disable one.'),
+                        $row->$key->__reference
+                    ));
+                }
+                $seen[(string)$row->$key] = true;
+            }
+        }
+
+        /* Go refuses a duration past about 292 years */
+        foreach (self::DURATION_FIELDS as $ref) {
+            $field = $this->getNodeByReference($ref);
+            $value = ltrim((string)$field, '-');
+            if ((!$validateFullModel && !$field->isFieldChanged()) || $value === '') {
+                continue;
+            }
+            $ns = 0.0;
+            preg_match_all('/([0-9]+)(ns|us|ms|s|m|h)?/', ctype_digit($value) ? $value . 'm' : $value, $parts, PREG_SET_ORDER);
+            foreach ($parts as $part) {
+                $ns += (float)$part[1] * ['ns' => 1, 'us' => 1e3, 'ms' => 1e6, 's' => 1e9, 'm' => 6e10,
+                    'h' => 3.6e12][$part[2] ?? 'm'];
+            }
+            if ($ns >= 9.2e18) {
+                $messages->appendMessage(new Message(gettext('Enter a duration of at most 2562047h.'), $field->__reference));
+            }
+        }
+
+        /* Blocky exits when a listener set to expect the PROXY header has no port */
+        foreach (['http' => 'httpPort', 'https' => 'httpsPort', 'tls' => 'tlsPort'] as $proto => $port) {
+            /* the template leaves out a listener of 0, which means off */
+            $listeners = array_diff(array_map('trim', explode(',', (string)$this->general->$port)), ['', '0']);
+            if (in_array($proto, explode(',', (string)$this->general->proxyProtocol), true) && empty($listeners)) {
+                $messages->appendMessage(new Message(
+                    sprintf(gettext('Set the %s port, or leave %s out.'), strtoupper($proto), $proto),
+                    'general.proxyProtocol'
+                ));
             }
         }
 

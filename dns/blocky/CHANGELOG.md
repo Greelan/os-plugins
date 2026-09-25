@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4_9 - 2026-09-25
+
+- Host overrides, conditional forwards, client groups and client names given in more than one entry are combined instead of stopping Blocky from starting.
+- Group names made of digits, and quotes in rebinding allowed domains, no longer stop Blocky from starting.
+- Duplicate rewrites or schedule names, over-long durations, and PROXY protocol on a listener with no port are refused on save.
+
 ## 1.4_8 - 2026-09-25
 
 - Settings Blocky would refuse at startup, including an unparsable zone file, are refused on save.

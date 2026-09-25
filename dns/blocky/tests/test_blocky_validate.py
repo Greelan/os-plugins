@@ -254,7 +254,9 @@ def candidates(node):
 def run_model(cases):
     """The model's verdict on each case: (messages as {field: text}, config.xml text or None)."""
     if len(cases) > 500:
-        return [r for i in range(0, len(cases), 500) for r in run_model(cases[i:i + 500])]
+        with concurrent.futures.ThreadPoolExecutor(os.cpu_count() or 2) as pool:
+            chunks = pool.map(run_model, [cases[i:i + 500] for i in range(0, len(cases), 500)])
+            return [r for chunk in chunks for r in chunk]
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
         json.dump(cases, handle)
     try:
@@ -302,7 +304,7 @@ def blocky_validate(text):
     if run.returncode == 0:
         return None
     lines = [line.strip() for line in (run.stdout + run.stderr).splitlines()
-             if line.strip() and "Validating configuration file" not in line]
+             if line.strip() and " WARN " not in line and " INFO " not in line]
     return " ".join(lines).replace(handle.name, "config.yml")[:400]
 
 
@@ -320,21 +322,25 @@ class BlockyValidates(unittest.TestCase):
                 merged["rows"][name] = merged["rows"].get(name, []) + extra
             return merged
 
-        # a minimal accepted row per array: each field takes the first value the model takes there
-        row_base = {}
+        # a minimal accepted row per array, in model order on top of the rows before it, since
+        # e.g. a schedule names a group a deny list defined: each field takes the first value the
+        # model takes there, and a row the model still refuses is left out of the joint baseline
+        row_base, joint = {}, {}
         for name, fields in arrays.items():
             row = {"enabled": "1"}
             for field, node in fields:
                 if field == "enabled":
                     continue
                 values = candidates(node)
-                verdicts = run_model([case(rows={name: [dict(row, **{field: v})]}) for v in values])
+                verdicts = run_model([case(rows=dict(joint, **{name: [dict(row, **{field: v})]})) for v in values])
                 index = len(base["rows"].get(name, []))
                 taken = [v for v, (msgs, _) in zip(values, verdicts)
                          if f"{name}.{index}.{field}" not in msgs and v != ""]
                 if taken:
                     row[field] = taken[0]
             row_base[name] = row
+            if run_model([case(rows=dict(joint, **{name: [row]}))])[0][1] is not None:
+                joint[name] = [row]
 
         def sweep(start):
             """Every candidate in every field, alone on top of start: {(where, value): case}."""
@@ -357,14 +363,23 @@ class BlockyValidates(unittest.TestCase):
                 taken.setdefault(where, []).append(value)
 
         # a rich baseline: one of every row, then each field on something other than its default
-        rich = case(rows={name: [row] for name, row in row_base.items()})
-        for ref, node in scalars.items():
-            default = node.findtext("Default") or ""
-            for value in [v for v in taken.get(ref, []) if v not in ("", default)][:3]:
-                trial = case({ref: value}, start=rich)
-                if run_model([trial])[0][1] is not None:
-                    rich = trial
-                    break
+        rows = case(rows=joint)
+        choices = {ref: [v for v in taken.get(ref, []) if v not in ("", node.findtext("Default") or "")][:3]
+                   for ref, node in scalars.items()}
+        choices = {ref: values for ref, values in choices.items() if values}
+        # all at once, moving each field the model names to its next choice until it takes the lot
+        while True:
+            messages, xml = run_model([case({ref: values[0] for ref, values in choices.items()}, start=rows)])[0]
+            named = [ref for ref in messages if ref in choices]
+            if xml is not None or not named:
+                break
+            for ref in named:
+                choices[ref] = choices[ref][1:]
+                if not choices[ref]:
+                    del choices[ref]
+        rich = case({ref: values[0] for ref, values in choices.items()}, start=rows)
+        if xml is None:
+            rich = rows  # a rule across fields no single field answers for
 
         cases = list(first.items())
         cases += list(sweep(rich).items())
