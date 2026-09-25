@@ -32,3 +32,7 @@ Blocky answers on the DNS port (53 by default); disable the built-in Unbound/Dns
 Push notifications for OPNsense system events, sent through [Apprise](https://github.com/caronc/apprise) to Telegram, Pushover, ntfy, Gotify, Discord, Slack, Matrix, email and many other services. Channels are built from a service picker, and each one chooses which events it receives.
 
 Events: configuration changes, logins and lockouts, gateway down and recovery (with outage duration), WAN address changes, interface link changes, VPN peers, new devices, intrusion detection alerts, Monit checks, a filling state table, UPS power (apcupsd or NUT), firmware updates, certificate expiry, System Status entries, CARP state changes and firewall startup. Undelivered notifications are retried with a backoff for up to 24 hours.
+
+### os-s3-backup-greelan
+
+Adds S3-compatible object storage (AWS S3, Backblaze B2, Cloudflare R2, Wasabi, MinIO and others) to **System > Configuration > Backups**, next to the Google Drive, Nextcloud and SFTP options. Backups are encrypted before they leave the firewall and old ones are removed beyond a set count.

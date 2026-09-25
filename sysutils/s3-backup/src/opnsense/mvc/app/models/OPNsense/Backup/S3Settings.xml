@@ -1,0 +1,43 @@
+<model>
+    <mount>//system/backup/s3</mount>
+    <version>1.0.0</version>
+    <description>S3 compatible storage backup settings</description>
+    <items>
+        <enabled type="BooleanField">
+            <Default>0</Default>
+            <Required>Y</Required>
+        </enabled>
+        <endpoint type="TextField">
+            <Mask>/^[0-9a-zA-Z]([0-9a-zA-Z.-]*[0-9a-zA-Z])?(:[0-9]{1,5})?$/</Mask>
+            <ValidationMessage>Enter the host name of the S3 endpoint, optionally with a port, e.g. s3.eu-central-1.amazonaws.com.</ValidationMessage>
+        </endpoint>
+        <region type="TextField">
+            <Default>us-east-1</Default>
+            <Required>Y</Required>
+            <Mask>/^[a-z0-9-]{1,32}$/</Mask>
+            <ValidationMessage>Enter the region in lower case, e.g. us-east-1, or auto for Cloudflare R2.</ValidationMessage>
+        </region>
+        <bucket type="TextField">
+            <Mask>/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/</Mask>
+            <ValidationMessage>Enter a bucket name of 3 to 63 lower case letters, digits, dots and hyphens.</ValidationMessage>
+        </bucket>
+        <prefix type="TextField">
+            <Mask>/^[0-9A-Za-z_-]+(\/[0-9A-Za-z_-]+)*$/</Mask>
+            <ValidationMessage>Enter folder names of letters, digits, underscores and hyphens, separated by slashes.</ValidationMessage>
+        </prefix>
+        <accessKey type="TextField">
+            <Mask>/^[0-9A-Za-z._-]{1,128}$/</Mask>
+            <ValidationMessage>Enter the access key ID.</ValidationMessage>
+        </accessKey>
+        <secretKey type="UpdateOnlyTextField"/>
+        <password type="UpdateOnlyTextField"/>
+        <passwordconfirm type="TextField" volatile="true"/>
+        <backupcount type="IntegerField">
+            <Default>60</Default>
+            <Required>Y</Required>
+            <MinimumValue>0</MinimumValue>
+            <MaximumValue>1000</MaximumValue>
+            <ValidationMessage>Enter how many backups to keep, up to 1000, or 0 to keep them all.</ValidationMessage>
+        </backupcount>
+    </items>
+</model>

@@ -1,0 +1,3 @@
+Adds S3-compatible object storage to System > Configuration > Backups, alongside the Google Drive, Nextcloud and SFTP options: AWS S3, Backblaze B2, Cloudflare R2, Wasabi, MinIO and other services with an S3 API.
+
+Each backup is encrypted with core's backup encryption before it leaves the firewall, so the storage provider only holds ciphertext, and it can be restored on the same page with the password. Old backups are removed beyond a set count. Removing the plugin also removes its settings, keys and password from the configuration.

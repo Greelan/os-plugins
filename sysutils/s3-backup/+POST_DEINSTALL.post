@@ -1,0 +1,20 @@
+# the access keys and encryption password would otherwise stay in config.xml once the
+# plugin is gone; an upgrade keeps them. Earlier revisions under System > Configuration >
+# History still hold them until the backup count ages those out.
+if [ "${PKG_UPGRADE}" != "true" ]; then
+/usr/local/bin/php <<'EOT'
+<?php
+
+@include_once("config.inc");
+
+use OPNsense\Core\Config;
+
+$config = Config::getInstance();
+$config->lock();
+$root = $config->object();
+if (isset($root->system->backup->s3)) {
+    unset($root->system->backup->s3);
+    $config->save(['description' => 'S3 backup removed with its keys and password']);
+}
+EOT
+fi
