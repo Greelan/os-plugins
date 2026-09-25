@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4_8 - 2026-09-25
+
+- Settings Blocky would refuse at startup, including an unparsable zone file, are refused on save.
+- Zone file names end with a dot unless an $ORIGIN line comes first.
+- Importing negative cache times no longer fails.
+
 ## 1.4_7 - 2026-09-25
 
 - Upstream resolvers are checked when saved, so a mistyped one no longer stops Blocky from starting.

@@ -203,10 +203,11 @@ caching:
 
 {% set clc = helpers.toList('OPNsense.blocky.clientlookupclients') %}
 {% set clc_on = clc|selectattr('enabled', 'equalto', '1')|list %}
-{% if OPNsense.blocky.general.clientLookupUpstream or clc_on %}
+{% set lookup = (OPNsense.blocky.general.clientLookupUpstream|default(''))|trim %}
+{% if lookup or clc_on %}
 clientLookup:
-{% if OPNsense.blocky.general.clientLookupUpstream %}
-  upstream: {{ q(OPNsense.blocky.general.clientLookupUpstream) }}
+{% if lookup %}
+  upstream: {{ q(lookup) }}
 {% endif %}
 {% if OPNsense.blocky.general.clientLookupOrder %}
   singleNameOrder:

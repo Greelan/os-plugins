@@ -146,6 +146,9 @@ DURATION_FIELDS = {
     "hostsFile.downloadCooldown", "redis.connectionCooldown",
 }
 
+# blocky only checks the sign of these, so any negative duration means the same as -1
+NEGATIVE_FIELDS = {"general.cacheMinTime", "general.cacheMaxTime", "general.cacheTimeNegative",
+                   "general.downloadReadHeaderTimeout"}
 SCHEDULE_KEYS = {"start", "end", "weekdays"}
 BOOTSTRAP_KEYS = {"upstream", "ips", "resolvFile"}
 
@@ -345,7 +348,9 @@ class Mapper:
         value = (transform or self._scalar)(value, label)
         if value is None:
             return
-        if value.isdigit() and value != "0" and "%s.%s" % (section, field) in DURATION_FIELDS:
+        if value.startswith("-") and "%s.%s" % (section, field) in NEGATIVE_FIELDS:
+            value = "-1"
+        elif value.isdigit() and value != "0" and "%s.%s" % (section, field) in DURATION_FIELDS:
             self.warnings.append("%s: %s has no unit; imported as %sm, the way blocky reads it."
                                  % (label, value, value))
             value += "m"

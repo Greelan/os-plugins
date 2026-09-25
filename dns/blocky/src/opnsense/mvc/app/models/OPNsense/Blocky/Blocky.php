@@ -44,6 +44,14 @@ class Blocky extends BaseModel
     /* the socket the Redis plugin (databases/redis) opens */
     public const REDIS_SOCKETS = ['/var/run/redis/redis.sock'];
     private const LIST_DIR = '/^\/usr\/local\/etc\/blocky\/lists(\/(?!\.\.?(\/|$))[^\/\0]+)+$/u';
+    /* the DNS type names Blocky 0.35 knows */
+    private const QUERY_TYPES = ['A', 'AAAA', 'AFSDB', 'AMTRELAY', 'ANY', 'APL', 'ATMA', 'AVC', 'AXFR', 'CAA',
+        'CDNSKEY', 'CDS', 'CERT', 'CNAME', 'CSYNC', 'DHCID', 'DLV', 'DNAME', 'DNSKEY', 'DS', 'EID', 'EUI48', 'EUI64',
+        'GID', 'GPOS', 'HINFO', 'HIP', 'HTTPS', 'IPSECKEY', 'ISDN', 'IXFR', 'KEY', 'KX', 'L32', 'L64', 'LOC', 'LP',
+        'MAILA', 'MAILB', 'MB', 'MD', 'MF', 'MG', 'MINFO', 'MR', 'MX', 'NAPTR', 'NID', 'NIMLOC', 'NINFO', 'NS',
+        'NSAP-PTR', 'NSEC', 'NSEC3', 'NSEC3PARAM', 'NULL', 'NXNAME', 'NXT', 'OPENPGPKEY', 'OPT', 'PTR', 'PX', 'RESINFO',
+        'RKEY', 'RP', 'RRSIG', 'RT', 'SIG', 'SMIMEA', 'SOA', 'SPF', 'SRV', 'SSHFP', 'SVCB', 'TA', 'TALINK', 'TKEY',
+        'TLSA', 'TSIG', 'TXT', 'UID', 'UINFO', 'UNSPEC', 'URI', 'X25', 'ZONEMD'];
     private const SECRET_DIR = '/^\/usr\/local\/etc\/blocky\/secrets(\/(?!\.\.?(\/|$))[^\/\0]+)+$/u';
 
     /**
@@ -91,6 +99,32 @@ class Blocky extends BaseModel
             }
         }
 
+        /* the masks take any five digits */
+        foreach (['dnsPort', 'httpPort', 'tlsPort', 'httpsPort'] as $name) {
+            $field = $this->general->$name;
+            if (!$validateFullModel && !$field->isFieldChanged()) {
+                continue;
+            }
+            foreach (explode(',', (string)$field) as $listener) {
+                $pos = strrpos($listener, ':');
+                if ((int)trim($pos === false ? $listener : substr($listener, $pos + 1)) > 65535) {
+                    $messages->appendMessage(new Message(gettext('Enter a port no higher than 65535.'), $field->__reference));
+                    break;
+                }
+            }
+        }
+        if ($validateFullModel || $this->filtering->queryTypes->isFieldChanged()) {
+            foreach (explode(',', (string)$this->filtering->queryTypes) as $type) {
+                if (trim($type) !== '' && !in_array(trim($type), self::QUERY_TYPES, true)) {
+                    $messages->appendMessage(new Message(
+                        sprintf(gettext('Blocky does not know the DNS type %s.'), trim($type)),
+                        $this->filtering->queryTypes->__reference
+                    ));
+                    break;
+                }
+            }
+        }
+
         /* a schedule window needs both start and end, or neither (all-day) */
         foreach ($this->schedules->iterateItems() as $schedule) {
             $start = (string)$schedule->start;
@@ -130,7 +164,7 @@ class Blocky extends BaseModel
                 continue;
             }
             foreach (explode(',', (string)$mapping->resolver) as $resolver) {
-                if (trim($resolver) !== '' && !$this->isUpstream($resolver)) {
+                if (!$this->isUpstream($resolver)) { /* an empty entry too, which Blocky gets as '' */
                     $messages->appendMessage(new Message(
                         gettext('Enter a resolver, e.g. 192.168.1.1 or tcp-tls:dns.quad9.net.'),
                         $mapping->resolver->__reference
@@ -205,6 +239,13 @@ class Blocky extends BaseModel
                 continue;
             }
             if (!$validateFullModel && !$bootstrap->content->isFieldChanged() && !$bootstrap->ips->isFieldChanged()) {
+                continue;
+            }
+            if (!$this->isUpstream((string)$bootstrap->content)) {
+                $messages->appendMessage(new Message(
+                    gettext('Enter a resolver, e.g. 1.1.1.1, tcp+udp:1.1.1.1 or https://1.1.1.1/dns-query.'),
+                    $bootstrap->content->__reference
+                ));
                 continue;
             }
             $host = $this->upstreamHost((string)$bootstrap->content);
@@ -357,6 +398,11 @@ class Blocky extends BaseModel
                 gettext('Enter the records themselves; Blocky would read an $INCLUDE file from disk.'),
                 'general.customZone'
             ));
+        } elseif (
+            ($validateFullModel || $this->general->customZone->isFieldChanged()) &&
+            ($error = self::zoneError((string)$this->general->customZone)) !== null
+        ) {
+            $messages->appendMessage(new Message($error, 'general.customZone'));
         }
 
         /* a resolv file Blocky reads is one the plugin keeps */
@@ -442,6 +488,184 @@ class Blocky extends BaseModel
     public static function hasZoneInclude($zone)
     {
         return preg_match('/^\s*\$INCLUDE\b/mi', (string)$zone) === 1;
+    }
+
+    /**
+     * Why Blocky would not parse this zone, or null. It follows miekg/dns as Blocky calls it, with no
+     * origin; record types it does not know in detail pass, so a zone Blocky takes is never refused.
+     */
+    public static function zoneError($zone)
+    {
+        /* split into records: quotes, ; comments and ( ) continuations as the zone format has them */
+        $records = [];
+        $tokens = [];
+        $token = null;
+        $blank = false;
+        $depth = 0;
+        $quoted = false;
+        $line = 1;
+        $start = 1;
+        $zone = str_replace("\r", '', (string)$zone);
+        $length = strlen($zone);
+        for ($i = 0; $i <= $length; $i++) {
+            $c = $i < $length ? $zone[$i] : "\n";
+            if ($quoted) {
+                if ($c === "\n") {
+                    return sprintf(gettext('Line %d: a quote is not closed.'), $line);
+                }
+                $token .= $c;
+                if ($c === '\\' && $i + 1 < $length) {
+                    $token .= $zone[++$i];
+                } elseif ($c === '"') {
+                    $quoted = false;
+                }
+                continue;
+            }
+            if ($c === '"') {
+                $token .= $c;
+                $quoted = true;
+                continue;
+            }
+            if ($c === ';') {
+                while ($i + 1 < $length && $zone[$i + 1] !== "\n") {
+                    $i++;
+                }
+                continue;
+            }
+            if (in_array($c, [' ', "\t", "\n", '(', ')'], true)) {
+                if ($token !== null) {
+                    $tokens[] = $token;
+                    $token = null;
+                }
+                if (($c === ' ' || $c === "\t") && empty($tokens) && ($i === 0 || $zone[$i - 1] === "\n")) {
+                    $blank = true;
+                } elseif ($c === '(') {
+                    $depth++;
+                } elseif ($c === ')' && --$depth < 0) {
+                    return sprintf(gettext('Line %d: a ) has no ( before it.'), $line);
+                } elseif ($c === "\n") {
+                    if ($depth === 0) {
+                        if (!empty($tokens)) {
+                            $records[] = [$start, $blank, $tokens];
+                        }
+                        $tokens = [];
+                        $blank = false;
+                        $start = $line + 1;
+                    }
+                    $line++;
+                }
+                continue;
+            }
+            $token .= $c;
+            if ($c === '\\' && $i + 1 < $length) {
+                $token .= $zone[++$i];
+            }
+        }
+        if ($depth > 0) {
+            return sprintf(gettext('Line %d: a ( is not closed.'), $start);
+        }
+
+        $origin = false;
+        $defaultTtl = false;
+        $lastTtl = false;
+        $isTtl = function ($value) {
+            if (!preg_match('/^([0-9]+[smhdw]?)+$/i', $value)) {
+                return false;
+            }
+            $total = 0;
+            preg_match_all('/([0-9]+)([smhdw]?)/i', $value, $parts, PREG_SET_ORDER);
+            foreach ($parts as $part) {
+                $total += (int)$part[1] * ['' => 1, 's' => 1, 'm' => 60, 'h' => 3600, 'd' => 86400,
+                    'w' => 604800][strtolower($part[2])];
+            }
+            return $total <= 4294967295;
+        };
+        $isName = function ($value) use (&$origin) {
+            if ($value === '@') {
+                return $origin;
+            }
+            if ($value !== '.' && preg_match('/(^|[^\\\\])\.\.|^\./', $value)) {
+                return false;
+            }
+            return substr($value, -1) === '.' || $origin;
+        };
+        $isPort = function ($value) {
+            return preg_match('/^[0-9]+$/', $value) && (int)$value <= 65535;
+        };
+        foreach ($records as [$at, $blank, $tokens]) {
+            if (!$blank && $tokens[0][0] === '$') {
+                $directive = strtoupper($tokens[0]);
+                if ($directive === '$TTL' && count($tokens) === 2 && $isTtl($tokens[1])) {
+                    $defaultTtl = true;
+                } elseif ($directive === '$ORIGIN' && count($tokens) === 2 && $isName($tokens[1])) {
+                    $origin = true;
+                } elseif ($directive === '$GENERATE' && count($tokens) > 2 && !$isName($tokens[2])) {
+                    return sprintf(gettext('Line %d: end the name %s with a dot, or put an $ORIGIN line before it.'),
+                        $at, $tokens[2]);
+                } elseif ($directive !== '$GENERATE' && $directive !== '$INCLUDE') {
+                    return sprintf(gettext('Line %d: %s is not a directive Blocky reads this way.'), $at, $tokens[0]);
+                }
+                continue;
+            }
+            $i = 0;
+            if (!$blank && !$isName($tokens[$i++])) {
+                return sprintf(gettext('Line %d: end the name %s with a dot, or put an $ORIGIN line before it.'),
+                    $at, $tokens[0]);
+            }
+            $ttl = $class = false;
+            while ($i < count($tokens)) {
+                if (!$ttl && $isTtl($tokens[$i])) {
+                    $ttl = true;
+                } elseif (!$class && preg_match('/^(IN|CS|CH|HS|NONE|ANY|CLASS[0-9]+)$/i', $tokens[$i])) {
+                    $class = true;
+                } else {
+                    break;
+                }
+                $i++;
+            }
+            $type = strtoupper($tokens[$i++] ?? '');
+            if (
+                !preg_match('/^TYPE[0-9]+$/', $type) &&
+                (!in_array($type, self::QUERY_TYPES, true) || in_array($type, ['ANY', 'OPT'], true))
+            ) {
+                return sprintf(gettext('Line %d: expected a record type such as A, AAAA or CNAME.'), $at);
+            }
+            if (!$ttl && !$class && !$defaultTtl && !$lastTtl) {
+                return sprintf(gettext('Line %d: give the record a TTL or the class IN, or put a $TTL line before it.'), $at);
+            }
+            $lastTtl = $lastTtl || $ttl;
+            $data = array_slice($tokens, $i);
+            $valid = true;
+            if (count($data) > 0) {
+                switch ($type) {
+                    case 'A':
+                        $valid = count($data) === 1 && preg_match('/^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}' .
+                            '(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$/', $data[0]);
+                        break;
+                    case 'AAAA':
+                        $valid = count($data) === 1 && filter_var($data[0], FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false;
+                        break;
+                    case 'CNAME':
+                    case 'DNAME':
+                    case 'NS':
+                    case 'PTR':
+                        $valid = count($data) === 1 && $isName($data[0]);
+                        break;
+                    case 'MX':
+                        $valid = count($data) === 2 && $isPort($data[0]) && $isName($data[1]);
+                        break;
+                    case 'SRV':
+                        $valid = count($data) === 4 && $isPort($data[0]) && $isPort($data[1]) && $isPort($data[2]) &&
+                            $isName($data[3]);
+                        break;
+                }
+            }
+            if (!$valid) {
+                return sprintf(gettext('Line %d: the %s record data is not valid; names end with a dot unless ' .
+                    'an $ORIGIN line comes first.'), $at, $type);
+            }
+        }
+        return null;
     }
 
     /**
@@ -531,22 +755,26 @@ class Blocky extends BaseModel
      * Host part of an upstream, or null when it cannot be determined (a DNS stamp
      * carries its own addresses).
      */
-    private function upstreamHost($value)
+    private function upstreamHost($value, &$port = null)
     {
+        $port = null;
         $value = trim($value);
-        if ($value === '' || stripos($value, 'sdns://') === 0) {
+        if ($value === '' || strpos($value, 'sdns://') === 0) {
             return null;
         }
-        $rest = preg_replace('/^(tcp\+udp|tcp-tls|tcp|udp|https|quic):(\/\/)?/i', '', $value);
+        /* the prefixes Blocky knows, as it spells them; only https and quic take // */
+        $rest = preg_replace('/^(tcp\+udp:|tcp-tls:|(https|quic):(\/\/)?)/', '', $value);
         $rest = preg_replace('/#.*$/', '', $rest);
         $rest = preg_replace('/\/.*$/', '', $rest);
-        if (preg_match('/^\[(.+)\](?::[0-9]+)?$/', $rest, $matches)) {
+        if (preg_match('/^\[(.+)\](?::([0-9]+))?$/', $rest, $matches)) {
+            $port = $matches[2] ?? null;
             return $matches[1];
         }
         if (substr_count($rest, ':') > 1) {
             return $rest; /* bare IPv6 */
         }
-        if (preg_match('/^(.*):[0-9]+$/', $rest, $matches)) {
+        if (preg_match('/^(.*):([0-9]+)$/', $rest, $matches)) {
+            $port = $matches[2];
             return $matches[1];
         }
         return $rest;
@@ -561,15 +789,69 @@ class Blocky extends BaseModel
         if ($value === '') {
             return false;
         }
-        if (stripos($value, 'sdns://') === 0) {
-            return true; /* a DNS stamp carries its own address */
+        if (strpos($value, 'sdns://') === 0) {
+            return $this->isStamp(substr($value, strlen('sdns://')));
         }
-        $host = $this->upstreamHost($value);
-        if (empty($host)) {
+        $host = $this->upstreamHost($value, $port);
+        if (empty($host) || ($port !== null && ((int)$port < 1 || (int)$port > 65535))) {
             return false;
         }
         return filter_var($host, FILTER_VALIDATE_IP) !== false ||
             filter_var($host, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) !== false;
+    }
+
+    /**
+     * Does this DNS stamp parse as one Blocky uses: plain DNS, DoH, DoT or DoQ, per draft-denis-dns-stamps?
+     */
+    private function isStamp($encoded)
+    {
+        $raw = base64_decode(strtr($encoded, '-_', '+/'), true);
+        if ($raw === false || strlen($raw) < 9 || !in_array(ord($raw[0]), [0x00, 0x02, 0x03, 0x04], true)) {
+            return false;
+        }
+        $proto = ord($raw[0]);
+        $pos = 9; /* protocol byte and 8 bytes of properties */
+        $lp = function () use ($raw, &$pos) {
+            if ($pos >= strlen($raw) || $pos + 1 + ord($raw[$pos]) > strlen($raw)) {
+                return null;
+            }
+            $value = substr($raw, $pos + 1, ord($raw[$pos]));
+            $pos += 1 + ord($raw[$pos]);
+            return $value;
+        };
+        $vlp = function () use ($raw, &$pos) {
+            do {
+                if ($pos >= strlen($raw)) {
+                    return false;
+                }
+                $more = ord($raw[$pos]) & 0x80;
+                $length = ord($raw[$pos]) & 0x7f;
+                if ($pos + 1 + $length > strlen($raw)) {
+                    return false;
+                }
+                $pos += 1 + $length;
+            } while ($more);
+            return true;
+        };
+        if ($lp() === null) {
+            return false; /* address */
+        }
+        if ($proto != 0x00) {
+            if (!$vlp() || ($hostname = $lp()) === null || ($proto == 0x02 && $lp() === null)) {
+                return false; /* hashes, host name, and a DoH path */
+            }
+            $hostname = preg_replace('/:[0-9]+$/', '', $hostname);
+            if (
+                $hostname !== '' && filter_var(trim($hostname, '[]'), FILTER_VALIDATE_IP) === false &&
+                filter_var($hostname, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) === false
+            ) {
+                return false;
+            }
+            if ($pos < strlen($raw) && !$vlp()) {
+                return false; /* optional bootstrap addresses */
+            }
+        }
+        return $pos == strlen($raw);
     }
 
     /**

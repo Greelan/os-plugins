@@ -21,7 +21,7 @@
         <height>8</height>
         <advanced>true</advanced>
         <help>
-            <![CDATA[Optional DNS zone-file content for advanced records (e.g. CNAME), in standard zone format. Every record needs a TTL, either its own or a $TTL line before it, and Blocky refuses to start if the zone does not parse. $INCLUDE is not accepted. Applied in addition to the simple entries on the <a href="/ui/blocky/customdns#overrides">Host Overrides</a> tab.]]>
+            <![CDATA[Optional DNS zone-file content for advanced records (e.g. CNAME), in standard zone format, e.g. <code>printer.lan. IN A 192.168.1.20</code>. Names end with a dot unless an $ORIGIN line comes before them, and every record needs a TTL, the class IN or a $TTL line before it. $INCLUDE is not accepted. Applied in addition to the simple entries on the <a href="/ui/blocky/customdns#overrides">Host Overrides</a> tab.]]>
         </help>
     </field>
 </form>
