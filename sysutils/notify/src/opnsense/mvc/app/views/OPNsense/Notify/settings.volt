@@ -192,7 +192,8 @@
                     $after = $row;
                 } else {
                     $row.attr('data-advanced', 'true');
-                    if (value !== '' && String(value) !== String(field.default ?? '')) {
+                    /* a saved secret or file is never sent back, so its value here is empty */
+                    if (saved.includes(field.key) || (value !== '' && String(value) !== String(field.default ?? ''))) {
                         set = true;
                     }
                     $afterExtra.after($row);

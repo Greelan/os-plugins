@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3_5 - 2026-09-25
+
+- A channel with a saved advanced secret or file, such as a Discord template, opens with advanced settings shown.
+
 ## 1.3_4 - 2026-09-25
 
 - Importing a URL is faster: the list of Apprise services is built once per request.
