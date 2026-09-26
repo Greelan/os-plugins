@@ -3,6 +3,7 @@ decides which it takes, core's template engine renders those, and `blocky valida
 
 Needs OPNSENSE_CORE, php and a blocky binary (BLOCKY, or blocky on PATH) of the pinned version."""
 
+import atexit
 import concurrent.futures
 import hashlib
 import json
@@ -258,7 +259,7 @@ def run_model(cases):
             chunks = pool.map(run_model, [cases[i:i + 500] for i in range(0, len(cases), 500)])
             return [r for chunk in chunks for r in chunk]
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
-        json.dump(cases, handle)
+        handle.write(json.dumps(cases))  # one write: dump() writes piecemeal, which is slow
     try:
         run = subprocess.run(["php", os.path.join(HERE, "model_harness.php"), handle.name],
                              capture_output=True, text=True)
@@ -291,6 +292,34 @@ class Renderer:
         self.engine._generate("OPNsense/Blocky")
         with open(os.path.join(self.target, "usr", "local", "etc", "blocky", "config.yml")) as handle:
             return handle.read()
+
+
+RENDERER = None
+
+
+def rendered(xml):
+    """(config.yml, None), or (None, why it did not render), in a worker process."""
+    global RENDERER
+    if RENDERER is None:
+        target = tempfile.mkdtemp()
+        atexit.register(shutil.rmtree, target, True)
+        RENDERER = Renderer(target)
+    try:
+        return RENDERER.render(xml), None
+    except Exception as error:
+        return None, str(error)
+
+
+def imported(text):
+    """The importer's output for a config.yml, as a harness case (run in a worker process)."""
+    if SCRIPTS not in sys.path:
+        sys.path[:0] = [SCRIPTS, os.path.join(SCRIPTS, "lib")]
+    import yaml
+    from import_config import Mapper
+    mapped = Mapper(yaml.safe_load(text)).run()
+    return {"fields": dict({f"{section}.{field}": v for section, fields in mapped["scalars"].items()
+                            for field, v in fields.items()}, **{"general.enabled": "1"}),
+            "rows": mapped["arrays"]}
 
 
 def blocky_validate(text):
@@ -399,19 +428,15 @@ class BlockyValidates(unittest.TestCase):
             cases.append(((f"random#{n}", ""), case(fields, rows, start=rich)))
 
         results = run_model([c for _, c in cases])
-        tmp = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, tmp)
-        renderer = Renderer(tmp)
+        accepted = [(where, value, xml) for ((where, value), _), (_, xml) in zip(cases, results) if xml is not None]
+        with concurrent.futures.ProcessPoolExecutor(os.cpu_count() or 2) as pool:
+            texts = list(pool.map(rendered, [xml for _, _, xml in accepted], chunksize=50))
         configs, failures = {}, {}
-        for ((where, value), _), (_, xml) in zip(cases, results):
-            if xml is None:
-                continue
-            try:
-                text = renderer.render(xml)
-            except Exception as error:  # a template that does not render is a failure too
+        for (where, value, _), (text, error) in zip(accepted, texts):
+            if error is not None:  # a template that does not render is a failure too
                 failures.setdefault(where, []).append((value, f"render: {error}"))
-                continue
-            configs.setdefault(hashlib.sha256(text.encode()).hexdigest(), (text, where, value))
+            else:
+                configs.setdefault(hashlib.sha256(text.encode()).hexdigest(), (text, where, value))
 
         valid = []
         with concurrent.futures.ThreadPoolExecutor(8) as pool:
@@ -423,15 +448,8 @@ class BlockyValidates(unittest.TestCase):
                     valid.append((text, where, value))
 
         # a config Blocky runs must import: the importer's output, applied as importAction does
-        sys.path[:0] = [SCRIPTS, os.path.join(SCRIPTS, "lib")]
-        import yaml
-        from import_config import Mapper
-        imports = []
-        for text, _, _ in valid:
-            mapped = Mapper(yaml.safe_load(text)).run()
-            imports.append({"fields": dict({f"{section}.{field}": v for section, fields in mapped["scalars"].items()
-                                            for field, v in fields.items()}, **{"general.enabled": "1"}),
-                            "rows": mapped["arrays"]})
+        with concurrent.futures.ProcessPoolExecutor(os.cpu_count() or 2) as pool:
+            imports = list(pool.map(imported, [text for text, _, _ in valid], chunksize=50))
         for (_, where, value), (messages, _) in zip(valid, run_model(imports)):
             for field, text in messages.items():
                 failures.setdefault(f"import {where}", []).append((value, f"{field}: {text}"))
