@@ -1209,7 +1209,7 @@ def apprise_services():
                 continue  # already a field
             kind = str(arg.get("type", "string"))
             field = {"key": str(key), "label": str(arg.get("name", key)), "type": kind.split(":")[0],
-                     "private": bool(arg.get("private")), "basic": False}
+                     "private": bool(arg.get("private")), "basic": False, "map_to": str(arg.get("map_to", key))}
             # an optional secret is never shown again, so the dialog offers to remove it instead
             field["clearable"] = field["private"]
             if kind.startswith("choice"):
@@ -1345,9 +1345,12 @@ def split_query(service, query):
     return values, "&".join(rest)
 
 
-def query_from(service, values):
-    """The query for a service's option fields, leaving out anything at its default."""
-    parts = []
+def query_from(service, values, base=None):
+    """The query for a service's option fields, leaving out anything at its default. Given the
+    URL it goes on, a default is only left out when Apprise reads the URL the same without it:
+    some hold for part of a service only, e.g. Email's STARTTLS for mailtos:// but not mailto://."""
+    parts: list = []
+    defaults: list = []
     for key, field in service["options"].items():
         value = str(values.get(key, "")).strip()
         default = service["args"].get(key)
@@ -1357,10 +1360,16 @@ def query_from(service, values):
             value = "yes" if value.lower() in ("1", "yes", "true", "on") else "no"
             if default is None and value == "no":
                 continue  # an unticked box Apprise has no default for says nothing
-        if value == "" or (default is not None and same_value(value, default)):
+        if value == "":
             continue
-        parts.append("%s=%s" % (urllib.parse.quote(key, safe=""), urllib.parse.quote(value, safe="")))
+        part = "%s=%s" % (urllib.parse.quote(key, safe=""), urllib.parse.quote(value, safe=""))
+        (defaults if default is not None and same_value(value, default) else parts).append(part)
     rest = str(values.get(QUERY_FIELD, "")).lstrip("?")
+    for part in defaults if base else []:
+        without = "&".join(p for p in parts + [rest] if p)
+        if not same_url(base + "?" + "&".join(p for p in parts + [part, rest] if p),
+                        base + ("?" + without if without else "")):
+            parts.append(part)
     return "&".join([part for part in parts + [rest] if part])
 
 
@@ -1430,6 +1439,12 @@ def describe_url(url, keep_secrets=False):
         return {"service": "", "custom": True}  # no field masks these, so keep the URL write-only
     for key, value in options.items():
         (secrets if service["options"][key]["private"] else fields)[key] = value
+    # a choice the URL leaves out shows what Apprise will use, where that is not its default
+    plugin = check_url(url)[0]
+    for key, field in service["options"].items():
+        effective = getattr(plugin, field["map_to"], None) if plugin is not None and key not in options else None
+        if field["type"] == "choice" and effective in field.get("values", ()) and effective != field.get("default"):
+            fields[key] = effective
     if rest:
         fields[QUERY_FIELD] = rest
     if keep_secrets:
@@ -1437,7 +1452,7 @@ def describe_url(url, keep_secrets=False):
     # a URL the fields cannot reproduce stays a plain URL, so saving never changes it
     values = {**fields, **secrets}
     rebuilt = compose(service, values)[0]
-    query = query_from(service, values)
+    query = query_from(service, values, rebuilt)
     if rebuilt is None or not same_url(rebuilt + ("?" + query if query else ""), url):
         return {"service": "", "custom": True}  # a URL the fields cannot hold, kept as it is
     return {"service": service_id, "fields": fields, "saved": sorted(secrets)}
@@ -1539,7 +1554,7 @@ def from_service(service_id, fields, stored):
     if url is None:
         needed = ", ".join(wanted) if wanted else "the fields this service needs"
         return "", {}, f"Fill in {needed}; see the setup guide if you are unsure."
-    query = query_from(service, values)
+    query = query_from(service, values, url)
     return (url + "?" + query if query else url), files, ""
 
 

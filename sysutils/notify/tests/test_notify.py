@@ -101,6 +101,31 @@ class StoredFiles(Case):
         self.assertIn("paste its contents", error)
 
 
+class Defaults(Case):
+    """A default Apprise declares may hold for part of a service only, e.g. Email's STARTTLS."""
+    FIELDS = {"user": "me@example.com", "password": "secret", "host": "example.com",
+              "targets": "alerts@example.com", "smtp": "smtp.gmail.com"}
+
+    def built(self, **fields):
+        url, _, error = notify.from_service("mailtos", dict(self.FIELDS, **fields), "")
+        self.assertEqual(error, "")
+        return url, notify.check_url(url)[0]
+
+    def test_a_chosen_mode_is_kept_where_it_is_not_the_default(self):
+        url, plugin = self.built(schema="mailto", mode="starttls")
+        self.assertIn("mode=starttls", url)
+        self.assertEqual((plugin.secure_mode, plugin.port), ("starttls", 587))
+
+    def test_a_real_default_is_still_left_out(self):
+        url, plugin = self.built(schema="mailtos", mode="starttls")
+        self.assertNotIn("mode=", url)
+        self.assertEqual(plugin.secure_mode, "starttls")
+
+    def test_the_dialog_shows_what_apprise_uses(self):
+        url, _ = self.built(schema="mailto")
+        self.assertEqual(notify.describe_url(url)["fields"]["mode"], "insecure")
+
+
 class Escaping(unittest.TestCase):
     def test_outside_text_is_escaped_for_html_services(self):
         received = {}

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3_6 - 2026-09-26
+
+- Email set to mailto with STARTTLS uses STARTTLS instead of unencrypted SMTP, and the dialog shows the mode actually used.
+
 ## 1.3_5 - 2026-09-25
 
 - A channel with a saved advanced secret or file, such as a Discord template, opens with advanced settings shown.
