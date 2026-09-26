@@ -27,7 +27,7 @@
         </prefix>
         <accessKey type="TextField">
             <Mask>/^[0-9A-Za-z._-]{1,128}$/</Mask>
-            <ValidationMessage>Enter the access key ID.</ValidationMessage>
+            <ValidationMessage>Enter the access key ID: letters, digits, dots, underscores and hyphens.</ValidationMessage>
         </accessKey>
         <secretKey type="UpdateOnlyTextField"/>
         <password type="UpdateOnlyTextField"/>

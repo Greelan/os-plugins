@@ -45,6 +45,11 @@ class S3Settings extends BaseModel
     {
         $messages = parent::performValidation($validateFullModel);
 
+        /* the mask takes any five digits */
+        if (preg_match('/:([0-9]+)$/', (string)$this->endpoint, $port) && ((int)$port[1] < 1 || (int)$port[1] > 65535)) {
+            $messages->appendMessage(new Message(gettext('Enter a port from 1 to 65535.'), 'endpoint'));
+        }
+
         if ((string)$this->enabled != '1') {
             return $messages;
         }

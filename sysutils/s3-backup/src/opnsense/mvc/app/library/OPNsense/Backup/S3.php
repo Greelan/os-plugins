@@ -29,6 +29,7 @@
 
 namespace OPNsense\Backup;
 
+use OPNsense\Core\ACL;
 use OPNsense\Core\Config;
 
 /**
@@ -43,7 +44,9 @@ class S3 extends Base implements IBackupProvider
     /* what the page gets in place of a saved secret, so its box shows dots; sent back, it keeps the secret */
     private const SAVED = '(saved)';
     /* names core gives backups: config-<microtime>[_<hrtime>].xml */
-    private const BACKUP_NAME = '/^config-[0-9]+(\.[0-9]+)?(_[0-9]+)?\.xml$/';
+    private const BACKUP_NAME = '/^config-[0-9]+(\.[0-9]+)?(_[0-9]+)?\.xml$/D';
+    /* a revision time, which core rounds to two decimals, and the backup it writes with it are this close */
+    private const SAME_SAVE = 0.01;
     /* a hostile endpoint cannot keep a backup busy or fill memory */
     private const MAX_PAGES = 100;
     private const MAX_RESPONSE = 8 * 1024 * 1024;
@@ -53,6 +56,9 @@ class S3 extends Base implements IBackupProvider
 
     /* one handle for the run, so requests share a connection */
     private $curl = null;
+    /* HTTP status and S3 error code of the last answer, 0 and '' when none came */
+    private $status = 0;
+    private $code = '';
 
     private $model = null;
 
@@ -146,11 +152,8 @@ class S3 extends Base implements IBackupProvider
                 $name = $field['name'] == 'passwordconfirm' ? 'password' : $field['name'];
                 $field['value'] = $this->model->$name->getValue() !== '' ? self::SAVED : '';
             } else {
-                /* the page prints values unescaped, so they are escaped here */
-                $field['value'] = htmlspecialchars(
-                    (string)$this->model->getNodeByReference($field['name']),
-                    ENT_QUOTES
-                );
+                /* the page escapes them */
+                $field['value'] = (string)$this->model->getNodeByReference($field['name']);
             }
         }
         return $fields;
@@ -169,6 +172,10 @@ class S3 extends Base implements IBackupProvider
      */
     public function setConfiguration($conf)
     {
+        /* core's diag_backup.php checks this for a restore, not for a provider's setup */
+        if (!empty($_SESSION['Username']) && (new ACL())->hasPrivilege($_SESSION['Username'], 'user-config-readonly')) {
+            return [gettext('You do not have the permission to perform this action.')];
+        }
         foreach (self::SECRETS as $name) {
             if (($conf[$name] ?? '') === self::SAVED) {
                 $conf[$name] = ''; /* untouched, so the write-only field keeps what it has */
@@ -217,19 +224,29 @@ class S3 extends Base implements IBackupProvider
     }
 
     /**
-     * Send the newest local backup unless the bucket has it, then apply the backup count.
+     * Send the running configuration unless the bucket has it, then apply the backup count.
      */
     private function upload($cnf)
     {
         /* settings can arrive without the page, e.g. in a restored config.xml, so check them all */
-        foreach ($this->model->performValidation(true) as $message) {
-            throw new \Exception(sprintf(gettext('The S3 settings are not valid: %s'), (string)$message));
+        foreach ($this->model->validate(null, '', true) as $field => $text) {
+            throw new \Exception(sprintf(gettext('The S3 settings are not valid: %s: %s'), $field, $text));
         }
 
         [$plain, $name] = $this->running($cnf);
 
         $folder = $this->folder();
-        $remote = $this->listBackups($folder);
+        $keep = (int)$this->model->backupcount->getValue();
+        /* with nothing to delete, the names of this save's second are all that is asked for, however
+         * large the folder */
+        $remote = $this->listBackups($folder, $keep == 0 ? 'config-' . (int)self::stamp($name) : '');
+        /* the same save under core's name and under its revision time */
+        foreach (in_array($name, $remote) ? [] : $remote as $other) {
+            if (abs(self::stamp($other) - self::stamp($name)) < self::SAME_SAVE) {
+                $name = $other;
+                break;
+            }
+        }
         if (!in_array($name, $remote)) {
             $data = $this->encrypt($plain, $this->model->password->getValue());
             if ($data === null) {
@@ -237,14 +254,14 @@ class S3 extends Base implements IBackupProvider
             }
             $this->request('PUT', $folder . $name, [], $data);
             syslog(LOG_NOTICE, 's3-backup: uploaded ' . $folder . $name);
-            $remote[] = $name;
         }
 
-        $keep = (int)$this->model->backupcount->getValue();
-        usort($remote, function ($a, $b) {
-            return [self::stamp($b), $b] <=> [self::stamp($a), $a];
+        /* newest first; a name stamped in the future, from a clock that ran ahead, counts as oldest,
+         * as core's own list leaves it out, and the backup just sent always stays */
+        $now = microtime(true);
+        usort($remote, function ($a, $b) use ($now) {
+            return [self::stamp($b) <= $now, self::stamp($b), $b] <=> [self::stamp($a) <= $now, self::stamp($a), $a];
         });
-        /* the backup just sent stays even if the bucket holds names from a clock that ran ahead */
         $remote = array_merge([$name], array_values(array_diff($remote, [$name])));
         if ($keep > 0) {
             foreach (array_chunk(array_slice($remote, $keep), self::MAX_DELETE) as $old) {
@@ -258,7 +275,7 @@ class S3 extends Base implements IBackupProvider
 
     /**
      * Remove backups in one DeleteObjects request; S3 answers 200 and lists any key it could not remove.
-     * Services without DeleteObjects, e.g. Google Cloud Storage, get one DELETE per backup.
+     * A service that says it has no DeleteObjects, e.g. Google Cloud Storage once, gets one DELETE per backup.
      */
     private function delete($folder, $names)
     {
@@ -269,21 +286,30 @@ class S3 extends Base implements IBackupProvider
         try {
             $response = $this->request('POST', '', ['delete' => ''], $body . '</Delete>');
         } catch (\Exception $e) {
-            foreach ($names as $name) {
-                $this->request('DELETE', $folder . $name);
-                syslog(LOG_NOTICE, 's3-backup: removed ' . $folder . $name);
+            if (!in_array($this->status, [405, 501]) && !in_array($this->code, ['NotImplemented', 'MethodNotAllowed'])) {
+                throw $e;
             }
-            return;
+            $response = null;
         }
-        $xml = $this->parse($response);
-        foreach ($xml->Error ?? [] as $error) {
-            $this->fail(sprintf(
-                gettext('S3 could not remove %s: %s'),
-                self::clean((string)$error->Key),
-                self::clean((string)$error->Code . ': ' . (string)$error->Message)
-            ));
+        if ($response !== null) {
+            foreach ($this->parse($response, 'DeleteResult')->Error ?? [] as $error) {
+                $this->fail(sprintf(
+                    gettext('S3 could not remove %s: %s'),
+                    self::clean((string)$error->Key),
+                    self::clean((string)$error->Code . ': ' . (string)$error->Message)
+                ));
+            }
         }
         foreach ($names as $name) {
+            if ($response === null) {
+                try {
+                    $this->request('DELETE', $folder . $name);
+                } catch (\Exception $single) {
+                    if ($this->status != 404) { /* already gone */
+                        throw $single;
+                    }
+                }
+            }
             syslog(LOG_NOTICE, 's3-backup: removed ' . $folder . $name);
         }
     }
@@ -299,8 +325,8 @@ class S3 extends Base implements IBackupProvider
         if ($handle === false) {
             throw new \Exception(gettext('The configuration could not be read.'));
         }
-        /* a save holds an exclusive lock while it writes config.xml and its backup; like core,
-         * never wait outright, as this process may be the one holding it */
+        /* a save holds an exclusive lock while it writes config.xml and its backup; wait up to 10 s,
+         * not outright, as this process may hold it through another handle */
         for ($try = 0; !flock($handle, LOCK_SH | LOCK_NB); $try++) {
             if ($try >= 50) {
                 fclose($handle);
@@ -310,7 +336,10 @@ class S3 extends Base implements IBackupProvider
         }
         try {
             $plain = stream_get_contents($handle);
-            $backups = $cnf->getBackups();
+            /* only names core gives, so a hand-made copy is never the one matched */
+            $backups = array_filter($cnf->getBackups(), function ($backup) {
+                return preg_match(self::BACKUP_NAME, basename($backup)) === 1;
+            });
             usort($backups, function ($a, $b) {
                 return self::stamp(basename($b)) <=> self::stamp(basename($a));
             });
@@ -325,10 +354,12 @@ class S3 extends Base implements IBackupProvider
             flock($handle, LOCK_UN);
             fclose($handle);
         }
-        if ($name === null || !preg_match(self::BACKUP_NAME, $name)) {
-            /* saved without a backup of its own: named by the save time it records */
+        if ($name === null) {
+            /* saved without a backup of its own: named by the save time it records, which core
+             * writes with the GUI language's decimal mark, or a byte of one */
             $xml = @simplexml_load_string($plain, 'SimpleXMLElement', LIBXML_NONET);
-            $name = sprintf('config-%s.xml', $xml !== false ? (string)$xml->revision->time : '');
+            $time = $xml !== false ? trim(preg_replace('/[^0-9]+/', '.', (string)$xml->revision->time), '.') : '';
+            $name = sprintf('config-%s.xml', $time);
         }
         if (!preg_match(self::BACKUP_NAME, $name)) {
             /* it would never show in the listing, so it would be sent again every time */
@@ -364,26 +395,30 @@ class S3 extends Base implements IBackupProvider
     /**
      * Backup file names under a key prefix, following continuation tokens past 1000 keys.
      */
-    private function listBackups($folder)
+    private function listBackups($folder, $only = '')
     {
         $names = [];
         $token = null;
         $seen = [];
         do {
-            /* the delimiter keeps subfolders, e.g. other firewalls under this one's folder, out */
-            $query = ['list-type' => '2', 'prefix' => $folder, 'delimiter' => '/'];
+            /* the delimiter keeps subfolders, e.g. other firewalls under this one's folder, out;
+             * URL-encoded keys, so one holding a control character cannot break the XML */
+            $query = ['list-type' => '2', 'prefix' => $folder . $only, 'delimiter' => '/', 'encoding-type' => 'url'];
             if ($token !== null) {
                 $query['continuation-token'] = $token;
             }
-            $xml = $this->parse($this->request('GET', '', $query));
+            $xml = $this->parse($this->request('GET', '', $query), 'ListBucketResult');
+            $encoded = (string)$xml->EncodingType === 'url';
             foreach ($xml->Contents ?? [] as $object) {
-                $name = substr((string)$object->Key, strlen($folder));
+                $key = $encoded ? rawurldecode((string)$object->Key) : (string)$object->Key;
+                $name = substr($key, strlen($folder));
                 /* core prints the names it gets back unescaped, so only backup names pass */
                 if (preg_match(self::BACKUP_NAME, $name)) {
                     $names[] = $name;
                 }
             }
-            $token = (string)$xml->IsTruncated === 'true' ? (string)$xml->NextContinuationToken : null;
+            $truncated = in_array(strtolower((string)$xml->IsTruncated), ['true', '1'], true);
+            $token = $truncated ? (string)$xml->NextContinuationToken : null;
             if ($token === '') {
                 $this->fail(gettext('S3 returned a partial bucket listing without a way to continue it.'));
             }
@@ -391,7 +426,7 @@ class S3 extends Base implements IBackupProvider
                 $this->fail(gettext('S3 kept returning more of the bucket listing than a backup folder holds.'));
             }
             $seen[(string)$token] = true;
-        } while (!empty($token));
+        } while ($token !== null);
 
         return $names;
     }
@@ -441,8 +476,8 @@ class S3 extends Base implements IBackupProvider
             'Authorization: AWS4-HMAC-SHA256 Credential=' . (string)$this->model->accessKey .
                 "/{$scope}, SignedHeaders={$signed}, Signature={$signature}",
         ];
-        if ($method == 'POST') {
-            /* DeleteObjects requires it */
+        if ($method == 'PUT' || $method == 'POST') {
+            /* DeleteObjects requires it, and so does a PUT into a bucket with Object Lock */
             $headers[] = 'Content-MD5: ' . base64_encode(md5($body, true));
         }
         $this->curl = $this->curl ?? curl_init();
@@ -471,7 +506,8 @@ class S3 extends Base implements IBackupProvider
             curl_setopt($curl, CURLOPT_POSTFIELDS, $body);
         }
         $done = curl_exec($curl);
-        $status = (int)curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
+        $this->status = $done === false ? 0 : (int)curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
+        $this->code = '';
         $error = curl_error($curl);
 
         if ($tooLarge) {
@@ -480,21 +516,30 @@ class S3 extends Base implements IBackupProvider
         if ($done === false) {
             $this->fail(sprintf(gettext('Could not reach %s: %s'), $host, $error));
         }
-        if ($status < 200 || $status >= 300) {
-            /* only S3's own error code and message, never the raw body */
+        if ($this->status < 200 || $this->status >= 300) {
+            /* only S3's own error code and message, never the raw body; a redirect names the endpoint */
             $xml = @simplexml_load_string((string)$response, 'SimpleXMLElement', LIBXML_NONET);
-            $reason = $xml !== false && isset($xml->Code)
-                ? self::clean((string)$xml->Code . ': ' . (string)$xml->Message) : '';
-            $this->fail(sprintf(gettext('S3 answered HTTP %d %s'), $status, $reason));
+            $reason = '';
+            if ($xml !== false && isset($xml->Code)) {
+                $this->code = (string)$xml->Code;
+                $reason = self::clean($this->code . ': ' . (string)$xml->Message) .
+                    (isset($xml->Endpoint) ? ' (' . self::clean((string)$xml->Endpoint) . ')' : '');
+            }
+            $this->fail(sprintf(gettext('S3 answered HTTP %d %s'), $this->status, $reason));
         }
         return (string)$response;
     }
 
-    private function parse($body)
+    /**
+     * The answer as XML, which must be the document S3 sends for this request.
+     */
+    private function parse($body, $root)
     {
         $xml = @simplexml_load_string($body, 'SimpleXMLElement', LIBXML_NONET);
-        if ($xml === false) {
-            $this->fail(gettext('S3 answered with something other than a bucket listing.'));
+        if ($xml === false || $xml->getName() !== $root) {
+            $this->fail($root == 'DeleteResult'
+                ? gettext('S3 answered with something other than a delete result.')
+                : gettext('S3 answered with something other than a bucket listing.'));
         }
         return $xml;
     }

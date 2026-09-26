@@ -5,43 +5,32 @@
  * with its settings stubbed, and each step's answer is printed as one JSON line.
  */
 
+namespace Phalcon\Filter {
+    /* core's own validators do the work; only the Phalcon pass they run beside is absent here */
+    if (!class_exists(Validation::class)) {
+        class Validation
+        {
+            public function add($field, $validator)
+            {
+                return $this;
+            }
+            public function validate($data)
+            {
+                return [];
+            }
+        }
+    }
+}
+
+namespace {
 require __DIR__ . '/../../../tools/tests/bootstrap.php';
 
-/* the settings model's fields, as the provider reads them */
-class StubField
-{
-    public function __construct(private string $value)
-    {
-    }
-    public function __toString(): string
-    {
-        return $this->value;
-    }
-    public function getValue(): string
-    {
-        return $this->value;
-    }
-}
-
-class StubSettings
-{
-    public array $invalid = [];
-    public function __construct(public array $values)
-    {
-    }
-    public function __get($name)
-    {
-        return new StubField((string)($this->values[$name] ?? ''));
-    }
-    public function getNodeByReference($name)
-    {
-        return $this->__get($name);
-    }
-    public function performValidation($full = false)
-    {
-        return $this->invalid;
-    }
-}
+/* the real settings model over an empty config.xml, as core loads it; no configd is running */
+require getenv('OPNSENSE_CORE') . '/src/opnsense/mvc/app/config/AppConfig.php';
+$conf = sys_get_temp_dir() . '/s3-harness-' . getmypid();
+@mkdir($conf);
+file_put_contents("{$conf}/config.xml", "<?xml version=\"1.0\"?>\n<opnsense/>\n");
+new OPNsense\Core\AppConfig(['application' => ['configDir' => $conf], 'globals' => ['simulate_mode' => '1']]);
 
 /* core's Config as far as the upload uses it: the local backups, newest first */
 class StubConfig
@@ -73,8 +62,10 @@ class TestS3 extends OPNsense\Backup\S3
 
 $spec = json_decode($argv[1], true);
 $provider = (new ReflectionClass('TestS3'))->newInstanceWithoutConstructor();
-$settings = new StubSettings($spec['settings']);
-$settings->invalid = $spec['invalid'] ?? [];
+$settings = new OPNsense\Backup\S3Settings();
+foreach ($spec['settings'] as $name => $value) {
+    $settings->$name = $value;
+}
 (new ReflectionProperty('OPNsense\Backup\S3', 'model'))->setValue($provider, $settings);
 $call = function ($method, ...$args) use ($provider) {
     return (new ReflectionMethod('OPNsense\Backup\S3', $method))->invoke($provider, ...$args);
@@ -105,3 +96,4 @@ foreach ($spec['steps'] as $step) {
     echo json_encode($answer) . "\n";
 }
 $GLOBALS['test_checks'] = count($spec['steps']);
+}
