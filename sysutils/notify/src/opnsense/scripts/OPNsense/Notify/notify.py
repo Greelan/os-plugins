@@ -33,6 +33,10 @@ to the Apprise channels configured under Services: Notify.
   notify.py check             poll and send, retrying earlier failures
   notify.py boot              report that the firewall has started
   notify.py status            what the last run recorded (JSON)
+  notify.py summary <uuid>    send one channel's summary of its period so far, without ending it
+  notify.py reports           archived summaries (JSON)
+  notify.py report <name>     one archived summary's page, base64 (JSON)
+  notify.py delete <name>     delete an archived summary (JSON)
   notify.py test <uuid>       send a test message to one channel (JSON result)
   notify.py services          Apprise services and their URL fields (JSON)
   notify.py describe <uuid>   service and non-secret fields of a saved channel (JSON)
@@ -45,13 +49,13 @@ only reported once a previous state exists; the first poll records a baseline.
 """
 
 import base64
+import collections
 import functools
 import http.client
 import json
 import os
 import re
 import socket
-import subprocess
 import sys
 import syslog
 import time
@@ -62,19 +66,26 @@ import xml.etree.ElementTree as ET
 # works with whichever Python the OPNsense series ships
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
 
+from common import (LINK_UP, addresses, carp_states, clock, command_output, configctl_json, duration,  # noqa: E402
+                    ifconfig, link_states, log, message, pf_states, quiet, read_firmware, setting,
+                    stale_tmp, write_private)
+from summary import (REPORT_NAME, REPORTS_DIR, SAMPLE_SECONDS, SUMMARY_TRIES, add_events,  # noqa: E402
+                     archive_report, archived_reports, build_summary, prune_archive, monit_allowed, remove_report,
+                     report_graphs,
+                     standby_periods, subscribed, summary_channels, summary_html, update_summaries)
+
 CONFIG = "/conf/config.xml"
 STATE = "/var/db/notify/state.json"
 SETTINGS_CACHE = "/var/db/notify/settings.json"
 SETTINGS_SCRIPT = "/usr/local/opnsense/scripts/OPNsense/Notify/settings.php"
-SETTINGS_FORMAT = 2
-FIRMWARE = "/tmp/pkg_upgrade.json"
+SETTINGS_FORMAT = 4
 MONIT_SOCKET = "/var/run/monit.sock"
 AUDIT_LOG = "/var/log/audit"
 IDS_LOG = "/var/log/suricata/eve.json"
-CONFIGCTL = "/usr/local/sbin/configctl"
-PFCTL = "/sbin/pfctl"
 APCACCESS = "/usr/local/sbin/apcaccess"
 UPSC = "/usr/local/bin/upsc"
+# battery faults, as NUT's flags are spelled out below and as apcupsd reports them
+UPS_FAULTS = ("low battery", "replace", "lowbatt")
 # NUT's flags, spelled out (apcupsd already reports words)
 UPS_FLAGS = {"OL": "online", "OB": "on battery", "LB": "low battery", "RB": "replace battery",
              "CHRG": "charging", "DISCHRG": "discharging", "BYPASS": "on bypass", "CAL": "calibrating",
@@ -84,6 +95,8 @@ UPS_FLAGS = {"OL": "online", "OB": "on battery", "LB": "low battery", "RB": "rep
 RETRY_DELAYS = (60, 120, 300, 600, 1800, 3600)
 RETRY_SECONDS = 86400
 QUEUE_MAX = 100
+DIGEST_LINES = 20
+DIGEST_CHARS = 800
 CERT_INTERVAL = 3600
 # System Status entries change slowly and cost a PHP call to collect
 STATUS_INTERVAL = 300
@@ -118,13 +131,24 @@ KEY_MAX = 64 * 1024
 # recorded state older than this predates a pause (disabled, or the firewall was off),
 # so it is dropped rather than compared against
 STALE_SECONDS = 3600
-# a WireGuard peer counts as gone once its last handshake is this old
+# WireGuard online within this, then stale, as in core
 HANDSHAKE_SECONDS = 300
 # lines or alerts read from a log in one pass, so a busy log cannot stall a check
 LOG_LINES = 500
 LOG_BYTES = 2 * 1024 * 1024
+# scanned back for marked lines, e.g. IDS alerts
+KEEP_BYTES = 64 * 1024 * 1024
 # devices remembered, oldest dropped first
 DEVICES_MAX = 4096
+SYSLOG_DIR = "/var/log"
+# audit (logins), filterlog, and our own
+SYSLOG_SKIP = ("audit", "filter", "notify")
+SEVERITIES = ("emergency", "alert", "critical", "error", "warning", "notice", "info", "debug")
+# a repeated log message is held this long
+SYSLOG_HOLD = 3600
+# per check; more are listed in one
+LOG_MESSAGES = 20
+SEEN_MAX = 1000
 
 AUTH_FAILURE = ("authentication failed", "could not authenticate", "unknown user", "invalid credentials")
 AUTH_SUCCESS = ("authenticated successfully",)
@@ -174,20 +198,16 @@ STATUS_LEVELS = {"error": -1, "warning": 0, "notice": 1}
 STATUS_TYPES = {-1: "failure", 0: "warning", 1: "info"}
 
 
-def log(priority, message):
-    syslog.syslog(priority, message)
-
-
 def text(node, path, default=""):
     value = node.findtext(path) if node is not None else None
     return value if value is not None else default
 
 
 def load_config():
-    """Settings from the models, via settings.php; cached until config.xml changes."""
+    """Settings from the models, via settings.php; cached until config.xml or settings.php changes."""
     try:
-        stat = os.stat(CONFIG)
-        source = [stat.st_mtime_ns, stat.st_size, SETTINGS_FORMAT]
+        stat, script = os.stat(CONFIG), os.stat(SETTINGS_SCRIPT)
+        source = [stat.st_mtime_ns, stat.st_size, script.st_mtime_ns, script.st_size, SETTINGS_FORMAT]
     except OSError:
         source = None
     if source is not None:
@@ -199,11 +219,11 @@ def load_config():
         except (OSError, ValueError, KeyError):
             pass
 
+    output = command_output([SETTINGS_SCRIPT], timeout=60)
     try:
-        result = subprocess.run([SETTINGS_SCRIPT], capture_output=True, text=True, timeout=60)
-        config = json.loads(result.stdout)
-    except (OSError, subprocess.SubprocessError, ValueError) as error:
-        log(syslog.LOG_ERR, f"settings could not be read: {error}")
+        config = json.loads(output or "")
+    except ValueError as error:
+        log(syslog.LOG_ERR, f"settings could not be read: {error if output else 'settings.php failed'}")
         return None
 
     if source is not None:
@@ -212,15 +232,9 @@ def load_config():
 
 
 def save_cache(payload):
-    """The cache holds the channel URLs, so it is written private and replaced whole."""
-    tmp = SETTINGS_CACHE + ".tmp"
+    """The cache holds the channel URLs, so it is written private."""
     try:
-        os.makedirs(os.path.dirname(SETTINGS_CACHE) or ".", mode=0o700, exist_ok=True)
-        handle = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(handle, "w") as stream:
-            os.fchmod(stream.fileno(), 0o600)  # the mode above applies to a new file only
-            json.dump(payload, stream)
-        os.replace(tmp, SETTINGS_CACHE)
+        write_private(SETTINGS_CACHE, json.dumps(payload))
     except OSError:
         pass  # without a cache the next run simply asks again
 
@@ -235,82 +249,135 @@ def load_state():
 
 
 def fresh_state():
-    """The recorded state, keeping only the queue once it is too old to compare against."""
+    """The recorded state, keeping only the queue and summary data once it is too old to compare
+    against."""
     state = load_state()
     if int(time.time()) - state.get("stamp", 0) > STALE_SECONDS:
-        state = {"queue": state.get("queue", [])}  # queued items expire on their own
+        # queued items expire on their own
+        state = {key: state[key] for key in ("queue", "summary") if key in state}
     return state
 
 
 def save_state(state):
     """The queue holds message bodies, so the state is written private like the cache."""
-    os.makedirs(os.path.dirname(STATE) or ".", mode=0o700, exist_ok=True)
-    tmp = STATE + ".tmp"
-    handle = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(handle, "w") as stream:
-        os.fchmod(stream.fileno(), 0o600)  # the mode above applies to a new file only
-        json.dump(state, stream)
-    os.replace(tmp, STATE)
+    write_private(STATE, json.dumps(state))
 
 
-def configctl_json(*args):
-    """JSON from a configd action, or None; a missing action is a plugin bug, so say so.
-
-    PHP renders an empty array as [], so an empty answer comes back as {}.
-    """
-    result = None
-    try:
-        result = subprocess.run([CONFIGCTL] + list(args), capture_output=True, text=True, timeout=120)
-        answer = json.loads(result.stdout)
-        return {} if answer == [] else answer
-    except (OSError, subprocess.SubprocessError, ValueError):
-        answer = result.stdout[:100].strip() if result is not None else ""
-        log(syslog.LOG_DEBUG, f"no usable answer from \"{' '.join(args)}\": {answer}")
-        return None
-
-
-def duration(seconds):
-    seconds = int(max(seconds, 0))
-    days, seconds = divmod(seconds, 86400)
-    hours, seconds = divmod(seconds, 3600)
-    minutes, seconds = divmod(seconds, 60)
-    parts = [(days, "d"), (hours, "h"), (minutes, "m"), (seconds, "s")]
-    shown = [f"{value}{unit}" for value, unit in parts if value]
-    return " ".join(shown[:2]) if shown else "0s"
-
-
-def clock(timestamp):
-    return time.strftime("%Y-%m-%d %H:%M", time.localtime(timestamp))
-
-
-def message(event, ntype, title, body):
-    # a notification with an empty body is refused on delivery, so fall back to the title
-    return {"event": event, "type": ntype, "title": title, "body": body or title,
-            "time": int(time.time())}
-
-
-def follow(path, previous):
-    """New lines of a log since the last pass, with the position to remember."""
+def follow(path, previous, keep=None):
+    """New lines since the last pass (only those with keep), the position to remember, and (lines
+    missed, bytes skipped). A rotated log is finished first, found by inode; inode 0 means from
+    the start."""
     try:
         stat = os.stat(path)
     except OSError:
-        return [], previous
-    position = previous.get("offset", 0) if previous.get("inode") == stat.st_ino else 0
-    if position > stat.st_size:
-        position = 0  # truncated
-    position = max(position, stat.st_size - LOG_BYTES)  # skip a flood rather than read it all
+        return [], previous, (0, 0)
     state = {"inode": stat.st_ino, "offset": stat.st_size, "path": path}
     if previous.get("inode") is None:
-        return [], state  # first sight of this file, start from the end
+        return [], state, (0, 0)  # first sight of this file, start from the end
+    lines: list = []
+    missed, skipped = 0, 0
+    if previous["inode"] and previous["inode"] != stat.st_ino:
+        old = rotated(path, previous["inode"])
+        read = read_new(old, previous.get("offset", 0), keep) if old is not None else None
+        if read is not None:
+            lines, missed, skipped = read[0], read[1], read[2]
+        # else compressed; either way the new file is read from its start
+        previous = {"inode": stat.st_ino, "offset": 0, "path": path}
+    read = read_new(path, previous.get("offset", 0), keep)
+    if read is None:
+        return lines, previous, (missed, skipped)
+    lines += read[0]
+    state["offset"] = read[3]
+    missed += read[1] + max(len(lines) - LOG_LINES, 0)
+    return lines[-LOG_LINES:], state, (missed, skipped + read[2])
+
+
+def find_mark(data, keep, start, end):
+    if isinstance(keep, bytes):
+        return data.find(keep, start, end)
+    match = keep.search(data, start, end)
+    return match.start() if match else -1
+
+
+def read_new(path, position, keep=None):
+    """(lines, lines missed, bytes skipped, end offset) from position; a flood is skipped and only
+    lines matching keep (bytes, or a bytes pattern for a line's start) are decoded."""
     try:
         with open(path, "rb") as handle:
-            handle.seek(position)
-            raw = handle.readlines()
-            state["offset"] = handle.tell()
+            size = os.fstat(handle.fileno()).st_size
+            if position > size:
+                position = 0  # truncated
+            # markers are cheap to find, so scan further
+            start = max(position, size - (KEEP_BYTES if isinstance(keep, bytes) else LOG_BYTES))
+            handle.seek(start)
+            if start > position:
+                handle.readline()  # the rest of a line cut by the skip
+                start = handle.tell()
+            kept: collections.deque = collections.deque(maxlen=LOG_LINES)
+            total = 0
+            carry = b""  # an unfinished last line waits
+            if keep is not None:
+                # find markers in large blocks, in C
+                while True:
+                    block = handle.read(4 * 1024 * 1024)
+                    if not block:
+                        break
+                    data = carry + block
+                    cut = data.rfind(b"\n") + 1
+                    at = find_mark(data, keep, 0, cut)
+                    while at >= 0:
+                        begin = data.rfind(b"\n", 0, at) + 1
+                        stop = data.find(b"\n", at, cut)
+                        stop = cut if stop < 0 else stop + 1
+                        total += 1
+                        kept.append(data[begin:stop])
+                        at = find_mark(data, keep, stop, cut)
+                    carry = data[cut:]
+            else:
+                for line in handle:
+                    if not line.endswith(b"\n"):
+                        carry = line
+                        break
+                    total += 1
+                    kept.append(line)
+            end = handle.tell() - len(carry)
     except OSError:
-        return [], previous
-    lines = [line.decode("utf-8", "replace") for line in raw]
-    return lines[-LOG_LINES:], state
+        return None
+    return [line.decode("utf-8", "replace") for line in kept], total - len(kept), start - position, end
+
+
+def rotated(path, inode):
+    """Where a log was rotated to, found by the inode it had; a compressed copy is not read."""
+    folder = os.path.dirname(path)
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return None
+    for name in names:
+        candidate = os.path.join(folder, name)
+        if candidate == path or name.endswith((".gz", ".bz2", ".xz", ".zst")):
+            continue
+        try:
+            if os.stat(candidate).st_ino == inode:
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def left_out(event, what, missed, skipped):
+    """A note that a log pass left lines out, or nothing."""
+    parts = []
+    if missed:
+        parts.append(f"{missed} {what} before the latest {LOG_LINES}")
+    if skipped:
+        parts.append(f"{skipped // (1024 * 1024) or 1} MB of log")
+    if not parts:
+        return []
+    # sent, not counted
+    return [dict(message(event, "warning", f"Some {what} were not checked",
+                         "The log grew faster than it is read, so these were passed over: " + "; ".join(parts) + "."),
+                 note=True)]
 
 
 def audit_log():
@@ -341,10 +408,7 @@ def check_gateway(config, previous):
     if not isinstance(data, dict):
         return previous, []
     degraded = config["general"].get("gatewayDegraded", "0") == "1"
-    try:
-        hold = int(config["general"].get("gatewayHold", "0"))
-    except ValueError:
-        hold = 0
+    hold = setting(config["general"], "gatewayHold", 0)
     now = int(time.time())
     current, messages = {}, []
     for name, gateway in data.items():
@@ -406,11 +470,9 @@ def check_config(config, previous):
 
 
 def check_firmware(config, previous):
-    try:
-        with open(FIRMWARE) as handle:
-            data = json.load(handle)
-    except (OSError, ValueError):
-        return previous, []  # absent while a check runs
+    data = read_firmware()
+    if data is None:
+        return previous, []
     if data.get("connection") != "ok":
         return previous, []
     upgrades = data.get("upgrade_packages") or []
@@ -434,21 +496,25 @@ def check_firmware(config, previous):
 def check_auth(config, previous):
     logins = config["general"].get("authLogins", "0") == "1"
     previous, path, lines = previous or {}, audit_log(), []
+    missed, skipped = 0, 0
     if previous.get("path") and previous["path"] != path:
-        lines, _ = follow(previous["path"], previous)  # the rest of the day before
+        lines, _, (missed, skipped) = follow(previous["path"], previous)  # the rest of the day before
         previous = {"inode": 0}  # read the new day's file from its start
-    more, state = follow(path, previous)
+    more, state, (more_missed, more_skipped) = follow(path, previous)
     lines += more
-    messages = []
+    messages = left_out("auth", "login events", missed + more_missed, skipped + more_skipped)
     for line in lines:
         body = line.strip()
         lowered = body.lower()
+        user = re.search(r"\buser '?([^'\s]+)", body, re.I)
+        source = re.search(r"\bfrom '?([0-9A-Fa-f.:]+)", body)
+        facts = {"user": user.group(1) if user else "", "source": source.group(1) if source else ""}
         if any(hint in lowered for hint in AUTH_LOCKOUT):
-            messages.append(message("auth", "failure", "Login blocked", body))
+            messages.append(message("auth", "failure", "Login blocked", body, dict(facts, outcome="Blocked")))
         elif any(hint in lowered for hint in AUTH_FAILURE):
-            messages.append(message("auth", "warning", "Failed login", body))
+            messages.append(message("auth", "warning", "Failed login", body, dict(facts, outcome="Failed")))
         elif logins and any(hint in lowered for hint in AUTH_SUCCESS):
-            messages.append(message("auth", "info", "Login", body))
+            messages.append(message("auth", "info", "Login", body, dict(facts, outcome="Succeeded")))
     return state, messages
 
 
@@ -457,10 +523,7 @@ def check_certificate(config, previous):
     now = int(time.time())
     if now - previous.get("checked", 0) < CERT_INTERVAL:
         return previous, []
-    try:
-        days = int(config["general"].get("certDays", "14"))
-    except ValueError:
-        days = 14
+    days = setting(config["general"], "certDays", 14)
     seen, messages = {}, []
     for item in config.get("certificates", []):
         expires, key = item["expires"], item["key"]
@@ -491,11 +554,12 @@ def check_status(config, previous):
         return previous, []
     seen = previous.get("items")
     threshold = STATUS_LEVELS.get(config["general"].get("statusLevel", "warning"), 0)
-    current, messages = {}, []
+    current, messages, unread = {}, [], set()
     for name, item in data.items():
         try:
             code = int(item.get("statusCode"))
         except (TypeError, ValueError):
+            unread.add(name)
             continue
         if code > threshold:
             continue
@@ -507,12 +571,13 @@ def check_status(config, previous):
             continue
         messages.append(message("status", STATUS_TYPES.get(code, "info"), title, body))
     for name, was in (seen or {}).items():
-        if name in data:
-            continue  # still listed, if now below the level; core leaves out what is OK
-        gone =was[3] if len(was) > 3 else name
+        # below the level is resolved, unless the level just changed: raising it hides, not resolves
+        if name in current or name in unread or (name in data and previous.get("level", threshold) != threshold):
+            continue
+        gone = was[3] if len(was) > 3 else name
         messages.append(message("status", "success", f"{gone} is resolved",
                                 f"Was: {was[1]}" if was[1] else ""))
-    return {"checked": now, "items": current}, messages
+    return {"checked": now, "items": current, "level": threshold}, messages
 
 
 class UnixHTTPConnection(http.client.HTTPConnection):
@@ -570,37 +635,34 @@ def check_monit(config, previous):
     return current, messages
 
 
-@functools.lru_cache(maxsize=1)
-def ifconfig():
-    try:
-        return subprocess.run(["/sbin/ifconfig", "-a"], capture_output=True, text=True, timeout=30).stdout
-    except (OSError, subprocess.SubprocessError):
-        return ""
-
-
-def carp_states():
-    """CARP states of every virtual IP on this firewall."""
-    return re.findall(r"^\s+carp: (\S+) vhid", ifconfig(), re.M)
-
-
-def is_carp_backup(config):
-    """True when this firewall has CARP virtual IPs and none of them is master."""
+def is_carp_backup(config, unknown=True):
+    """True when this firewall has CARP virtual IPs and none of them is master; unknown when
+    ifconfig could not be read."""
     if config["general"].get("carpMasterOnly", "0") != "1":
         return False
+    if ifconfig() is None:
+        return unknown
     states = carp_states()
     return bool(states) and "MASTER" not in states
 
 
 def check_vpn(config, previous):
     now = int(time.time())
-    current, messages = {}, []
+    current, messages, idle = {}, [], {}
     peers = configctl_json("wireguard", "show") or {}
     for record in peers.get("records", []) if isinstance(peers, dict) else []:
         if record.get("type") != "peer":
             continue
         name = f"WireGuard {record.get('if', '?')} {str(record.get('public-key', ''))[:12]}"
-        handshake = record.get("latest-handshake") or 0
-        current[name] = "up" if handshake and now - handshake < HANDSHAKE_SECONDS else "down"
+        try:
+            handshake = int(record.get("latest-handshake") or 0)
+        except (TypeError, ValueError):
+            handshake = 0
+        # as core: stale, not down, without traffic
+        current[name] = "offline" if not handshake else ("online" if now - handshake <= HANDSHAKE_SECONDS
+                                                         else "stale")
+        if current[name] == "stale":
+            idle[name] = now - handshake
     sessions = configctl_json("openvpn", "connections", "server,client") or {}
     servers = sessions.get("server")
     for identifier, instance in (servers.items() if isinstance(servers, dict) else []):
@@ -617,16 +679,91 @@ def check_vpn(config, previous):
             current[f"OpenVPN client {identifier}"] = "up" if state == "connected" else "down"
     for name, level in current.items():
         last = (previous or {}).get(name)
+        # before 1.4, down meant stale or never connected
+        if name.startswith("WireGuard") and (last, level) in (("up", "online"), ("down", "stale"), ("down", "offline")):
+            continue
         if previous is None or last == level:
             continue
-        if level == "up":
-            messages.append(message("vpn", "success", f"{name} is connected", ""))
-        else:
-            messages.append(message("vpn", "warning", f"{name} is disconnected", ""))
+        word = VPN_WORDS[level]
+        body = f"No handshake for {duration(idle[name])}." if name in idle else ""
+        messages.append(message("vpn", "success" if level in ("up", "online") else "warning",
+                                f"{name} is {word}", body, {"peer": f"{name}: {word}"}))
     for name in (previous or {}):
-        if name not in current and previous[name] == "up":
-            messages.append(message("vpn", "warning", f"{name} is disconnected", ""))
+        if name not in current and previous[name] in ("up", "online"):
+            word = "offline" if name.startswith("WireGuard") else "disconnected"
+            messages.append(message("vpn", "warning", f"{name} is {word}", "", {"peer": f"{name}: {word}"}))
     return current, messages
+
+
+VPN_WORDS = {"up": "connected", "down": "disconnected", "online": "online", "stale": "stale", "offline": "offline"}
+
+
+def check_syslog(config, previous):
+    """Local log lines at or above the chosen severity; audit, filterlog and our own log are
+    skipped."""
+    threshold = setting(config["general"], "logSeverity", 2)
+    previous = previous or {}
+    now, day = int(time.time()), time.strftime("%Y%m%d")
+    try:
+        names = sorted(n for n in os.listdir(SYSLOG_DIR) if n not in SYSLOG_SKIP)
+    except OSError:
+        return previous, []
+
+    # the priorities (facility * 8 + severity) at or above the severity
+    wanted = re.compile(rb"^<(?:%s)>" % b"|".join(b"%d" % (f * 8 + s) for f in range(24)
+                                                  for s in range(threshold + 1)), re.M)
+    files: dict = {}
+    found: dict = {}
+    missed = skipped = 0
+    for name in names:
+        path = os.path.join(SYSLOG_DIR, name, f"{name}_{day}.log")
+        last = previous.get("files", {}).get(name, {})
+        if not last and not os.path.isfile(path):
+            continue
+        lines = []
+        if last.get("path") and last["path"] != path:
+            lines, _, (count, passed) = follow(last["path"], last, wanted)  # the rest of the day before
+            missed, skipped = missed + count, skipped + passed
+            last = {"inode": 0}  # read the new day's file from its start
+        more, files[name], (count, passed) = follow(path, last, wanted)
+        missed, skipped = missed + count, skipped + passed
+        for line in lines + more:
+            match = re.match(r"<(\d+)>\d* \S+ \S+ (\S+) \S+ \S+ (?:-|\[.*?\]) ?(.*)", line.strip())
+            if match:
+                key = (name, match.group(2), match.group(3).strip(), int(match.group(1)) % 8)
+                found[key] = found.get(key, 0) + 1
+    # repeats within the hold are counted, not sent
+    seen = {k: t for k, t in previous.get("seen", {}).items() if now - t < SYSLOG_HOLD}
+    messages: list = []
+    extra: list = []
+    sent = 0
+    for (name, program, text, severity), count in sorted(found.items(), key=lambda kv: kv[0][3]):
+        repeat = f"{program}\t{text}"[:300]
+        body = f"{SEVERITIES[severity].capitalize()} in the {name} log: {text}"
+        if count > 1:
+            body += f"\n(Logged {count} times.)"
+        found_now = dict(message("syslog", "failure" if severity <= 2 else "warning", f"{program}: {text[:100]}",
+                                 body, {"program": program}), count=count)
+        if repeat in seen or sent >= LOG_MESSAGES:
+            if repeat not in seen:
+                extra.append(f"{program}: {text[:100]}")
+            messages.append(dict(found_now, quiet=True))
+        else:
+            messages.append(found_now)
+            sent += 1
+        seen.setdefault(repeat, now)
+    if extra:
+        messages.append(dict(message("syslog", "warning", f"{len(extra)} more log messages", "\n".join(extra)),
+                             note=True))
+    if "\tnot checked" not in seen:
+        found_note = left_out("syslog", "log messages", missed, skipped)
+        if found_note:
+            seen["\tnot checked"] = now
+        messages += found_note
+    # bounded against floods of differing lines
+    if len(seen) > SEEN_MAX:
+        seen = dict(sorted(seen.items(), key=lambda kv: kv[1])[-SEEN_MAX:])
+    return {"files": files, "seen": seen}, messages
 
 
 def check_device(config, previous):
@@ -656,30 +793,31 @@ def check_device(config, previous):
 
 
 def check_ids(config, previous):
-    try:
-        severity = int(config["general"].get("idsSeverity", "1"))
-    except ValueError:
-        severity = 1
-    lines, state = follow(IDS_LOG, previous or {})
-    messages = []
+    severity = setting(config["general"], "idsSeverity", 1)
+    lines, state, (missed, skipped) = follow(IDS_LOG, previous or {}, keep=b'"event_type":"alert"')
+    messages = left_out("ids", "IDS alerts", missed, skipped)
     for line in lines:
         try:
             event = json.loads(line)
         except ValueError:
             continue
-        alert = event.get("alert") if event.get("event_type") == "alert" else None
-        if not alert or int(alert.get("severity", 3)) > severity:
-            continue
+        alert = event.get("alert") if isinstance(event, dict) and event.get("event_type") == "alert" else None
+        try:
+            if not isinstance(alert, dict) or int(alert.get("severity", 3)) > severity:
+                continue
+        except (TypeError, ValueError):
+            continue  # else it stalls the log
         where = f"{event.get('src_ip', '?')} -> {event.get('dest_ip', '?')}"
         messages.append(message("ids", "warning", alert.get("signature", "IDS alert"),
-                                f"{where}\nSeverity {alert.get('severity')}, {alert.get('category', '')}"))
+                                f"{where}\nSeverity {alert.get('severity')}, {alert.get('category', '')}",
+                                {"signature": alert.get("signature", ""), "source": event.get("src_ip", "")}))
     return state, messages
 
 
 def check_carp(config, previous):
     names = config.get("interfaces", {})
     current, messages, device = {}, [], None
-    for line in ifconfig().splitlines():
+    for line in (ifconfig() or "").splitlines():
         match = re.match(r"^(\S+): flags=", line)
         if match:
             device = match.group(1)
@@ -696,27 +834,6 @@ def check_carp(config, previous):
         title = f"CARP vhid {match.group(2)} on {names.get(device, device)} is now {current[key]}"
         messages.append(message("carp", ntype, title, f"Changed from {last}."))
     return current, messages
-
-
-def addresses():
-    """Device -> the addresses it holds, link-local and loopback aside."""
-    found: dict = {}
-    device = None
-    for line in ifconfig().splitlines():
-        match = re.match(r"^(\S+): flags=", line)
-        if match:
-            device = match.group(1)
-            continue
-        match = re.match(r"^\s+inet6? (\S+)", line)
-        if match is None or device is None:
-            continue
-        address = match.group(1).split("%")[0]
-        if address.startswith(("fe80:", "127.", "::1")):
-            continue
-        if " temporary" in line or " deprecated" in line:
-            continue  # privacy addresses rotate; reporting each one would be noise
-        found.setdefault(device, []).append(address)
-    return found
 
 
 def check_wanip(config, previous):
@@ -737,20 +854,12 @@ def check_wanip(config, previous):
 def check_link(config, previous):
     """Carrier on the configured interfaces."""
     names, current, messages = config.get("interfaces", {}), {}, []
-    device = None
-    for line in ifconfig().splitlines():
-        match = re.match(r"^(\S+): flags=", line)
-        if match:
-            device = match.group(1)
-            continue
-        match = re.match(r"^\s+status: (.+)$", line)
-        if match is None or device is None or device not in names:
-            continue
-        current[device] = match.group(1).strip()
+    for device, status in link_states(names).items():
+        current[device] = status
         last = (previous or {}).get(device)
         if previous is None or last is None or last == current[device]:
             continue
-        up = current[device] in ("active", "associated")
+        up = current[device] in LINK_UP
         messages.append(message("link", "success" if up else "failure",
                                 f"{names[device]} link is {current[device]}", f"Was {last}."))
     return current, messages
@@ -758,20 +867,11 @@ def check_link(config, previous):
 
 def check_states(config, previous):
     """The firewall state table against its limit."""
-    try:
-        threshold = int(config["general"].get("statesPercent", "80"))
-    except ValueError:
-        threshold = 80
-    try:
-        info = subprocess.run([PFCTL, "-si"], capture_output=True, text=True, timeout=30).stdout
-        limits = subprocess.run([PFCTL, "-sm"], capture_output=True, text=True, timeout=30).stdout
-    except (OSError, subprocess.SubprocessError):
-        return previous, []
-    found = re.search(r"current entries\s+(\d+)", info)
-    allowed = re.search(r"states\s+hard limit\s+(\d+)", limits)
-    if found is None or allowed is None:
+    threshold = setting(config["general"], "statesPercent", 80)
+    found = pf_states()
+    if found is None or not found[1]:
         return previous, []  # no limit to measure against, e.g. "states unlimited"
-    entries, limit = int(found.group(1)), int(allowed.group(1))
+    entries, limit = found
     percent = entries * 100 // max(limit, 1)
     current = {"over": percent >= threshold}
     if previous is None or previous.get("over") == current["over"]:
@@ -786,11 +886,7 @@ def ups_status():
     """(name, state, detail) per UPS, from apcupsd or NUT, whichever is installed."""
     found = []
     if os.access(APCACCESS, os.X_OK):
-        try:
-            output = subprocess.run([APCACCESS, "status"], capture_output=True, text=True,
-                                    timeout=30).stdout
-        except (OSError, subprocess.SubprocessError):
-            output = ""
+        output = command_output([APCACCESS, "status"]) or ""
         values = dict(line.split(":", 1) for line in output.splitlines() if ":" in line)
         values = {k.strip().upper(): v.strip() for k, v in values.items()}
         if values.get("STATUS"):
@@ -802,10 +898,9 @@ def ups_status():
             found.append((values.get("UPSNAME") or "UPS", values["STATUS"].lower(), detail))
     if os.access(UPSC, os.X_OK):
         try:
-            listed = subprocess.run([UPSC, "-l"], capture_output=True, text=True, timeout=30).stdout
+            listed = command_output([UPSC, "-l"]) or ""
             for name in [n.strip() for n in listed.splitlines() if n.strip()]:
-                output = subprocess.run([UPSC, name], capture_output=True, text=True,
-                                        timeout=30).stdout
+                output = command_output([UPSC, name]) or ""
                 values = dict(line.split(":", 1) for line in output.splitlines() if ":" in line)
                 values = {k.strip(): v.strip() for k, v in values.items()}
                 flags = [UPS_FLAGS.get(f, f) for f in values.get("ups.status", "").split()]
@@ -817,7 +912,7 @@ def ups_status():
                     if values.get("battery.runtime", "").isdigit() else "",
                 ]))
                 found.append((name, " ".join(flags), detail))
-        except (OSError, subprocess.SubprocessError, ValueError):
+        except ValueError:
             pass
     return found
 
@@ -831,8 +926,10 @@ def check_ups(config, previous):
         if previous is None or last is None or last == state:
             continue
         good = any(hint in state for hint in ("online", "on line"))
-        low = "low battery" in state or "replace" in state
-        messages.append(message("ups", "success" if good else ("failure" if low else "warning"),
+        low = any(hint in state for hint in UPS_FAULTS)
+        was_low = any(hint in last for hint in UPS_FAULTS)
+        ntype = "failure" if low and not was_low else ("success" if good and not low else "warning")
+        messages.append(message("ups", ntype,
                                 f"UPS {name} is {state}", " ".join(filter(None, [detail, f"Was {last}."]))))
     return current, messages
 
@@ -853,6 +950,7 @@ COLLECTORS = (
     ("link", check_link),
     ("states", check_states),
     ("ups", check_ups),
+    ("syslog", check_syslog),
 )
 
 
@@ -878,7 +976,14 @@ def local_file_args(url):
     args = file_args(url_schema(url))
     return [key for key, value in urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query)
             if key.lower() in args and value != KEY_MARKER
-            and not (key.lower() in REMOTE_FILE_ARGS and re.match(r"https?://", value, re.I))]
+            and not (key.lower() in REMOTE_FILE_ARGS and re.match(r"https://", value, re.I))]
+
+
+def plain_http_args(url, names):
+    """Those of names that are fetched but given as http://; only https is fetched."""
+    values = {k.lower(): v for k, v in urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query)}
+    return [key for key in names if key.lower() in REMOTE_FILE_ARGS
+            and values.get(key.lower(), "").lower().startswith("http://")]
 
 
 def file_label(schema, arg):
@@ -910,53 +1015,43 @@ def with_key_files(channel):
             if not isinstance(content, str) or content == "":
                 raise ValueError(f"The file for {key} is not stored with this channel; paste it again.")
             path = os.path.join(KEY_DIR, f"{channel['uuid']}-{key.lower()}")
-            write_private(path, content)
+            write_private(path, content, only_changed=True)
             part = f"{key}={urllib.parse.quote(path, safe='')}"
         parts.append(part)
     return base + (sep + "&".join(parts) if sep else "")
 
 
-def write_private(path, content):
-    """A file only root can read, rewritten only when its contents change."""
-    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-    try:
-        with open(path) as current:
-            if current.read() == content:
-                return
-    except OSError:
-        pass
-    tmp = path + ".tmp"
-    handle = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(handle, "w") as stream:
-        os.fchmod(stream.fileno(), 0o600)
-        stream.write(content)
-    os.replace(tmp, path)
-
-
 def prune_key_files(channels):
     """Remove the key files of channels, or arguments, that no longer use them."""
-    wanted = {f"{c['uuid']}-{key}" for c in channels for key in stored_file_args(c.get("url", ""))}
     try:
         names = os.listdir(KEY_DIR)
     except OSError:
         return
+    if not names:
+        return  # most checks: no need to load Apprise's services
+    wanted = {f"{c['uuid']}-{key}" for c in channels if f"={KEY_MARKER}" in c.get("url", "")
+              for key in stored_file_args(c.get("url", ""))}
     for name in names:
-        if name not in wanted:
+        if name not in wanted and not (name.endswith(".tmp") and not stale_tmp(os.path.join(KEY_DIR, name))):
             try:
                 os.unlink(os.path.join(KEY_DIR, name))
             except OSError:
                 pass
 
 
-def deliver(channel, title, body, ntype):
-    """Send one notification; returns (ok, error text)."""
+def deliver(channel, title, body, ntype, report=None):
+    """Send one notification: (ok, error). A summary goes to email as HTML with inline graphs,
+    elsewhere as its short text with a link to the report."""
     try:
         import apprise
     except ImportError as exc:
         return False, f"The bundled Apprise could not be loaded: {exc}"
     local = local_file_args(channel.get("url", ""))
     if local:
-        # also covers channels saved before such URLs were refused
+        # channels saved before this was refused
+        plain = plain_http_args(channel.get("url", ""), local)
+        if plain:
+            return False, f"Give an https:// address for {', '.join(plain)}, or paste its contents in the channel."
         return False, f"The URL names a file in {', '.join(local)}; paste its contents in the channel instead."
     try:
         url = with_key_files(channel)
@@ -966,10 +1061,32 @@ def deliver(channel, title, body, ntype):
         notifier = apprise.Apprise()
         if not notifier.add(url):
             return False, "The URL is not a valid Apprise URL."
-        # the text carries outsiders' input, e.g. a failed login's user name, so services that
-        # render HTML get it escaped rather than as markup
-        ok = bool(notifier.notify(body=body, title=title, notify_type=ntype,
-                                  body_format=apprise.NotifyFormat.TEXT))
+        server = next(iter(notifier), None)
+        if server is not None and "NotifyDiscord" in {c.__name__ for c in type(server).__mro__}:
+            title, body = quiet(title), quiet(body)
+        email = report and server is not None and server.notify_format == apprise.NotifyFormat.HTML \
+            and "NotifyEmail" in {c.__name__ for c in type(server).__mro__}
+        page, drawn = None, {}
+        if email:
+            try:
+                drawn = report_graphs(report)
+                page = summary_html(report, drawn)
+            except Exception as exc:  # e.g. /tmp full: send the short text
+                log(syslog.LOG_ERR, f"summary report could not be prepared, sending the short text: {exc}")
+        if page is not None and server is not None:
+            server.inline = True  # graphs in their sections, not listed at the end
+            ok = bool(notifier.notify(body=page, title=title, notify_type=ntype,
+                                      body_format=apprise.NotifyFormat.HTML,
+                                      attach=[graph["path"] for graph in drawn.values()] or None))
+        else:
+            if "overflow" not in {k.lower() for k, _ in urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query)}:
+                # over a service's limit it is refused: split a summary, cut the rest
+                for each in notifier:
+                    each.overflow_mode = apprise.OverflowMode.SPLIT if report else apprise.OverflowMode.TRUNCATE
+            # the text carries outsiders' input, e.g. a failed login's user name, so services that
+            # render HTML get it escaped rather than as markup
+            ok = bool(notifier.notify(body=body, title=title, notify_type=ntype,
+                                      body_format=apprise.NotifyFormat.TEXT))
     return ok, "" if ok else last_warning(captured, "Delivery failed.")
 
 
@@ -990,23 +1107,39 @@ def title_prefix(general, hostname):
 
 
 def wants(channel, item):
+    if item.get("quiet"):
+        return False  # counted in summaries, not sent
+    if item["event"] == "summary":
+        return bool(summary_channels([channel]))  # not once the channel's summary is switched off
     if item["event"] == "digest":
-        return True  # already filtered when it was built
-    if item["event"] not in channel["events"]:
-        return False
-    names = channel.get("monit") or []
-    return not (item["event"] == "monit" and names and item.get("service") not in names)
+        # a queued one needs one of its events still taken
+        return "events" not in item or any(event in channel["events"] for event in item["events"])
+    return item["event"] in channel["events"] and monit_allowed(channel, item)
 
 
 def digest(items, threshold):
     """Fold a burst for one channel into a single notification."""
     if threshold < 1 or len(items) < threshold:
         return items
-    lines = [f"- {item['title']}" for item in items]
+    # titles while they fit a small service, then the count
+    lines: list = []
+    for item in items[:DIGEST_LINES]:
+        line = f"- {item['title']}"
+        if sum(len(x) + 1 for x in lines) + len(line) > DIGEST_CHARS:
+            break
+        lines.append(line)
+    if len(items) > len(lines):
+        lines.append(f"- and {len(items) - len(lines)} more")
     types = [item["type"] for item in items]
     kind = "failure" if "failure" in types else ("warning" if "warning" in types else "info")
     summary = message("digest", kind, f"{len(items)} notifications", "\n".join(lines))
-    return [dict(summary, uuid=items[0]["uuid"])]
+    return [dict(summary, uuid=items[0]["uuid"], events=sorted({item["event"] for item in items}))]
+
+
+def discard(item):
+    """Remove the archived page of a summary that was not sent."""
+    if item.get("archive"):
+        remove_report(item["archive"])
 
 
 def send(channels, prefix, messages, queue, threshold=0):
@@ -1019,20 +1152,27 @@ def send(channels, prefix, messages, queue, threshold=0):
     for item in queue + fresh:
         channel = next((c for c in channels if c["uuid"] == item.get("uuid")), None)
         name = channel.get("description", item.get("uuid", "")) if channel else ""
-        if channel is None or not wants(channel, item):
+        if channel is None:
+            discard(item)  # disabled or deleted
+            continue
+        if not wants(channel, item):
+            discard(item)
             continue
         if now - item["time"] > RETRY_SECONDS:
             log(syslog.LOG_ERR, f"gave up on \"{item['title']}\" for {name} after "
                                 f"{duration(now - item['time'])}")
+            discard(item)
             continue
         if now < item.get("retry", 0):
             pending.append(item)  # waiting out the backoff
             continue
         title = f"{prefix}: {item['title']}" if prefix else item["title"]
-        body = item["body"]
+        body, report = item["body"], item.get("report")
         if now - item["time"] > 90:
-            body += f"\n\n(Delayed: this happened at {clock(item['time'])}.)"
-        ok, error = deliver(channel, title, body, item["type"])
+            late = f"(Delayed: this happened at {clock(item['time'])}.)"
+            body += f"\n\n{late}"
+            report = dict(report, delayed=late) if report else report
+        ok, error = deliver(channel, title, body, item["type"], report)
         if ok:
             log(syslog.LOG_NOTICE, f"sent \"{item['title']}\" to {name}")
             continue
@@ -1045,12 +1185,14 @@ def send(channels, prefix, messages, queue, threshold=0):
     if len(pending) > QUEUE_MAX:
         log(syslog.LOG_ERR, f"dropped the {len(pending) - QUEUE_MAX} oldest queued notification(s), "
                             f"over the limit of {QUEUE_MAX}")
+        for item in pending[:-QUEUE_MAX]:
+            discard(item)
     return pending[-QUEUE_MAX:]
 
 
-def prepare():
+def prepare(config=None):
     """Settings and enabled channels, or None when switched off or unreadable."""
-    config = load_config()
+    config = load_config() if config is None else config
     if config is None:
         return None
     general = config["general"]
@@ -1061,17 +1203,26 @@ def prepare():
 
 
 def run_check():
-    prepared = prepare()
+    config = load_config()
+    if config is None:
+        return  # unreadable, which says nothing about whether Notify is on: keep the state
+    prepared = prepare(config)
     if prepared is None:
-        # disabled, not merely unreadable: start from a fresh baseline when enabled again
-        if os.path.exists(STATE) and load_config() is not None:
+        # disabled: start from a fresh baseline when enabled again
+        if os.path.exists(STATE):
             os.remove(STATE)
         return
     config, general, channels, hostname = prepared
+    if ifconfig() is None:
+        # links, addresses and CARP would read as gone
+        log(syslog.LOG_ERR, "ifconfig could not be read; check skipped")
+        return
     prune_key_files(config["channels"])
-    events = {e for c in channels for e in c["events"]}
+    events = subscribed(channels)
     state = fresh_state()
-    new_state, messages = {"stamp": int(time.time())}, []
+    now = int(time.time())
+    new_state: dict = {"stamp": now}
+    messages: list = []
     for event, collector in COLLECTORS:
         if event not in events:
             continue  # dropped, so subscribing later starts from a baseline
@@ -1082,15 +1233,45 @@ def run_check():
             new_state[event], found = state.get(event), []
         messages.extend(found)
     if is_carp_backup(config):
-        new_state["queue"] = state.get("queue", [])  # standby; the master reports
+        # standby: the master reports; counters still sampled for the baseline
+        new_state["queue"] = state.get("queue", [])
+        kept = state.get("summary") or {}
+        periods = standby_periods(config, channels, kept, now)
+        new_state["summary"] = dict(kept, channels=periods)
+        if now - kept.get("sampled", 0) >= SAMPLE_SECONDS:  # as often as a master reads them
+            try:
+                # baseline only
+                summary, _ = update_summaries(config, channels, dict(kept, channels={}), [], now)
+                new_state["summary"] = dict(summary, channels=periods) if summary else {}
+            except Exception as exc:
+                log(syslog.LOG_ERR, f"summary failed: {exc}")
         save_state(new_state)
         return
+    threshold = setting(general, "digestFrom", 0)
     try:
-        threshold = int(general.get("digestFrom", "0"))
-    except ValueError:
-        threshold = 0
+        summary, due = update_summaries(config, channels, state.get("summary"), messages, now)
+    except Exception as exc:
+        log(syslog.LOG_ERR, f"summary failed: {exc}")
+        summary, due = state.get("summary", {}), []
+    summaries: list = []
+    shared: dict = {}
+    for channel, period in due:
+        try:
+            summaries.append(archived(config, build_summary(config, channel, period, now, shared),
+                                      period.get("schedule", channel["summary"]), now))
+        except Exception as exc:
+            name = channel.get("description", channel["uuid"])
+            tries = period.get("tries", 0) + 1
+            if tries >= SUMMARY_TRIES:
+                log(syslog.LOG_ERR, f"summary for {name} failed {tries} times, dropped: {exc}")
+                continue
+            log(syslog.LOG_ERR, f"summary for {name} failed, trying again next check: {exc}")
+            summary["channels"][channel["uuid"]] = dict(period, tries=tries)
+    if due:
+        prune_archive({c["uuid"] for c in config["channels"]})
+    new_state["summary"] = summary
     new_state["queue"] = send(channels, title_prefix(general, hostname), messages,
-                              state.get("queue", []), threshold)
+                              state.get("queue", []) + summaries, threshold)
     save_state(new_state)
 
 
@@ -1099,16 +1280,16 @@ def run_boot():
     if prepared is None:
         return
     config, general, channels, hostname = prepared
-    if is_carp_backup(config):
+    if is_carp_backup(config, unknown=False):  # a startup notice twice beats none
         return
     state = fresh_state()
-    try:
-        version = subprocess.run(["/usr/local/sbin/opnsense-version", "-v"], capture_output=True,
-                                 text=True, timeout=30).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        version = ""
+    version = (command_output(["/usr/local/sbin/opnsense-version", "-v"]) or "").strip()
     body = f"Running OPNsense {version}." if version else ""
     found = [message("boot", "info", "Firewall has started", body)]
+    periods = (state.get("summary") or {}).get("channels") or {}
+    for channel in summary_channels(channels):
+        if channel["uuid"] in periods:
+            periods[channel["uuid"]] = add_events(periods[channel["uuid"]], channel, found)
     state["queue"] = send(channels, title_prefix(general, hostname), found, state.get("queue", []))
     state["stamp"] = int(time.time())
     save_state(state)
@@ -1133,7 +1314,7 @@ def run_status():
         "checked": clock(state["stamp"]) if state.get("stamp") else "",
         "age": duration(now - state["stamp"]) if state.get("stamp") else "",
         "channels": len([c for c in channels if c.get("enabled", "0") == "1"]),
-        "events": sorted({e for c in channels if c.get("enabled", "0") == "1" for e in c["events"]}),
+        "events": sorted(subscribed([c for c in channels if c.get("enabled", "0") == "1"])),
         "queued": queued,
     }
 
@@ -1154,6 +1335,91 @@ def run_test(uuid):
         log(syslog.LOG_NOTICE, f"sent test notification to {name}")
         return {"status": "ok"}
     log(syslog.LOG_ERR, f"could not send test notification to {name}: {error}")
+    return {"status": "failed", "message": error}
+
+
+def archived(config, item, schedule, when, manual=False):
+    """The summary item, archived, with a link to its page added to the short text."""
+    try:
+        name = archive_report(item["report"], item["uuid"], schedule, when, manual)
+    except Exception as exc:  # it is still sent
+        log(syslog.LOG_ERR, f"\"{item['title']}\" not archived: {exc}")
+        return item
+    base = (config["general"].get("reportAddress") or config.get("guiUrl") or "").rstrip("/")
+    if not base:
+        return dict(item, archive=name)
+    # bracketed: Apprise's Discord can append a ping right after the body
+    return dict(item, body=f"{item['body']}\nFull report: <{base}/ui/notify/report/view/{name}>", archive=name)
+
+
+def run_reports():
+    """Archived summaries, newest first."""
+    config = load_config() or {"channels": []}
+    names = {c["uuid"]: c.get("description", "") for c in config["channels"]}
+    return [{"name": r["name"], "channel": names.get(r["channel"], r["channel"]),
+             "schedule": r["schedule"].capitalize() + (" (so far)" if r["manual"] else ""), "when": clock(r["when"])}
+            for r in sorted(archived_reports(), key=lambda r: -r["when"])]
+
+
+def run_report(name):
+    """An archived summary's page, base64; only archive names are accepted."""
+    if not REPORT_NAME.fullmatch(name or ""):
+        return {"status": "failed"}
+    try:
+        with open(os.path.join(REPORTS_DIR, name), "rb") as handle:
+            return {"status": "ok", "payload": base64.b64encode(handle.read()).decode()}
+    except OSError:
+        return {"status": "failed"}
+
+
+def run_delete(name):
+    """Delete an archived summary; only archive names are accepted."""
+    if not REPORT_NAME.fullmatch(name or ""):
+        return {"status": "failed"}
+    remove_report(name)
+    return {"status": "failed" if os.path.exists(os.path.join(REPORTS_DIR, name)) else "ok"}
+
+
+def run_summary(uuid):
+    """Send a channel's summary of its period so far, leaving the period running."""
+    config = load_config()
+    if config is None:
+        return {"status": "failed", "message": "The settings could not be read."}
+    channel = next((c for c in config["channels"] if c["uuid"] == uuid), None)
+    if channel is None or channel.get("summary", "none") == "none":
+        return {"status": "failed", "message": "This channel has no summary."}
+    if config["general"].get("enabled", "0") != "1" or channel.get("enabled", "0") != "1":
+        return {"status": "failed", "message": "Enable Notify and this channel first."}
+    if ifconfig() is None:
+        return {"status": "failed", "message": "The interfaces could not be read; try again."}
+    if is_carp_backup(config):
+        return {"status": "failed", "message": "This firewall is the CARP standby; the master sends summaries."}
+    state = load_state()
+    period = (state.get("summary", {}).get("channels") or {}).get(uuid)
+    if period is None:
+        return {"status": "failed", "message": "No summary period recorded yet; wait for the next check."}
+    if period.get("schedule") != channel["summary"]:
+        return {"status": "failed", "message": "The schedule has changed; its new period starts at the next check."}
+    interval = setting(config["general"], "interval", 1) * 60
+    if int(time.time()) - state.get("stamp", 0) > 2 * interval + 120:
+        return {"status": "failed", "message": "Checks have stopped running, so the figures would be out of date."}
+    name = channel.get("description", uuid)
+    item: dict = {}
+    try:
+        now = int(time.time())
+        item = build_summary(config, channel, period, now)
+        title = f"{item['title']} so far"  # before archiving, so the page says so too
+        item = archived(config, dict(item, title=title, report=dict(item["report"], title=title)),
+                        period["schedule"], now, manual=True)
+        prefix = title_prefix(config["general"], config["hostname"])
+        ok, error = deliver(channel, f"{prefix}: {title}" if prefix else title, item["body"], "info", item["report"])
+    except Exception as exc:
+        ok, error = False, f"The summary could not be sent: {exc}"
+    if ok:
+        log(syslog.LOG_NOTICE, f"sent summary so far to {name}")
+        return {"status": "ok"}
+    discard(item)
+    log(syslog.LOG_ERR, f"could not send summary so far to {name}: {error}")
     return {"status": "failed", "message": error}
 
 
@@ -1504,6 +1770,9 @@ def check_url(url):
     """(apprise plugin, error text) for a URL."""
     import apprise
     local = local_file_args(url)
+    plain = plain_http_args(url, local)
+    if plain:
+        return None, f"Give an https:// address for {', '.join(plain)}, or paste its contents in the channel."
     if local:
         return None, (f"The URL names a file in {', '.join(local)}; choose the service and paste the "
                       f"file's contents instead.")
@@ -1545,6 +1814,9 @@ def from_service(service_id, fields, stored):
         if re.match(r"https?://\S+$", value, re.I):
             if key.lower() not in REMOTE_FILE_ARGS:
                 return "", {}, f"Paste the {service['options'][key]['label']} itself; a private key is not fetched."
+            if not re.match(r"https://", value, re.I):
+                # could be swapped in transit
+                return "", {}, f"Give an https:// address for the {service['options'][key]['label']}."
             continue  # fetched from that address
         if len(value) > KEY_MAX:
             return "", {}, f"The {service['options'][key]['label']} is larger than a key or template should be."
@@ -1604,6 +1876,17 @@ if __name__ == "__main__":
         print(json.dumps(run_status()))
     elif len(sys.argv) > 2 and sys.argv[1] == "test":
         print(json.dumps(run_test(sys.argv[2])))
+    elif len(sys.argv) > 2 and sys.argv[1] == "summary":
+        try:
+            print(json.dumps(run_summary(sys.argv[2])))
+        except Exception as exc:  # else no answer reads as a held lock
+            print(json.dumps({"status": "failed", "message": f"The summary could not be sent: {exc}"}))
+    elif len(sys.argv) > 1 and sys.argv[1] == "reports":
+        print(json.dumps(run_reports()))
+    elif len(sys.argv) > 2 and sys.argv[1] == "report":
+        print(json.dumps(run_report(sys.argv[2])))
+    elif len(sys.argv) > 2 and sys.argv[1] == "delete":
+        print(json.dumps(run_delete(sys.argv[2])))
     elif len(sys.argv) > 1 and sys.argv[1] == "services":
         print(json.dumps(run_services()))
     elif len(sys.argv) > 2 and sys.argv[1] == "describe":
@@ -1613,7 +1896,7 @@ if __name__ == "__main__":
     elif len(sys.argv) > 2 and sys.argv[1] == "build":
         print(json.dumps(run_build(sys.argv[2])))
     else:
-        print(f"usage: {sys.argv[0]} check | boot | status | test <uuid> | services | "
+        print(f"usage: {sys.argv[0]} check | boot | status | test <uuid> | summary <uuid> | reports | report <name> | delete <name> | services | "
               f"describe <uuid> | parse <file> | build <file>",
               file=sys.stderr)
         sys.exit(1)

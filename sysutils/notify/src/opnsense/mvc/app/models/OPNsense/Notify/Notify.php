@@ -29,6 +29,7 @@
 namespace OPNsense\Notify;
 
 use OPNsense\Base\BaseModel;
+use OPNsense\Base\Messages\Message;
 
 /**
  * Class Notify
@@ -36,8 +37,11 @@ use OPNsense\Base\BaseModel;
  */
 class Notify extends BaseModel
 {
+    /* an archived summary's file name, as summary.py writes it */
+    const REPORT_NAME = '/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-(daily|weekly|monthly)(-now)?-\d{8}-\d{6}\.html\z/';
+
     /**
-     * Is an enabled channel subscribed to this event?
+     * Is an enabled channel subscribed to this event, as it happens or in its summary?
      */
     public function hasEvent($event)
     {
@@ -45,10 +49,62 @@ class Notify extends BaseModel
             return false;
         }
         foreach ($this->channels->iterateItems() as $channel) {
-            if ((string)$channel->enabled == '1' && in_array($event, explode(',', (string)$channel->events))) {
+            if ((string)$channel->enabled != '1') {
+                continue;
+            }
+            $events = explode(',', (string)$channel->events);
+            if (!$channel->summary->isEqual('none')) {
+                $events = array_merge($events, explode(',', (string)$channel->summaryEvents));
+            }
+            if (in_array($event, $events)) {
                 return true;
             }
         }
         return false;
+    }
+
+    /**
+     * Does an enabled channel's summary include this section?
+     */
+    public function hasSummarySection($section)
+    {
+        if ((string)$this->general->enabled != '1') {
+            return false;
+        }
+        foreach ($this->channels->iterateItems() as $channel) {
+            if (
+                (string)$channel->enabled == '1' && !$channel->summary->isEqual('none') &&
+                in_array($section, explode(',', (string)$channel->summarySections))
+            ) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public function performValidation($validateFullModel = false)
+    {
+        $messages = parent::performValidation($validateFullModel);
+        foreach ($this->channels->iterateItems() as $channel) {
+            if (!$validateFullModel && !$channel->isFieldChanged()) {
+                continue;
+            }
+            if ($channel->events->isEmpty() && $channel->summary->isEqual('none')) {
+                $messages->appendMessage(new Message(
+                    gettext('Choose events to send as they happen, or a summary.'),
+                    $channel->__reference . '.events'
+                ));
+            }
+            if (
+                !$channel->summary->isEqual('none') &&
+                $channel->summaryEvents->isEmpty() && $channel->summarySections->isEmpty()
+            ) {
+                $messages->appendMessage(new Message(
+                    gettext('Choose summary events or sections, so the summary has something to report.'),
+                    $channel->__reference . '.summarySections'
+                ));
+            }
+        }
+        return $messages;
     }
 }

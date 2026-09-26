@@ -30,6 +30,7 @@ namespace OPNsense\Notify\Api;
 
 use OPNsense\Base\ApiControllerBase;
 use OPNsense\Core\Backend;
+use OPNsense\Notify\Notify;
 
 class ServiceController extends ApiControllerBase
 {
@@ -95,6 +96,50 @@ class ServiceController extends ApiControllerBase
         $result = json_decode((new Backend())->configdpRun('notify test', [$uuid]), true);
         if (!is_array($result)) {
             return ['status' => 'failed', 'message' => gettext('The test could not be run.')];
+        }
+        return $result;
+    }
+
+    /**
+     * Archived summaries, newest first.
+     */
+    public function reportsAction()
+    {
+        $this->throwNotFullAdmin();
+
+        $reports = json_decode((new Backend())->configdRun('notify reports'), true);
+        return is_array($reports) ? ['status' => 'ok', 'reports' => $reports] : ['status' => 'failed'];
+    }
+
+    /**
+     * Delete an archived summary.
+     */
+    public function delReportAction($name)
+    {
+        $this->throwNotFullAdmin();
+
+        if (!$this->request->isPost() || !preg_match(Notify::REPORT_NAME, (string)$name)) {
+            return ['status' => 'failed'];
+        }
+        $result = json_decode((new Backend())->configdpRun('notify delete', [$name]), true);
+        return is_array($result) ? $result : ['status' => 'failed'];
+    }
+
+    /**
+     * Send a channel's summary of its period so far; it reports on the whole firewall.
+     */
+    public function summaryAction($uuid)
+    {
+        $this->throwNotFullAdmin();
+
+        if (!$this->request->isPost() || !preg_match('/^[0-9a-f-]{36}$/i', (string)$uuid)) {
+            return ['status' => 'failed', 'message' => gettext('Save the channel before sending its summary.')];
+        }
+        /* longer than configd's default wait */
+        $result = json_decode((new Backend())->configdpRun('notify summary', [$uuid], false, 300), true);
+        if (!is_array($result)) {
+            /* no answer when a running check kept the lock for too long */
+            return ['status' => 'failed', 'message' => gettext('A check is still running; try again in a minute.')];
         }
         return $result;
     }

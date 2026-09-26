@@ -63,6 +63,9 @@ jobs:
           pip install --quiet mypy
           mypy --ignore-missing-imports --check-untyped-defs \
             dns/blocky/src/opnsense/scripts/OPNsense/Blocky/import_config.py \
+            sysutils/notify/src/opnsense/scripts/OPNsense/Notify/chart.py \
+            sysutils/notify/src/opnsense/scripts/OPNsense/Notify/common.py \
+            sysutils/notify/src/opnsense/scripts/OPNsense/Notify/summary.py \
             sysutils/notify/src/opnsense/scripts/OPNsense/Notify/notify.py
 
   vendored:

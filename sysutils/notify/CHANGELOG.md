@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.4 - 2026-09-27
+
+- Daily, weekly or monthly summary per channel: current status, chosen events, firewall blocks, traffic and system health; by email as HTML with graphs and pie charts.
+- Other services get a short summary, split if the service needs it, with a link to the full report on the firewall.
+- Sent summaries are kept, 60 daily, 52 weekly and 12 monthly per channel, and open from the new Archive tab, where they can also be deleted.
+- Critical log messages event, from the local logs, with a severity setting.
+- Summaries list top IDS signatures and sources, login outcomes, users and sources, VPN peer changes and log programs.
+- WireGuard peers are reported online, stale or offline, as on the dashboard.
+- Wireless access point links in running state count as up.
+- A UPS battery fault while on line power is reported as a failure.
+- A System Status entry dropping below the chosen level is reported as resolved.
+- IDS alerts are no longer missed around log rotation or in a busy log.
+- A malformed IDS alert is skipped instead of stalling the log.
+- A failed command no longer resets link, address, CARP or counter baselines.
+- Templates and public keys are fetched over https only.
+- Text from outside, such as a login name of @everyone, no longer pings anyone on Discord.
+- A failed settings read no longer resets recorded state.
+- Queued digests are dropped once the channel no longer takes their events.
+- An IPv6-only uplink (DHCPv6, SLAAC, 6rd, 6to4 or an IPv6 gateway) is watched for address changes.
+- A digest lists titles while they fit and counts the rest, and a notification longer than the service accepts is cut rather than refused.
+
 ## 1.3_6 - 2026-09-26
 
 - Email set to mailto with STARTTLS uses STARTTLS instead of unencrypted SMTP, and the dialog shows the mode actually used.
