@@ -32,7 +32,6 @@ concurrency:
 jobs:
   lint:
     # syntax gate: the build VM has no php
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -68,9 +67,9 @@ jobs:
 
   vendored:
     # vendored pure-Python libraries must run on every Python an OPNsense series ships
-    # after lint, so a missing version bump fails before the tests run
+    # after lint, so a missing version bump fails before the tests run; nightly too, against
+    # the latest core
     needs: lint
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -99,7 +98,23 @@ jobs:
           python notify.py build "${RUNNER_TEMP}/build.json" |
             python -c 'import json, sys; d = json.load(sys.stdin); assert d.get("service") == "Telegram", d'
           python -c 'import sys; sys.path.insert(0, "lib"); import markdown; assert "<em>" in markdown.markdown("*ok*")'
+      # the blocky harness takes minutes: on a push, only when it touches what it covers;
+      # always on a manual or nightly run
+      - name: Does this push touch what the blocky harness covers?
+        id: harness
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && git fetch -q --depth=1 origin "${BEFORE}" 2>/dev/null &&
+              git diff --quiet "${BEFORE}" HEAD -- dns/blocky Mk tools/run-tests.sh tools/tests \
+                .github/workflows/build.yml; then
+            echo "blocky harness: nothing it covers changed, skipped"
+          else
+            echo "run=1" >> "$GITHUB_OUTPUT"
+          fi
       - name: Regression tests
+        env:
+          HARNESS: ${{ steps.harness.outputs.run }}
         run: |
           sudo apt-get install -y php-cli php-curl
           pip install jinja2
@@ -107,15 +122,19 @@ jobs:
           # an S3 server for the S3 backup provider's tests
           curl -sSfL -o "${RUNNER_TEMP}/rclone.zip" https://downloads.rclone.org/rclone-current-linux-amd64.zip
           unzip -q -j "${RUNNER_TEMP}/rclone.zip" '*/rclone' -d "${RUNNER_TEMP}/rclone"
-          # the pinned blocky, to validate what the template renders
-          ver=$(tr -d ' \n' < dns/blocky/BLOCKY_VERSION)
-          base="https://github.com/0xERR0R/blocky/releases/download/v${ver}"
-          mkdir -p "${RUNNER_TEMP}/blocky" && cd "${RUNNER_TEMP}/blocky"
-          curl -sSfLO "${base}/blocky_v${ver}_Linux_x86_64.tar.gz" && curl -sSfLO "${base}/blocky_checksums.txt"
-          grep "blocky_v${ver}_Linux_x86_64.tar.gz" blocky_checksums.txt | sha256sum -c -
-          tar -xzf "blocky_v${ver}_Linux_x86_64.tar.gz" blocky && cd "${GITHUB_WORKSPACE}"
+          # the pinned blocky, to validate what the template renders; without it the harness skips
+          BLOCKY=
+          if [ -n "${HARNESS}" ]; then
+            ver=$(tr -d ' \n' < dns/blocky/BLOCKY_VERSION)
+            base="https://github.com/0xERR0R/blocky/releases/download/v${ver}"
+            mkdir -p "${RUNNER_TEMP}/blocky" && cd "${RUNNER_TEMP}/blocky"
+            curl -sSfLO "${base}/blocky_v${ver}_Linux_x86_64.tar.gz" && curl -sSfLO "${base}/blocky_checksums.txt"
+            grep "blocky_v${ver}_Linux_x86_64.tar.gz" blocky_checksums.txt | sha256sum -c -
+            tar -xzf "blocky_v${ver}_Linux_x86_64.tar.gz" blocky && cd "${GITHUB_WORKSPACE}"
+            BLOCKY="${RUNNER_TEMP}/blocky/blocky"
+          fi
           OPNSENSE_CORE="${RUNNER_TEMP}/opnsense-core" RCLONE="${RUNNER_TEMP}/rclone/rclone" \
-            BLOCKY="${RUNNER_TEMP}/blocky/blocky" PYTHON=python sh tools/run-tests.sh
+            BLOCKY="${BLOCKY}" PYTHON=python sh tools/run-tests.sh
 
   build:
     # the nightly (schedule) only runs the notify version-check; build on push/dispatch
