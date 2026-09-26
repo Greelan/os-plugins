@@ -15,7 +15,7 @@ REPO = os.path.join(ROOT, "repo")
 os.makedirs(os.path.join(REPO, "changelog"), exist_ok=True)
 
 HEAD, FOOT = open(os.path.join(ROOT, "tools", "index.html")).read().split("%%CONTENT%%")
-TITLE = "Greelan pkg repository"
+TITLE = "Greelan's plugin repository"
 BUILT = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
 
 
