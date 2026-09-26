@@ -74,8 +74,20 @@ foreach ($model->channels->iterateItems() as $uuid => $channel) {
         'url' => $channel->url->getValue(),
         'files' => json_decode($channel->files->getValue(), true) ?: [],
         'events' => array_values(array_filter(explode(',', (string)$channel->events))),
+        'summary' => (string)$channel->summary,
+        'summaryEvents' => array_values(array_filter(explode(',', (string)$channel->summaryEvents))),
+        'summarySections' => array_values(array_filter(explode(',', (string)$channel->summarySections))),
         'monit' => $monit,
     ];
+}
+
+/* what the model calls each event, for summaries; every channel offers the same list */
+$labels = [];
+foreach ($model->channels->iterateItems() as $channel) {
+    foreach ($channel->events->getNodeData() as $key => $option) {
+        $labels[$key] = (string)$option['value'];
+    }
+    break;
 }
 
 $certificates = [];
@@ -96,13 +108,21 @@ foreach ([['cert', 'Certificate', (new Cert())->cert], ['ca', 'Authority', (new 
 }
 
 $interfaces = [];
+$ifnames = [];
 $uplinks = [];
+$disabled = [];
 foreach ($config->interfaces->children() ?? [] as $name => $interface) {
     $device = (string)$interface->if;
     if (empty($device)) {
         continue;
     }
     $interfaces[$device] = (string)$interface->descr ?: strtoupper($name);
+    /* core's health data is kept per interface name, e.g. wan-traffic.rrd */
+    $ifnames[$device] = $name;
+    /* as core: present, even empty, is enabled */
+    if (!isset($interface->enable)) {
+        $disabled[] = $device;
+    }
     /* an uplink is anything with a gateway or a dynamically assigned address */
     $address = strtolower((string)$interface->ipaddr);
     if (!empty((string)$interface->gateway) || in_array($address, ['dhcp', 'pppoe', 'pptp', 'l2tp', 'ppp'])) {
@@ -124,9 +144,14 @@ echo json_encode([
     ])),
     'general' => $general,
     'channels' => $channels,
+    'eventLabels' => $labels,
     'certificates' => $certificates,
     'interfaces' => $interfaces,
     'uplinks' => $uplinks,
+    'ifnames' => $ifnames,
+    'disabled' => $disabled,
+    /* Firewall: Settings: Advanced, Keep counters: rule counters survive a reload */
+    'keepCounters' => !empty((string)($config->system->keepcounters ?? '')),
     'monit' => [
         'username' => trim((string)$monit->general->httpdUsername),
         'password' => trim((string)$monit->general->httpdPassword),

@@ -44,7 +44,7 @@
         <id>channel.events</id>
         <label>Events</label>
         <type>select_multiple</type>
-        <help><![CDATA[Events sent to this channel. Configuration changes, logins and intrusion detection alerts come from the firewall's own logs and audit trail; new devices come from <a href="/ui/hostdiscovery/settings#hosts">Interfaces: Neighbors: Automatic Discovery</a>. Monit alerts come from the services set up under <a href="/ui/monit#services">Services: Monit</a>, filtered by Monit services below; their state is read straight from the Monit daemon, so nothing needs changing there. System Status entries are the alerts behind the bell icon in the menu bar. UPS power needs the apcupsd or NUT plugin installed; without one it stays silent.]]></help>
+        <help><![CDATA[Events sent to this channel as they happen. Leave empty for a channel that only gets a summary. Configuration changes, logins and intrusion detection alerts come from the firewall's own logs and audit trail; new devices come from <a href="/ui/hostdiscovery/settings#hosts">Interfaces: Neighbors: Automatic Discovery</a>. Monit alerts come from the services set up under <a href="/ui/monit#services">Services: Monit</a>, filtered by Monit services below; their state is read straight from the Monit daemon, so nothing needs changing there. System Status entries are the alerts behind the bell icon in the menu bar. UPS power needs the apcupsd or NUT plugin installed; without one it stays silent.]]></help>
         <grid_view/>
     </field>
     <field>
@@ -54,6 +54,33 @@
         <style>tokenize</style>
         <hint>All Monit services</hint>
         <help><![CDATA[Which Monit services this channel reports, when Monit alerts are among its events. Leave empty for all of them. Monit state is read on each check, so an alert can wait up to the check interval; for immediate delivery, set a test's action to Execute with the path <code>/usr/local/sbin/configctl -dq notify check</code> under <a href="/ui/monit#tests">Services: Monit: Service Tests</a>.]]></help>
+        <grid_view>
+            <ignore>true</ignore>
+        </grid_view>
+    </field>
+    <field>
+        <id>channel.summary</id>
+        <label>Summary</label>
+        <type>dropdown</type>
+        <help><![CDATA[Also send a summary of the period, at the time set under Summary on the General tab. The first summary covers the period from when this was set. The list button on the channel sends the summary so far without ending the period. An email channel gets it formatted, with graphs from System: Reporting: Health in its sections; other services get plain text.]]></help>
+        <grid_view>
+            <width>8em</width>
+        </grid_view>
+    </field>
+    <field>
+        <id>channel.summaryEvents</id>
+        <label>Summary events</label>
+        <type>select_multiple</type>
+        <help><![CDATA[Events counted and listed in the summary, as what happened in the period, whether or not they are also sent as they happen.]]></help>
+        <grid_view>
+            <ignore>true</ignore>
+        </grid_view>
+    </field>
+    <field>
+        <id>channel.summarySections</id>
+        <label>Summary sections</label>
+        <type>select_multiple</type>
+        <help><![CDATA[What to add to the summary besides its events. Current status is how things stand when it is sent: uplink addresses, gateways, interface links, CARP, pending firmware updates and certificates about to expire. Firewall blocks and traffic come from the packet filter's own counters, so no log is read: blocked packets per interface and the block rules that matched most, and traffic in and out per interface. System health is uptime, load, memory, disk and the state table peak.]]></help>
         <grid_view>
             <ignore>true</ignore>
         </grid_view>

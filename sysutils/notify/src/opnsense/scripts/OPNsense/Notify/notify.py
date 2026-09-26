@@ -33,6 +33,7 @@ to the Apprise channels configured under Services: Notify.
   notify.py check             poll and send, retrying earlier failures
   notify.py boot              report that the firewall has started
   notify.py status            what the last run recorded (JSON)
+  notify.py summary <uuid>    send one channel's summary of its period so far, without ending it
   notify.py test <uuid>       send a test message to one channel (JSON result)
   notify.py services          Apprise services and their URL fields (JSON)
   notify.py describe <uuid>   service and non-secret fields of a saved channel (JSON)
@@ -45,18 +46,30 @@ only reported once a previous state exists; the first poll records a baseline.
 """
 
 import base64
+import atexit
+import calendar
+import collections
+import datetime
 import functools
+import html
 import http.client
+import itertools
 import json
+import math
+import operator
 import os
 import re
+import shutil
 import socket
 import subprocess
+import struct
 import sys
 import syslog
+import tempfile
 import time
 import urllib.parse
 import xml.etree.ElementTree as ET
+import zlib
 
 # Apprise, Markdown and PyYAML are vendored under lib/ (pure-Python), so the plugin
 # works with whichever Python the OPNsense series ships
@@ -66,7 +79,7 @@ CONFIG = "/conf/config.xml"
 STATE = "/var/db/notify/state.json"
 SETTINGS_CACHE = "/var/db/notify/settings.json"
 SETTINGS_SCRIPT = "/usr/local/opnsense/scripts/OPNsense/Notify/settings.php"
-SETTINGS_FORMAT = 2
+SETTINGS_FORMAT = 4
 FIRMWARE = "/tmp/pkg_upgrade.json"
 MONIT_SOCKET = "/var/run/monit.sock"
 AUDIT_LOG = "/var/log/audit"
@@ -123,8 +136,27 @@ HANDSHAKE_SECONDS = 300
 # lines or alerts read from a log in one pass, so a busy log cannot stall a check
 LOG_LINES = 500
 LOG_BYTES = 2 * 1024 * 1024
+# a log read for marked lines only (e.g. IDS alerts among every event) is scanned this far back
+KEEP_BYTES = 64 * 1024 * 1024
 # devices remembered, oldest dropped first
 DEVICES_MAX = 4096
+# events listed individually in a summary, and block rules named
+SUMMARY_RECENT = 10
+SUMMARY_RULES = 5
+# pf's counters are read this often for summaries, and when one is due; a reset in between is
+# still seen, from each rule's load and each interface's clearing
+SAMPLE_SECONDS = 300
+# a summary that cannot be built is tried again at this many checks, then its period is dropped
+SUMMARY_TRIES = 5
+SYSCTL = "/sbin/sysctl"
+RRDTOOL = "/usr/local/bin/rrdtool"
+RRD_DIR = "/var/db/rrd"
+# graphs per section in an HTML email summary
+SUMMARY_GRAPHS = 3
+# rewritten on every rule reload, which zeroes pf's rule counters unless they are kept
+RULESET = "/tmp/rules.debug"
+# carrier states that mean the link is up; a wireless access point reports running
+LINK_UP = ("active", "associated", "running")
 
 AUTH_FAILURE = ("authentication failed", "could not authenticate", "unknown user", "invalid credentials")
 AUTH_SUCCESS = ("authenticated successfully",)
@@ -184,10 +216,10 @@ def text(node, path, default=""):
 
 
 def load_config():
-    """Settings from the models, via settings.php; cached until config.xml changes."""
+    """Settings from the models, via settings.php; cached until config.xml or settings.php changes."""
     try:
-        stat = os.stat(CONFIG)
-        source = [stat.st_mtime_ns, stat.st_size, SETTINGS_FORMAT]
+        stat, script = os.stat(CONFIG), os.stat(SETTINGS_SCRIPT)
+        source = [stat.st_mtime_ns, stat.st_size, script.st_mtime_ns, script.st_size, SETTINGS_FORMAT]
     except OSError:
         source = None
     if source is not None:
@@ -213,7 +245,7 @@ def load_config():
 
 def save_cache(payload):
     """The cache holds the channel URLs, so it is written private and replaced whole."""
-    tmp = SETTINGS_CACHE + ".tmp"
+    tmp = f"{SETTINGS_CACHE}.{os.getpid()}.tmp"  # actions outside the check's lock write it too
     try:
         os.makedirs(os.path.dirname(SETTINGS_CACHE) or ".", mode=0o700, exist_ok=True)
         handle = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -235,10 +267,12 @@ def load_state():
 
 
 def fresh_state():
-    """The recorded state, keeping only the queue once it is too old to compare against."""
+    """The recorded state, keeping only the queue and summary data once it is too old to compare
+    against."""
     state = load_state()
     if int(time.time()) - state.get("stamp", 0) > STALE_SECONDS:
-        state = {"queue": state.get("queue", [])}  # queued items expire on their own
+        # queued items expire on their own; counters that went down count as reset
+        state = {key: state[key] for key in ("queue", "summary") if key in state}
     return state
 
 
@@ -269,6 +303,16 @@ def configctl_json(*args):
         return None
 
 
+def command_output(command, timeout=30, partial=False):
+    """What a command printed, or None when it could not run or failed; with partial, what it
+    printed even so, e.g. sysctl skipping a name this system lacks."""
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout if result.returncode == 0 or partial else None
+
+
 def duration(seconds):
     seconds = int(max(seconds, 0))
     days, seconds = divmod(seconds, 86400)
@@ -289,28 +333,90 @@ def message(event, ntype, title, body):
             "time": int(time.time())}
 
 
-def follow(path, previous):
-    """New lines of a log since the last pass, with the position to remember."""
+def follow(path, previous, keep=None):
+    """New lines of a log since the last pass (only those holding keep, if given), the position
+    to remember, and what was left out: (lines beyond the last LOG_LINES, bytes of a flood
+    skipped). A log rotated since the last pass is read to its end first, found by its inode."""
     try:
         stat = os.stat(path)
     except OSError:
-        return [], previous
-    position = previous.get("offset", 0) if previous.get("inode") == stat.st_ino else 0
-    if position > stat.st_size:
-        position = 0  # truncated
-    position = max(position, stat.st_size - LOG_BYTES)  # skip a flood rather than read it all
+        return [], previous, (0, 0)
     state = {"inode": stat.st_ino, "offset": stat.st_size, "path": path}
     if previous.get("inode") is None:
-        return [], state  # first sight of this file, start from the end
+        return [], state, (0, 0)  # first sight of this file, start from the end
+    lines: list = []
+    missed, skipped = 0, 0
+    if previous["inode"] != stat.st_ino:
+        old = rotated(path, previous["inode"])
+        if old is not None:
+            read = read_new(old, previous.get("offset", 0), keep)
+            if read is not None:
+                lines, missed, skipped = read[0], read[1], read[2]
+        # the new file from its start, now or next time: the rotated one is never read again
+        previous = {"inode": stat.st_ino, "offset": 0, "path": path}
+    read = read_new(path, previous.get("offset", 0), keep)
+    if read is None:
+        return lines, previous, (missed, skipped)
+    lines += read[0]
+    state["offset"] = read[3]
+    missed += read[1] + max(len(lines) - LOG_LINES, 0)
+    return lines[-LOG_LINES:], state, (missed, skipped + read[2])
+
+
+def read_new(path, position, keep=None):
+    """(lines from position on, lines beyond the last LOG_LINES, bytes skipped, end offset); a
+    flood is skipped rather than read in full, and only lines holding keep are decoded."""
     try:
         with open(path, "rb") as handle:
-            handle.seek(position)
-            raw = handle.readlines()
-            state["offset"] = handle.tell()
+            size = os.fstat(handle.fileno()).st_size
+            if position > size:
+                position = 0  # truncated
+            start = max(position, size - (KEEP_BYTES if keep else LOG_BYTES))
+            handle.seek(start)
+            if start > position:
+                handle.readline()  # the rest of a line cut by the skip
+            kept: collections.deque = collections.deque(maxlen=LOG_LINES)
+            total = 0
+            for line in handle:
+                if keep is None or keep in line:
+                    total += 1
+                    kept.append(line)
+            end = handle.tell()
     except OSError:
-        return [], previous
-    lines = [line.decode("utf-8", "replace") for line in raw]
-    return lines[-LOG_LINES:], state
+        return None
+    return [line.decode("utf-8", "replace") for line in kept], total - len(kept), start - position, end
+
+
+def rotated(path, inode):
+    """Where a log was rotated to, found by the inode it had; a compressed copy is not read."""
+    folder = os.path.dirname(path)
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return None
+    for name in names:
+        candidate = os.path.join(folder, name)
+        if candidate == path or name.endswith((".gz", ".bz2", ".xz", ".zst")):
+            continue
+        try:
+            if os.stat(candidate).st_ino == inode:
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def left_out(event, what, missed, skipped):
+    """A note that a log pass left lines out, or nothing."""
+    parts = []
+    if missed:
+        parts.append(f"{missed} {what} before the latest {LOG_LINES}")
+    if skipped:
+        parts.append(f"{skipped // (1024 * 1024) or 1} MB of log")
+    if not parts:
+        return []
+    return [message(event, "warning", f"Some {what} were not checked",
+                    "The log grew faster than it is read, so these were passed over: " + "; ".join(parts) + ".")]
 
 
 def audit_log():
@@ -405,12 +511,20 @@ def check_config(config, previous):
     return current, [message("config", "info", f"Configuration changed by {who}", what)]
 
 
-def check_firmware(config, previous):
+def read_firmware():
+    """The last update check's answer, or None; absent while a check runs."""
     try:
         with open(FIRMWARE) as handle:
             data = json.load(handle)
     except (OSError, ValueError):
-        return previous, []  # absent while a check runs
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def check_firmware(config, previous):
+    data = read_firmware()
+    if data is None:
+        return previous, []
     if data.get("connection") != "ok":
         return previous, []
     upgrades = data.get("upgrade_packages") or []
@@ -434,12 +548,13 @@ def check_firmware(config, previous):
 def check_auth(config, previous):
     logins = config["general"].get("authLogins", "0") == "1"
     previous, path, lines = previous or {}, audit_log(), []
+    missed, skipped = 0, 0
     if previous.get("path") and previous["path"] != path:
-        lines, _ = follow(previous["path"], previous)  # the rest of the day before
+        lines, _, (missed, skipped) = follow(previous["path"], previous)  # the rest of the day before
         previous = {"inode": 0}  # read the new day's file from its start
-    more, state = follow(path, previous)
+    more, state, (more_missed, more_skipped) = follow(path, previous)
     lines += more
-    messages = []
+    messages = left_out("auth", "login events", missed + more_missed, skipped + more_skipped)
     for line in lines:
         body = line.strip()
         lowered = body.lower()
@@ -572,21 +687,20 @@ def check_monit(config, previous):
 
 @functools.lru_cache(maxsize=1)
 def ifconfig():
-    try:
-        return subprocess.run(["/sbin/ifconfig", "-a"], capture_output=True, text=True, timeout=30).stdout
-    except (OSError, subprocess.SubprocessError):
-        return ""
+    return command_output(["/sbin/ifconfig", "-a"])
 
 
 def carp_states():
     """CARP states of every virtual IP on this firewall."""
-    return re.findall(r"^\s+carp: (\S+) vhid", ifconfig(), re.M)
+    return re.findall(r"^\s+carp: (\S+) vhid", ifconfig() or "", re.M)
 
 
 def is_carp_backup(config):
     """True when this firewall has CARP virtual IPs and none of them is master."""
     if config["general"].get("carpMasterOnly", "0") != "1":
         return False
+    if ifconfig() is None:
+        return True  # cannot tell, so stay quiet rather than risk the pair both reporting
     states = carp_states()
     return bool(states) and "MASTER" not in states
 
@@ -660,16 +774,19 @@ def check_ids(config, previous):
         severity = int(config["general"].get("idsSeverity", "1"))
     except ValueError:
         severity = 1
-    lines, state = follow(IDS_LOG, previous or {})
-    messages = []
+    lines, state, (missed, skipped) = follow(IDS_LOG, previous or {}, keep=b'"event_type":"alert"')
+    messages = left_out("ids", "IDS alerts", missed, skipped)
     for line in lines:
         try:
             event = json.loads(line)
         except ValueError:
             continue
-        alert = event.get("alert") if event.get("event_type") == "alert" else None
-        if not alert or int(alert.get("severity", 3)) > severity:
-            continue
+        alert = event.get("alert") if isinstance(event, dict) and event.get("event_type") == "alert" else None
+        try:
+            if not isinstance(alert, dict) or int(alert.get("severity", 3)) > severity:
+                continue
+        except (TypeError, ValueError):
+            continue  # a malformed alert would otherwise stop the log being read past it
         where = f"{event.get('src_ip', '?')} -> {event.get('dest_ip', '?')}"
         messages.append(message("ids", "warning", alert.get("signature", "IDS alert"),
                                 f"{where}\nSeverity {alert.get('severity')}, {alert.get('category', '')}"))
@@ -679,7 +796,7 @@ def check_ids(config, previous):
 def check_carp(config, previous):
     names = config.get("interfaces", {})
     current, messages, device = {}, [], None
-    for line in ifconfig().splitlines():
+    for line in (ifconfig() or "").splitlines():
         match = re.match(r"^(\S+): flags=", line)
         if match:
             device = match.group(1)
@@ -702,7 +819,7 @@ def addresses():
     """Device -> the addresses it holds, link-local and loopback aside."""
     found: dict = {}
     device = None
-    for line in ifconfig().splitlines():
+    for line in (ifconfig() or "").splitlines():
         match = re.match(r"^(\S+): flags=", line)
         if match:
             device = match.group(1)
@@ -734,23 +851,29 @@ def check_wanip(config, previous):
     return current, messages
 
 
-def check_link(config, previous):
-    """Carrier on the configured interfaces."""
-    names, current, messages = config.get("interfaces", {}), {}, []
-    device = None
-    for line in ifconfig().splitlines():
+def link_states(names):
+    """Carrier per configured interface that reports one."""
+    found, device = {}, None
+    for line in (ifconfig() or "").splitlines():
         match = re.match(r"^(\S+): flags=", line)
         if match:
             device = match.group(1)
             continue
         match = re.match(r"^\s+status: (.+)$", line)
-        if match is None or device is None or device not in names:
-            continue
-        current[device] = match.group(1).strip()
+        if match is not None and device in names:
+            found[device] = match.group(1).strip()
+    return found
+
+
+def check_link(config, previous):
+    """Carrier on the configured interfaces."""
+    names, current, messages = config.get("interfaces", {}), {}, []
+    for device, status in link_states(names).items():
+        current[device] = status
         last = (previous or {}).get(device)
         if previous is None or last is None or last == current[device]:
             continue
-        up = current[device] in ("active", "associated")
+        up = current[device] in LINK_UP
         messages.append(message("link", "success" if up else "failure",
                                 f"{names[device]} link is {current[device]}", f"Was {last}."))
     return current, messages
@@ -762,16 +885,10 @@ def check_states(config, previous):
         threshold = int(config["general"].get("statesPercent", "80"))
     except ValueError:
         threshold = 80
-    try:
-        info = subprocess.run([PFCTL, "-si"], capture_output=True, text=True, timeout=30).stdout
-        limits = subprocess.run([PFCTL, "-sm"], capture_output=True, text=True, timeout=30).stdout
-    except (OSError, subprocess.SubprocessError):
-        return previous, []
-    found = re.search(r"current entries\s+(\d+)", info)
-    allowed = re.search(r"states\s+hard limit\s+(\d+)", limits)
-    if found is None or allowed is None:
+    found = pf_states()
+    if found is None or not found[1]:
         return previous, []  # no limit to measure against, e.g. "states unlimited"
-    entries, limit = int(found.group(1)), int(allowed.group(1))
+    entries, limit = found
     percent = entries * 100 // max(limit, 1)
     current = {"over": percent >= threshold}
     if previous is None or previous.get("over") == current["over"]:
@@ -786,11 +903,7 @@ def ups_status():
     """(name, state, detail) per UPS, from apcupsd or NUT, whichever is installed."""
     found = []
     if os.access(APCACCESS, os.X_OK):
-        try:
-            output = subprocess.run([APCACCESS, "status"], capture_output=True, text=True,
-                                    timeout=30).stdout
-        except (OSError, subprocess.SubprocessError):
-            output = ""
+        output = command_output([APCACCESS, "status"]) or ""
         values = dict(line.split(":", 1) for line in output.splitlines() if ":" in line)
         values = {k.strip().upper(): v.strip() for k, v in values.items()}
         if values.get("STATUS"):
@@ -802,10 +915,9 @@ def ups_status():
             found.append((values.get("UPSNAME") or "UPS", values["STATUS"].lower(), detail))
     if os.access(UPSC, os.X_OK):
         try:
-            listed = subprocess.run([UPSC, "-l"], capture_output=True, text=True, timeout=30).stdout
+            listed = command_output([UPSC, "-l"]) or ""
             for name in [n.strip() for n in listed.splitlines() if n.strip()]:
-                output = subprocess.run([UPSC, name], capture_output=True, text=True,
-                                        timeout=30).stdout
+                output = command_output([UPSC, name]) or ""
                 values = dict(line.split(":", 1) for line in output.splitlines() if ":" in line)
                 values = {k.strip(): v.strip() for k, v in values.items()}
                 flags = [UPS_FLAGS.get(f, f) for f in values.get("ups.status", "").split()]
@@ -817,7 +929,7 @@ def ups_status():
                     if values.get("battery.runtime", "").isdigit() else "",
                 ]))
                 found.append((name, " ".join(flags), detail))
-        except (OSError, subprocess.SubprocessError, ValueError):
+        except ValueError:
             pass
     return found
 
@@ -856,6 +968,746 @@ COLLECTORS = (
 )
 
 
+# ------------------------------------------------------------------ summaries
+# a channel's summary period counts the events it asked for and adds up pf's own running
+# counters, sampled each check; no log is read to build one
+
+
+def summary_channels(channels):
+    return [c for c in channels if c.get("summary", "none") != "none"]
+
+
+def subscribed(channels):
+    """Events some channel takes, as they happen or in its summary."""
+    events = {e for c in channels for e in c["events"]}
+    return events | {e for c in summary_channels(channels) for e in c.get("summaryEvents", [])}
+
+
+def monit_allowed(channel, item):
+    """A Monit alert passes the channel's Monit services filter, if it has one."""
+    names = channel.get("monit") or []
+    return not (item["event"] == "monit" and names and item.get("service") not in names)
+
+
+def in_summary(channel, item):
+    return item["event"] in channel.get("summaryEvents", []) and monit_allowed(channel, item)
+
+
+def add_events(period, channel, messages):
+    """The period with the channel's summary events among the messages counted, and the latest
+    kept to list."""
+    items = [m for m in messages if in_summary(channel, m)]
+    if not items:
+        return period
+    counts = dict(period.get("events", {}))
+    for item in items:
+        counts[item["event"]] = counts.get(item["event"], 0) + 1
+    recent = period.get("recent", []) + [{"time": m["time"], "title": m["title"]} for m in items]
+    return dict(period, events=counts, recent=recent[-SUMMARY_RECENT:])
+
+
+def pf_interfaces():
+    """pf's running totals per interface, device -> {"in_pass": [packets, bytes], ...}, and when
+    each was last cleared; None when pf could not be read. Core parses pfctl for its own health
+    graphs, so its reading is used rather than a second parser."""
+    data = configctl_json("filter", "diag", "info", "interfaces")
+    interfaces = data.get("interfaces") if isinstance(data, dict) else None
+    if not isinstance(interfaces, dict):
+        return None
+    found: dict = {}
+    cleared: dict = {}
+    for device, values in interfaces.items():
+        if not isinstance(values, dict):
+            continue
+        if values.get("cleared"):
+            cleared[device] = str(values["cleared"])
+        for key in ("in_pass", "in_block", "out_pass", "out_block"):
+            way, action = key.split("_")
+            names = [f"{way}{v}_{action}" for v in (4, 6)]
+            if any(f"{n}_packets" in values for n in names):
+                found.setdefault(device, {})[key] = [sum(int(values.get(f"{n}_{unit}", 0)) for n in names)
+                                                     for unit in ("packets", "bytes")]
+    return (found, cleared) if found else None
+
+
+def pf_block_rules():
+    """Packets matched per block rule, by the rule's label, and the pid of the pfctl that loaded
+    it, which changes on every rule load."""
+    output = command_output([PFCTL, "-sr", "-v"])
+    if output is None:
+        return None
+    found: dict = {}
+    loads: dict = {}
+    label = None
+    for line in output.splitlines():
+        line = line.strip()
+        if not line.startswith("["):
+            match = re.search(r'label "([^"]+)"', line)
+            label = match.group(1) if match and line.startswith("block") else None
+            continue
+        packets = re.search(r"Packets:\s+(\d+)", line)
+        loaded = re.search(r"Inserted:.*\bpid\s+(\d+)", line)
+        if label and packets and "Evaluations" in line:
+            found[label] = found.get(label, 0) + int(packets.group(1))  # one rule can expand to several
+        elif label and loaded:
+            loads.setdefault(label, loaded.group(1))
+    return (found, loads) if output.strip() else None  # a firewall always has rules
+
+
+@functools.lru_cache(maxsize=1)
+def pf_states():
+    """(entries, limit) of the state table, or None; read once per run."""
+    info, limits = command_output([PFCTL, "-si"]), command_output([PFCTL, "-sm"])
+    if info is None or limits is None:
+        return None
+    found = re.search(r"current entries\s+(\d+)", info)
+    allowed = re.search(r"states\s+hard limit\s+(\d+)", limits)
+    return (int(found.group(1)), int(allowed.group(1)) if allowed else 0) if found else None
+
+
+def sample_counters(devices, rules):
+    """pf's running totals as flat counters: traffic and blocks per configured interface, and
+    packets per block rule when rules is set, a rule that matched nothing left out. Also each
+    rule's load and each interface's clearing, or None for either when pf could not be read."""
+    sample = {}
+    interfaces = pf_interfaces() if devices else ({}, {})
+    for device, totals in (interfaces[0] if interfaces else {}).items():
+        if device not in devices:
+            continue  # groups and interfaces not assigned
+        for key, (packets, octets) in totals.items():
+            sample[f"if {device} {key} packets"] = packets
+            sample[f"if {device} {key} bytes"] = octets
+    found = pf_block_rules() if rules else ({}, {})
+    counts, loads = found if found else ({}, {})
+    for label, packets in counts.items():
+        if packets:
+            sample[f"rule {label}"] = packets
+    return (sample,
+            {label: loads[label] for label in counts if counts[label] and label in loads} if found else None,
+            interfaces[1] if interfaces else None)
+
+
+def counter_growth(previous, current, reset=(), rules=True, kept=False):
+    """How far each counter grew since the last sample. One that went down was reset, as were
+    those named in reset, so all of it is new; but with kept set, a rule's counter only goes down
+    when some of the rules sharing its label were removed, which is no growth. A counter not
+    sampled before is a baseline, except a rule's when rules were sampled: those are left out
+    until they match."""
+    if previous is None:
+        return {}
+    grown = {}
+    for key, value in current.items():
+        rule = key.startswith("rule ")
+        last = None if key in reset else previous.get(key)
+        if last is None and key not in previous and not (rule and rules):
+            continue
+        if last is not None and value < last and rule and kept:
+            continue
+        grown[key] = value - last if last is not None and value >= last else value
+    return {key: value for key, value in grown.items() if value}
+
+
+def shown(key, sections):
+    """Whether a channel's summary sections show this counter."""
+    if key.startswith("rule ") or "_block " in key:
+        return "firewall" in sections
+    return "traffic" in sections
+
+
+def boot_time():
+    output = command_output([SYSCTL, "-n", "kern.boottime"])
+    if output is None:
+        return None
+    found = re.search(r"sec = (\d+)", output)
+    return int(found.group(1)) if found else None
+
+
+def ruleset_stamp():
+    try:
+        return os.stat(RULESET).st_mtime_ns
+    except OSError:
+        return None
+
+
+def last_boundary(now, schedule, hour, day, date=1):
+    """The latest scheduled summary time at or before now. A monthly summary goes on the given
+    date, or on the month's last day when it is shorter."""
+    local = datetime.datetime.fromtimestamp(now)
+    if schedule == "monthly":
+        def monthly(year, month):
+            last = calendar.monthrange(year, month)[1]
+            return datetime.datetime(year, month, min(date, last), hour)
+        moment = monthly(local.year, local.month)
+        if moment > local:
+            moment = monthly(local.year - (local.month == 1), (local.month - 2) % 12 + 1)
+        return int(moment.timestamp())
+    # fold=0: in the hour repeated when clocks go back, the boundary is its first pass, so a
+    # summary sent then is not due again an hour later
+    moment = local.replace(hour=hour, minute=0, second=0, microsecond=0, fold=0)
+    if moment > local:
+        moment -= datetime.timedelta(days=1)
+    if schedule == "weekly":
+        moment -= datetime.timedelta(days=(moment.isoweekday() - day) % 7)
+    return int(moment.timestamp())
+
+
+def update_summaries(config, channels, previous, messages, now):
+    """Count the events and sample the counters into each summary channel's period, and return the
+    new summary state with the channels whose summary is due."""
+    previous = previous or {}
+    wanted = summary_channels(channels)
+    if not wanted:
+        return {}, []
+    general = config["general"]
+    try:
+        hour, day = int(general.get("summaryHour", "7")), int(general.get("summaryDay", "1"))
+    except ValueError:
+        hour, day = 7, 1
+    hour, day = min(max(hour, 0), 23), min(max(day, 1), 7)  # a hand-edited value must not stop summaries
+    try:
+        date = min(max(int(general.get("summaryDate", "1")), 1), 31)
+    except ValueError:
+        date = 1
+    old = previous.get("channels") or {}
+    boundaries = {c["uuid"]: last_boundary(now, c["summary"], hour, day, date) for c in wanted}
+    due_now = any(old.get(c["uuid"], {}).get("since", now) < boundaries[c["uuid"]] for c in wanted)
+    # a period opened now starts from a reading taken now, so none of it predates the period
+    opening = any(old.get(c["uuid"], {}).get("schedule") != c["summary"] for c in wanted)
+    sections = {s for c in wanted for s in c.get("summarySections", [])}
+    health = "health" in sections
+    states = pf_states() if health else None
+    load = os.getloadavg()[0] if health else 0
+    reading = {"load": load} if health else {}
+    if states is not None:
+        reading.update(states=states[0], statesLimit=states[1])
+    if not due_now and not opening and previous.get("counters") is not None \
+            and now - previous.get("sampled", 0) < SAMPLE_SECONDS:
+        grown: dict = {}
+        state = {key: previous[key] for key in ("counters", "loads", "cleared", "rules", "ruleset", "boot",
+                                                "sampled") if key in previous}
+    else:
+        grown, state = sample_growth(config, sections, previous)
+        state["sampled"] = now
+    periods, due = {}, []
+    for channel in wanted:
+        period = old.get(channel["uuid"])
+        opened = period is None or period.get("schedule") != channel["summary"]
+        if period is None or opened:
+            period = {"since": now, "schedule": channel["summary"], "totals": {}, "peaks": dict(reading)}
+        totals = dict(period.get("totals", {}))
+        # growth since the last reading, less what happened before a period opened now
+        for key, value in ({} if opened else grown).items():
+            if shown(key, channel.get("summarySections", [])):
+                totals[key] = totals.get(key, 0) + value
+        peaks = dict(period.get("peaks", {}))
+        if health:
+            peaks["load"] = max(peaks.get("load", 0), load)
+        if states is not None and states[0] >= peaks.get("states", 0):
+            peaks.update(states=states[0], statesLimit=states[1])
+        period = add_events(dict(period, totals=totals, peaks=peaks), channel, messages)
+        if period["since"] < boundaries[channel["uuid"]] <= now:
+            due.append((channel, period))
+            # this check's reading also opens the next period
+            period = {"since": now, "schedule": channel["summary"], "totals": {}, "peaks": dict(reading)}
+        periods[channel["uuid"]] = period
+    return dict(state, channels=periods), due
+
+
+def sample_growth(config, sections, previous):
+    """Read pf's counters and work out how far each grew since the last reading, and the reading
+    to keep."""
+    devices = set(config.get("interfaces", {})) if sections & {"firewall", "traffic"} else set()
+    sample, loads, cleared = sample_counters(devices, "firewall" in sections)
+    before = previous.get("counters") or {}
+    # pf could not be read: keep the last reading, so the next one is not taken as all new
+    if loads is None:
+        sample.update({k: v for k, v in before.items() if k.startswith("rule ")})
+        loads = previous.get("loads") or {}
+    if cleared is None:
+        sample.update({k: v for k, v in before.items() if k.startswith("if ")})
+        cleared = previous.get("cleared") or {}
+    ruleset = ruleset_stamp()
+    # an interface cleared since the last sample, e.g. by a reboot, starts again from zero
+    was = previous.get("cleared") or {}
+    reset = {key for key in sample if key.startswith("if ")
+             and was.get(key.split()[1], cleared.get(key.split()[1])) != cleared.get(key.split()[1])}
+    # without Keep counters a rule load zeroes them, and they can pass the old count by the next
+    # sample; a rule's load shows as a new pfctl pid, or failing that as a rewritten ruleset.
+    # With them, only a reboot does.
+    kept = bool(config.get("keepCounters"))
+    boot = (boot_time() or previous.get("boot")) if kept else None
+    if kept and previous.get("boot") is not None and boot != previous.get("boot"):
+        reset |= {key for key in sample if key.startswith("rule ")}
+        kept = False  # every rule counter started again from zero
+    elif not kept:
+        loaded = previous.get("loads") or {}
+        if loads:
+            reset |= {f"rule {label}" for label, pid in loads.items() if loaded.get(label, pid) != pid}
+        elif ruleset != previous.get("ruleset"):
+            reset |= {key for key in sample if key.startswith("rule ")}
+    grown = counter_growth(previous.get("counters"), sample, reset, previous.get("rules", False), kept)
+    return grown, {"counters": sample, "loads": loads, "cleared": cleared, "rules": "firewall" in sections,
+                   "ruleset": ruleset, "boot": boot}
+
+
+def size(octets):
+    units = ("B", "kB", "MB", "GB", "TB")
+    index = 0
+    while octets >= 1000 and index < len(units) - 1:
+        octets /= 1000
+        index += 1
+    return f"{octets:.0f} B" if index == 0 else f"{octets:.1f} {units[index]}"
+
+
+def system_health():
+    """Uptime, memory and disk lines for a summary."""
+    lines = []
+    output = command_output([SYSCTL, "kern.boottime", "hw.physmem", "vm.stats.vm.v_page_count",
+                             "vm.stats.vm.v_free_count", "vm.stats.vm.v_inactive_count",
+                             "vm.stats.vm.v_laundry_count", "kstat.zfs.misc.arcstats.size"],
+                            partial=True) or ""  # the ZFS name is missing on UFS
+    values = dict(line.split(": ", 1) for line in output.splitlines() if ": " in line)
+    booted = re.search(r"sec = (\d+)", values.get("kern.boottime", ""))
+    if booted:
+        lines.append(f"Up {duration(time.time() - int(booted.group(1)))}")
+    try:
+        pages = int(values["vm.stats.vm.v_page_count"])
+        idle = sum(int(values.get(f"vm.stats.vm.v_{kind}_count", 0)) for kind in ("free", "inactive", "laundry"))
+        arc = int(values.get("kstat.zfs.misc.arcstats.size", 0))
+        # as the dashboard: the ZFS cache counts as used, and is named
+        lines.append(f"Memory {(pages - idle) * 100 // max(pages, 1)}% used of {size(int(values['hw.physmem']))}"
+                     + (f", ZFS cache {size(arc)}" if arc else ""))
+    except (KeyError, ValueError):
+        pass
+    try:
+        disk = os.statvfs("/")
+        used = disk.f_blocks - disk.f_bfree
+        # as df: the reserve for root counts neither as used nor as available
+        percent = -(-used * 100 // max(used + disk.f_bavail, 1))
+        lines.append(f"Disk {percent}% used of {size(disk.f_blocks * disk.f_frsize)}")
+    except OSError:
+        pass
+    return lines
+
+
+def current_status(config, now):
+    """How things stand as the summary is built: uplink addresses, gateways, links, CARP, firmware
+    and certificates."""
+    names, lines = config.get("interfaces", {}), []
+    held = addresses()
+    disabled = set(config.get("disabled", []))
+    for device in [d for d in config.get("uplinks", []) if d not in disabled]:
+        lines.append(f"{names.get(device, device)} address: {', '.join(sorted(held.get(device, []))) or 'none'}")
+    gateways = configctl_json("interface", "gateways", "status")
+    for name, gateway in (gateways.items() if isinstance(gateways, dict) else []):
+        # core gives ~ for a reading it does not have, e.g. with monitoring off
+        detail = ", ".join([str(gateway.get("status_translated") or gateway.get("status", ""))] + [
+            f"{label} {gateway[key]}" for key, label in (("delay", "RTT"), ("loss", "loss"))
+            if gateway.get(key, "~") not in ("~", "")])
+        lines.append(f"Gateway {name}: {detail}")
+    links = {d: s for d, s in link_states(names).items() if d not in disabled}
+    down = [f"{names[d]} {s}" for d, s in links.items() if s not in LINK_UP]
+    if links:
+        lines.append(f"Links down: {', '.join(down)}" if down else f"{len(links)} of {len(links)} interface links up")
+    carp = carp_states()
+    if carp:
+        lines.append(f"CARP: {', '.join(f'{carp.count(s)} {s}' for s in sorted(set(carp)))}")
+    firmware = read_firmware()
+    try:
+        checked = clock(os.stat(FIRMWARE).st_mtime)
+    except OSError:
+        firmware = None
+    if firmware is not None and firmware.get("connection") != "ok":
+        lines.append(f"Firmware: the last update check failed (checked {checked})")
+    elif firmware is not None:
+        pending = len(firmware.get("upgrade_packages") or []) + len(firmware.get("new_packages") or [])
+        major = firmware.get("upgrade_major_version") or ""
+        found = ", ".join(filter(None, [f"{pending} update(s) pending" if pending else "",
+                                         f"{major} available" if major else ""])) or "up to date"
+        lines.append(f"Firmware: {found} (checked {checked})")
+    else:
+        # the result lives in /tmp, so it is gone after a reboot until the next update check
+        lines.append("Firmware: No update check since the last reboot")
+    try:
+        days = int(config["general"].get("certDays", "14"))
+    except ValueError:
+        days = 14
+    for item in sorted(config.get("certificates", []), key=lambda c: c["expires"]):
+        left = item["expires"] - now
+        if -days * 86400 < left <= days * 86400:  # long expired ones would repeat in every summary
+            state = "expired" if left <= 0 else f"expires in {left // 86400} day(s)"
+            lines.append(f"{item['label']} {item['description']} {state}")
+    return lines
+
+
+def build_summary(config, channel, period, now, shared=None):
+    """The summary of a channel's period, as a notification for it: a text body, and the same
+    content as sections with graphs to draw, for email. Parts every channel shows the same are kept
+    in shared, so several channels due at once work them out once."""
+    shared = {} if shared is None else shared
+
+    def once(key, compute):
+        if key not in shared:
+            shared[key] = compute()
+        return shared[key]
+
+    names, keys = config.get("interfaces", {}), config.get("ifnames", {})
+    totals, peaks = period.get("totals", {}), period.get("peaks", {})
+    sections = channel.get("summarySections", [])
+    title = f"{period.get('schedule', channel['summary']).capitalize()} summary"
+    span = f"{clock(period['since'])} to {clock(now)}"
+    report: list = []
+
+    def section(heading, head=None):
+        report.append({"title": heading, "head": head, "rows": [], "lines": [], "graphs": []})
+        return report[-1]
+
+    def row(part, text, cells=None):
+        part["lines"].append(text)
+        part["rows"].append(cells if cells is not None else text.split(": ", 1))
+
+    def graph(part, kind, device, heading):
+        key = keys.get(device, "") if device else "system"
+        if re.fullmatch(r"[A-Za-z0-9_]+", key) and len(part["graphs"]) < SUMMARY_GRAPHS:
+            part["graphs"].append({"kind": kind, "key": key, "title": heading, "name": f"{kind}-{key}.png",
+                                   "start": period["since"], "end": now})
+
+    if "status" in sections:
+        part = section("Current status")
+        for line in once("status", lambda: current_status(config, now)):
+            row(part, line)
+
+    if channel.get("summaryEvents"):
+        counts, recent = period.get("events", {}), period.get("recent", [])
+        part = section("Events in the period", ["Event", "Count"])
+        if not counts:
+            row(part, "None", ["None"])
+        for event, count in sorted(counts.items(), key=lambda kv: -kv[1]):
+            label = config.get("eventLabels", {}).get(event, event)
+            row(part, f"{label}: {count}", [label, f"{count:,}"])
+        if recent:
+            part = section(f"Latest {len(recent)} of {sum(counts.values())}", ["Time", "Event"])
+            for item in recent:
+                row(part, f"{clock(item['time'])} {item['title']}", [clock(item["time"]), item["title"]])
+
+    by_key: dict = {}
+    for name, value in totals.items():
+        parts = name.split()
+        if parts[0] == "if":
+            by_key.setdefault(f"{parts[2]} {parts[3]}", {})[parts[1]] = value
+
+    def per_interface(key):
+        return by_key.get(key, {})
+
+    if "firewall" in sections:
+        part = section("Firewall blocks", ["Interface", "Packets in", "Packets out", "Size"])
+        packets_in, packets_out = per_interface("in_block packets"), per_interface("out_block packets")
+        bytes_in, bytes_out = per_interface("in_block bytes"), per_interface("out_block bytes")
+        blocked = sorted(set(packets_in) | set(packets_out),
+                         key=lambda d: -(packets_in.get(d, 0) + packets_out.get(d, 0)))
+        if not blocked:
+            row(part, "None", ["None"])
+        for device in blocked:
+            octets = bytes_in.get(device, 0) + bytes_out.get(device, 0)
+            name = names.get(device, device)
+            row(part, f"{name}: {packets_in.get(device, 0):,} in, {packets_out.get(device, 0):,} out ({size(octets)})",
+                [name, f"{packets_in.get(device, 0):,}", f"{packets_out.get(device, 0):,}", size(octets)])
+        for device in blocked[:1]:
+            graph(part, "blocks", device, f"{names.get(device, device)} blocked")
+        rules = sorted(((k.split(" ", 1)[1], v) for k, v in totals.items() if k.startswith("rule ")),
+                       key=lambda kv: -kv[1])[:SUMMARY_RULES]
+        if rules:
+            described = once("rules", lambda: {
+                r.get("id"): r.get("descr") for r in configctl_json("filter", "list", "rule_ids") or []
+                if isinstance(r, dict)})
+            part = section("Block rules matched most", ["Rule", "Packets"])
+            for label, packets in rules:
+                name = described.get(label) or label
+                row(part, f"{name}: {packets:,} packets", [name, f"{packets:,}"])
+
+    if "traffic" in sections:
+        part = section("Traffic", ["Interface", "In", "Out"])
+        received, sent = per_interface("in_pass bytes"), per_interface("out_pass bytes")
+        devices = sorted(set(received) | set(sent), key=lambda d: -(received.get(d, 0) + sent.get(d, 0)))
+        if not devices:
+            row(part, "None recorded", ["None recorded"])
+        for device in devices:
+            name = names.get(device, device)
+            row(part, f"{name}: {size(received.get(device, 0))} in, {size(sent.get(device, 0))} out",
+                [name, size(received.get(device, 0)), size(sent.get(device, 0))])
+            graph(part, "traffic", device, f"{name} traffic")
+
+    if "health" in sections:
+        part = section("System")
+        for line in once("health", system_health):
+            row(part, line)
+        load = os.getloadavg()[0]
+        row(part, f"Load {load:.2f}, peak {max(peaks.get('load', 0), load):.2f}")
+        if peaks.get("states") is not None:
+            limit = peaks.get("statesLimit") or 0
+            share = f" of {limit:,} ({peaks['states'] * 100 // limit}%)" if limit else ""
+            row(part, f"State table peak {peaks['states']:,}{share}")
+        graph(part, "cpu", None, "Processor")
+        graph(part, "states", None, "State table")
+
+    lines = [span]
+    for part in report:
+        lines += ["", part["title"]] + part["lines"]
+    return dict(message("summary", "info", title, "\n".join(lines)), uuid=channel["uuid"],
+                report={"title": title, "span": span, "sections": report})
+
+
+GRAPHS: dict = {}  # (name, start, end) -> {"path", "caption"}, drawn once per run
+
+
+def graph_dir():
+    """This run's directory for graphs, removed when it ends."""
+    if "dir" not in GRAPHS:
+        GRAPHS["dir"] = tempfile.mkdtemp(prefix="notify-")
+        atexit.register(shutil.rmtree, GRAPHS["dir"], True)
+    return GRAPHS["dir"]
+
+
+def drawn_graph(spec):
+    """A graph's file, drawn the first time any channel or retry in this run asks for it."""
+    key = (spec["name"], int(spec["start"]), int(spec["end"]))
+    if key not in GRAPHS:
+        GRAPHS[key] = draw_graph(spec, os.path.join(graph_dir(), f"{int(spec['start'])}-{int(spec['end'])}"))
+    return GRAPHS[key]
+
+
+# what each graph shows: its RRD file, unit, and series of (label, data sources added up, factor,
+# colour, filled); traffic is stored in bytes per second, shown in bits
+GRAPH_KINDS: dict = {
+    "traffic": ("{key}-traffic.rrd", "bits", [("In", ("inpass", "inpass6"), 8, "#4e79a7", True),
+                                              ("Out", ("outpass", "outpass6"), 8, "#e15759", False)]),
+    "blocks": ("{key}-packets.rrd", "packets", [("In", ("inblock", "inblock6"), 1, "#e15759", True),
+                                                ("Out", ("outblock", "outblock6"), 1, "#76b7b2", False)]),
+    "cpu": ("system-processor.rrd", "percent", [("Busy", ("user", "nice", "system", "interrupt"), 1, "#4e79a7", True)]),
+    "states": ("system-states.rrd", "states", [("States", ("pfstates",), 1, "#59a14f", True)]),
+}
+GRAPH_SIZE = (640, 160)
+
+
+def draw_graph(spec, directory):
+    """Draw one graph from core's health data; {"path", "caption"}, or None. rrdtool on OPNsense is
+    built without graphics, so its data is read with fetch and drawn here."""
+    filename, unit, series = GRAPH_KINDS[spec["kind"]]
+    rrd = os.path.join(RRD_DIR, filename.format(key=spec["key"]))
+    if not os.path.isfile(rrd):
+        log(syslog.LOG_WARNING, f"no {spec['title']} graph: {rrd} is missing; is health reporting on?")
+        return None
+    rows = rrd_fetch(rrd, int(spec["start"]), int(spec["end"]))
+    if rows is None:
+        log(syslog.LOG_WARNING, f"no {spec['title']} graph: {rrd} could not be read")
+        return None
+    lines = []
+    for label, sources, factor, colour, filled in series:
+        values = []
+        for _, row in rows:
+            known = [row[name] for name in sources if row.get(name) is not None]
+            values.append(sum(known) * factor if known else None)
+        lines.append((label, values, colour, filled))
+    if all(v is None for _, values, _, _ in lines for v in values):
+        return None  # nothing recorded for the period
+    stamps = [stamp for stamp, _ in rows]
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, spec["name"])
+    with open(path, "wb") as handle:
+        handle.write(chart_png([(values, colour, filled) for _, values, colour, filled in lines],
+                               day_marks(stamps[0], stamps[-1])))
+    return {"path": path, "caption": graph_caption(spec["title"], unit, lines), "legend": graph_legend(unit, lines)}
+
+
+def rrd_fetch(rrd, start, end):
+    """[(time, {data source: value or None})] from an RRD, at the finest resolution covering the
+    period, or None."""
+    output = command_output([RRDTOOL, "fetch", rrd, "AVERAGE", "-s", str(start), "-e", str(end)], timeout=60)
+    lines = [line for line in (output or "").splitlines() if line.strip()]
+    if len(lines) < 2:
+        return None
+    names = lines[0].split()
+    rows = []
+    for line in lines[1:]:
+        stamp, sep, values = line.partition(":")
+        if not sep or not stamp.strip().isdigit():
+            continue
+        row = {}
+        for name, value in zip(names, values.split()):
+            try:
+                number = float(value)
+            except ValueError:
+                number = math.nan
+            row[name] = None if math.isnan(number) else number
+        rows.append((int(stamp), row))
+    return rows if len(rows) > 1 else None
+
+
+def day_marks(first, last):
+    """Where midnights fall along the period, as fractions; Mondays only beyond about a week."""
+    if last <= first:
+        return []
+    moment = datetime.datetime.fromtimestamp(first).replace(hour=0, minute=0, second=0, microsecond=0)
+    marks: list = []
+    while True:
+        moment += datetime.timedelta(days=1)
+        stamp = moment.timestamp()
+        if stamp >= last:
+            return marks
+        if last - first <= 8 * 86400 or moment.weekday() == 0:
+            marks.append((stamp - first) / (last - first))
+
+
+def rate(value, unit):
+    if unit == "percent":
+        return f"{value:.0f}%"
+    if unit == "states":
+        return f"{value:,.0f}"
+    word = "bit/s" if unit == "bits" else "packets/s"
+    for prefix in ("", "k", "M", "G"):
+        if value < 1000 or prefix == "G":
+            return f"{value:.0f} {word}" if not prefix else f"{value:.1f} {prefix}{word}"
+        value /= 1000
+    return ""
+
+
+def graph_caption(title, unit, lines):
+    """The graph's title with each series' peak and average, as the image has no text."""
+    parts = []
+    for label, values, _, _ in lines:
+        known = [v for v in values if v is not None]
+        if known:
+            figures = f"peak {rate(max(known), unit)}, average {rate(sum(known) / len(known), unit)}"
+            parts.append(f"{label} {figures}" if len(lines) > 1 else figures)
+    return f"{title}: " + "; ".join(parts)
+
+
+def graph_legend(unit, lines):
+    """[(label, colour, figures)] per series with data, so the email can say which colour is which."""
+    legend = []
+    for label, values, colour, _ in lines:
+        known = [v for v in values if v is not None]
+        if known:
+            legend.append((label if len(lines) > 1 else "", colour,
+                           f"peak {rate(max(known), unit)}, average {rate(sum(known) / len(known), unit)}"))
+    return legend
+
+
+def chart_png(series, marks, scale=2):
+    """A plain chart as PNG: per series of (values, colour, filled), a line and, if filled, a
+    tinted area below it; gridlines, and marks at the given fractions. Values of None are gaps.
+    Drawn at scale times the size and averaged down, which smooths the edges. Pixels are set a
+    column slice at a time where possible, as a small firewall draws these in plain Python."""
+    width, height = GRAPH_SIZE
+    w, h = width * scale, height * scale
+    # one plane per colour channel, column after column, so a column is one slice
+    planes = [bytearray(b"\xff" * (w * h)) for _ in range(3)]
+
+    def dot(x, y, rgb):
+        if 0 <= x < w and 0 <= y < h:
+            for k in range(3):
+                planes[k][x * h + y] = rgb[k]
+
+    top = max([v for values, _, _ in series for v in values if v is not None] + [0]) * 1.1 or 1
+    for step in range(1, 4):
+        y = h - 1 - round(step / 4 * (h - 1))
+        for x in range(0, w, 2 * scale):
+            for dx in range(scale):
+                dot(x + dx, y, (0xdd, 0xdd, 0xdd))
+    for mark in marks:
+        x = round(mark * (w - 1))
+        if 0 <= x < w:
+            for k in range(3):
+                planes[k][x * h:(x + 1) * h] = b"\xcc" * h
+    for values, colour, filled in series:
+        rgb = tuple(int(colour[i:i + 2], 16) for i in (1, 3, 5))
+        count = len(values)
+        ys = [None if v is None else h - 1 - round(v / top * (h - 1)) for v in values]
+        if count < 2:
+            continue
+        if filled:
+            # blending with one colour at one strength maps each byte to one other: a table
+            tables = [bytes(round(v * 0.65 + rgb[k] * 0.35) for v in range(256)) for k in range(3)]
+            for x in range(w):
+                at = x / (w - 1) * (count - 1)
+                i = min(int(at), count - 2)
+                here, after = ys[i], ys[i + 1]
+                if here is None or after is None:
+                    continue
+                start = x * h + min(max(round(here + (after - here) * (at - i)), 0), h)
+                end = (x + 1) * h
+                for k in range(3):
+                    planes[k][start:end] = planes[k][start:end].translate(tables[k])
+        for i in range(count - 1):
+            y0, y1 = ys[i], ys[i + 1]
+            if y0 is None or y1 is None:
+                continue
+            x0, x1 = round(i / (count - 1) * (w - 1)), round((i + 1) / (count - 1) * (w - 1))
+            steps = max(abs(x1 - x0), abs(y1 - y0), 1)
+            for n in range(steps + 1):
+                x, y = round(x0 + (x1 - x0) * n / steps), round(y0 + (y1 - y0) * n / steps)
+                for dx in range(scale):
+                    for dy in range(scale):
+                        dot(x + dx, y + dy, rgb)
+    # average scale x scale blocks down: rows of a column pair up, then columns
+    out = bytearray(width * height * 3)
+    blocks = itertools.repeat(scale * scale)
+    for k in range(3):
+        plane = planes[k]
+        tall: list = list(plane[0::scale])
+        for dy in range(1, scale):
+            tall = list(map(operator.add, tall, plane[dy::scale]))
+        for x in range(width):
+            at = x * scale * height
+            column = tall[at:at + height]
+            for dx in range(1, scale):
+                at += height
+                column = list(map(operator.add, column, tall[at:at + height]))
+            out[k + x * 3::width * 3] = bytes(map(operator.floordiv, column, blocks))
+    raw = b"".join(b"\x00" + bytes(out[y * width * 3:(y + 1) * width * 3]) for y in range(height))
+
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
+
+
+def graph_caption_html(title, graph):
+    """The caption with a swatch of each series' colour before its figures."""
+    legend = graph.get("legend")
+    if not legend:
+        return html.escape(graph["caption"])
+    parts = [f'<span style="color:{html.escape(colour)}">&#9632;</span> '
+             + html.escape(f"{label} {figures}" if label else figures) for label, colour, figures in legend]
+    return f"{html.escape(title)}: " + "; ".join(parts)
+
+
+def summary_html(report, drawn):
+    """A summary as an HTML email: a table per section, with its graphs inline. Every value is
+    escaped, as event titles carry outside text such as a failed login's user name."""
+    cell = 'style="padding:3px 12px 3px 0;text-align:left;vertical-align:top"'
+    out = [f'<div style="font-family:sans-serif;font-size:14px">',
+           f"<h2>{html.escape(report['title'])}</h2>", f"<p>{html.escape(report['span'])}</p>"]
+    if report.get("delayed"):
+        out.append(f"<p><em>{html.escape(report['delayed'])}</em></p>")
+    for part in report["sections"]:
+        out.append(f"<h3>{html.escape(part['title'])}</h3>")
+        out.append('<table style="border-collapse:collapse">')
+        if part.get("head") and any(len(r) > 1 for r in part["rows"]):
+            out.append("<tr>" + "".join(f"<th {cell}>{html.escape(h)}</th>" for h in part["head"]) + "</tr>")
+        width = max([len(r) for r in part["rows"]] + [1])
+        for cells in part["rows"]:
+            span = f' colspan="{width}"' if len(cells) == 1 and width > 1 else ""
+            out.append("<tr>" + "".join(f"<td {cell}{span}>{html.escape(str(c))}</td>" for c in cells) + "</tr>")
+        out.append("</table>")
+        for spec in part.get("graphs", []):
+            if spec["name"] in drawn:
+                out.append(f'<p><img src="cid:{html.escape(spec["name"])}" alt="{html.escape(spec["title"])}"><br>'
+                           f'<small>{graph_caption_html(spec["title"], drawn[spec["name"]])}</small></p>')
+    out.append("</div>")
+    return "\n".join(out)
+
+
 # ------------------------------------------------------------------ delivery
 
 
@@ -878,7 +1730,7 @@ def local_file_args(url):
     args = file_args(url_schema(url))
     return [key for key, value in urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query)
             if key.lower() in args and value != KEY_MARKER
-            and not (key.lower() in REMOTE_FILE_ARGS and re.match(r"https?://", value, re.I))]
+            and not (key.lower() in REMOTE_FILE_ARGS and re.match(r"https://", value, re.I))]
 
 
 def file_label(schema, arg):
@@ -948,8 +1800,9 @@ def prune_key_files(channels):
                 pass
 
 
-def deliver(channel, title, body, ntype):
-    """Send one notification; returns (ok, error text)."""
+def deliver(channel, title, body, ntype, report=None):
+    """Send one notification; returns (ok, error text). A summary's report goes to email as HTML
+    with its graphs inline; other services get the text body."""
     try:
         import apprise
     except ImportError as exc:
@@ -966,10 +1819,25 @@ def deliver(channel, title, body, ntype):
         notifier = apprise.Apprise()
         if not notifier.add(url):
             return False, "The URL is not a valid Apprise URL."
-        # the text carries outsiders' input, e.g. a failed login's user name, so services that
-        # render HTML get it escaped rather than as markup
-        ok = bool(notifier.notify(body=body, title=title, notify_type=ntype,
-                                  body_format=apprise.NotifyFormat.TEXT))
+        server = next(iter(notifier), None)
+        if report and server is not None and server.notify_format == apprise.NotifyFormat.HTML \
+                and "NotifyEmail" in {c.__name__ for c in type(server).__mro__}:
+            graphs = [spec for part in report["sections"] for spec in part.get("graphs", [])]
+            drawn = {spec["name"]: graph for spec in graphs if (graph := drawn_graph(spec))}
+            server.inline = True  # graphs in their sections, not listed at the end
+            ok = bool(notifier.notify(body=summary_html(report, drawn), title=title, notify_type=ntype,
+                                      body_format=apprise.NotifyFormat.HTML,
+                                      attach=[graph["path"] for graph in drawn.values()] or None))
+        else:
+            if report and "overflow" not in {k.lower() for k, _ in urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query)}:
+                # a summary can pass a service's limit, e.g. Pushover's 1024 characters, which then
+                # refuses it; Apprise's default passes it on as it is
+                for each in notifier:
+                    each.overflow_mode = apprise.OverflowMode.SPLIT
+            # the text carries outsiders' input, e.g. a failed login's user name, so services that
+            # render HTML get it escaped rather than as markup
+            ok = bool(notifier.notify(body=body, title=title, notify_type=ntype,
+                                      body_format=apprise.NotifyFormat.TEXT))
     return ok, "" if ok else last_warning(captured, "Delivery failed.")
 
 
@@ -990,12 +1858,13 @@ def title_prefix(general, hostname):
 
 
 def wants(channel, item):
+    if item["event"] == "summary":
+        return bool(summary_channels([channel]))  # not once the channel's summary is switched off
     if item["event"] == "digest":
-        return True  # already filtered when it was built
-    if item["event"] not in channel["events"]:
-        return False
-    names = channel.get("monit") or []
-    return not (item["event"] == "monit" and names and item.get("service") not in names)
+        # filtered when it was built; a queued one waits only while the channel still takes one of
+        # its events (one queued before they were recorded has none)
+        return "events" not in item or any(event in channel["events"] for event in item["events"])
+    return item["event"] in channel["events"] and monit_allowed(channel, item)
 
 
 def digest(items, threshold):
@@ -1006,7 +1875,7 @@ def digest(items, threshold):
     types = [item["type"] for item in items]
     kind = "failure" if "failure" in types else ("warning" if "warning" in types else "info")
     summary = message("digest", kind, f"{len(items)} notifications", "\n".join(lines))
-    return [dict(summary, uuid=items[0]["uuid"])]
+    return [dict(summary, uuid=items[0]["uuid"], events=sorted({item["event"] for item in items}))]
 
 
 def send(channels, prefix, messages, queue, threshold=0):
@@ -1029,10 +1898,12 @@ def send(channels, prefix, messages, queue, threshold=0):
             pending.append(item)  # waiting out the backoff
             continue
         title = f"{prefix}: {item['title']}" if prefix else item["title"]
-        body = item["body"]
+        body, report = item["body"], item.get("report")
         if now - item["time"] > 90:
-            body += f"\n\n(Delayed: this happened at {clock(item['time'])}.)"
-        ok, error = deliver(channel, title, body, item["type"])
+            late = f"(Delayed: this happened at {clock(item['time'])}.)"
+            body += f"\n\n{late}"
+            report = dict(report, delayed=late) if report else report
+        ok, error = deliver(channel, title, body, item["type"], report)
         if ok:
             log(syslog.LOG_NOTICE, f"sent \"{item['title']}\" to {name}")
             continue
@@ -1048,9 +1919,9 @@ def send(channels, prefix, messages, queue, threshold=0):
     return pending[-QUEUE_MAX:]
 
 
-def prepare():
+def prepare(config=None):
     """Settings and enabled channels, or None when switched off or unreadable."""
-    config = load_config()
+    config = load_config() if config is None else config
     if config is None:
         return None
     general = config["general"]
@@ -1061,17 +1932,26 @@ def prepare():
 
 
 def run_check():
-    prepared = prepare()
+    config = load_config()
+    if config is None:
+        return  # unreadable, which says nothing about whether Notify is on: keep the state
+    prepared = prepare(config)
     if prepared is None:
-        # disabled, not merely unreadable: start from a fresh baseline when enabled again
-        if os.path.exists(STATE) and load_config() is not None:
+        # disabled: start from a fresh baseline when enabled again
+        if os.path.exists(STATE):
             os.remove(STATE)
         return
     config, general, channels, hostname = prepared
+    if ifconfig() is None:
+        # without it, links, addresses and CARP would all read as gone; try again next check
+        log(syslog.LOG_ERR, "ifconfig could not be read; check skipped")
+        return
     prune_key_files(config["channels"])
-    events = {e for c in channels for e in c["events"]}
+    events = subscribed(channels)
     state = fresh_state()
-    new_state, messages = {"stamp": int(time.time())}, []
+    now = int(time.time())
+    new_state: dict = {"stamp": now}
+    messages: list = []
     for event, collector in COLLECTORS:
         if event not in events:
             continue  # dropped, so subscribing later starts from a baseline
@@ -1082,15 +1962,41 @@ def run_check():
             new_state[event], found = state.get(event), []
         messages.extend(found)
     if is_carp_backup(config):
-        new_state["queue"] = state.get("queue", [])  # standby; the master reports
+        # standby; the master reports. The counters are still sampled, so they do not pile up
+        # into the first period after taking over, and periods start then.
+        new_state["queue"] = state.get("queue", [])
+        try:
+            summary, _ = update_summaries(config, channels, state.get("summary"), [], now)
+            new_state["summary"] = dict(summary, channels={}) if summary else {}
+        except Exception as exc:
+            log(syslog.LOG_ERR, f"summary failed: {exc}")
         save_state(new_state)
         return
     try:
         threshold = int(general.get("digestFrom", "0"))
     except ValueError:
         threshold = 0
+    try:
+        summary, due = update_summaries(config, channels, state.get("summary"), messages, now)
+    except Exception as exc:
+        log(syslog.LOG_ERR, f"summary failed: {exc}")
+        summary, due = state.get("summary", {}), []
+    summaries: list = []
+    shared: dict = {}
+    for channel, period in due:
+        try:
+            summaries.append(build_summary(config, channel, period, now, shared))
+        except Exception as exc:
+            name = channel.get("description", channel["uuid"])
+            tries = period.get("tries", 0) + 1
+            if tries >= SUMMARY_TRIES:
+                log(syslog.LOG_ERR, f"summary for {name} failed {tries} times, dropped: {exc}")
+                continue
+            log(syslog.LOG_ERR, f"summary for {name} failed, trying again next check: {exc}")
+            summary["channels"][channel["uuid"]] = dict(period, tries=tries)
+    new_state["summary"] = summary
     new_state["queue"] = send(channels, title_prefix(general, hostname), messages,
-                              state.get("queue", []), threshold)
+                              state.get("queue", []) + summaries, threshold)
     save_state(new_state)
 
 
@@ -1102,13 +2008,13 @@ def run_boot():
     if is_carp_backup(config):
         return
     state = fresh_state()
-    try:
-        version = subprocess.run(["/usr/local/sbin/opnsense-version", "-v"], capture_output=True,
-                                 text=True, timeout=30).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        version = ""
+    version = (command_output(["/usr/local/sbin/opnsense-version", "-v"]) or "").strip()
     body = f"Running OPNsense {version}." if version else ""
     found = [message("boot", "info", "Firewall has started", body)]
+    periods = (state.get("summary") or {}).get("channels") or {}
+    for channel in summary_channels(channels):
+        if channel["uuid"] in periods:
+            periods[channel["uuid"]] = add_events(periods[channel["uuid"]], channel, found)
     state["queue"] = send(channels, title_prefix(general, hostname), found, state.get("queue", []))
     state["stamp"] = int(time.time())
     save_state(state)
@@ -1133,7 +2039,7 @@ def run_status():
         "checked": clock(state["stamp"]) if state.get("stamp") else "",
         "age": duration(now - state["stamp"]) if state.get("stamp") else "",
         "channels": len([c for c in channels if c.get("enabled", "0") == "1"]),
-        "events": sorted({e for c in channels if c.get("enabled", "0") == "1" for e in c["events"]}),
+        "events": sorted(subscribed([c for c in channels if c.get("enabled", "0") == "1"])),
         "queued": queued,
     }
 
@@ -1154,6 +2060,38 @@ def run_test(uuid):
         log(syslog.LOG_NOTICE, f"sent test notification to {name}")
         return {"status": "ok"}
     log(syslog.LOG_ERR, f"could not send test notification to {name}: {error}")
+    return {"status": "failed", "message": error}
+
+
+def run_summary(uuid):
+    """Send a channel's summary of its period so far, leaving the period running."""
+    config = load_config()
+    if config is None:
+        return {"status": "failed", "message": "The settings could not be read."}
+    channel = next((c for c in config["channels"] if c["uuid"] == uuid), None)
+    if channel is None or channel.get("summary", "none") == "none":
+        return {"status": "failed", "message": "This channel has no summary."}
+    if config["general"].get("enabled", "0") != "1" or channel.get("enabled", "0") != "1":
+        return {"status": "failed", "message": "Enable Notify and this channel first."}
+    if is_carp_backup(config):
+        return {"status": "failed", "message": "This firewall is the CARP standby; the master sends summaries."}
+    state = load_state()
+    period = (state.get("summary", {}).get("channels") or {}).get(uuid)
+    if period is None:
+        return {"status": "failed", "message": "No summary period recorded yet; wait for the next check."}
+    name = channel.get("description", uuid)
+    try:
+        item = build_summary(config, channel, period, int(time.time()))
+        title = f"{item['title']} so far"
+        prefix = title_prefix(config["general"], config["hostname"])
+        ok, error = deliver(channel, f"{prefix}: {title}" if prefix else title, item["body"], "info",
+                            dict(item["report"], title=title))
+    except Exception as exc:
+        ok, error = False, f"The summary could not be built: {exc}"
+    if ok:
+        log(syslog.LOG_NOTICE, f"sent summary so far to {name}")
+        return {"status": "ok"}
+    log(syslog.LOG_ERR, f"could not send summary so far to {name}: {error}")
     return {"status": "failed", "message": error}
 
 
@@ -1543,6 +2481,9 @@ def from_service(service_id, fields, stored):
         if value == KEY_MARKER:
             continue  # already stored
         if re.match(r"https?://\S+$", value, re.I):
+            if not re.match(r"https://", value, re.I):
+                # a template or public key fetched in the clear could be swapped on the way
+                return "", {}, f"Give an https:// address for the {service['options'][key]['label']}."
             if key.lower() not in REMOTE_FILE_ARGS:
                 return "", {}, f"Paste the {service['options'][key]['label']} itself; a private key is not fetched."
             continue  # fetched from that address
@@ -1604,6 +2545,11 @@ if __name__ == "__main__":
         print(json.dumps(run_status()))
     elif len(sys.argv) > 2 and sys.argv[1] == "test":
         print(json.dumps(run_test(sys.argv[2])))
+    elif len(sys.argv) > 2 and sys.argv[1] == "summary":
+        try:
+            print(json.dumps(run_summary(sys.argv[2])))
+        except Exception as exc:  # the caller would otherwise take no answer for a held lock
+            print(json.dumps({"status": "failed", "message": f"The summary could not be sent: {exc}"}))
     elif len(sys.argv) > 1 and sys.argv[1] == "services":
         print(json.dumps(run_services()))
     elif len(sys.argv) > 2 and sys.argv[1] == "describe":
@@ -1613,7 +2559,7 @@ if __name__ == "__main__":
     elif len(sys.argv) > 2 and sys.argv[1] == "build":
         print(json.dumps(run_build(sys.argv[2])))
     else:
-        print(f"usage: {sys.argv[0]} check | boot | status | test <uuid> | services | "
+        print(f"usage: {sys.argv[0]} check | boot | status | test <uuid> | summary <uuid> | services | "
               f"describe <uuid> | parse <file> | build <file>",
               file=sys.stderr)
         sys.exit(1)

@@ -119,9 +119,9 @@
                 $('#apprise_setup').append($('<a target="_blank" rel="noopener noreferrer">')
                     .attr('href', service.setup).text("{{ lang._('Setup guide for %s') }}".replace('%s', service.name)));
             }
-            /* advanced fields go last, below Saved URL, Events and Monit services */
+            /* advanced fields go last, below Saved URL, Events, Monit services and Summary */
             let $after = $('#row_apprise_service');
-            let $afterExtra = $('#row_channel\\.monitServices');
+            let $afterExtra = $('#row_channel\\.summarySections');
             service.fields.forEach(function (field) {
                 const id = 'apprise.' + field.key;
                 const value = values[field.key] ?? field.default ?? '';
@@ -263,7 +263,7 @@
             $('#row_channel\\.url').toggle(chosen === '__custom');
 
             monitFieldVisibility();
-            $('#channel\\.events').off('changed.bs.select.notify')
+            $('#channel\\.events, #channel\\.summaryEvents, #channel\\.summary').off('changed.bs.select.notify')
                 .on('changed.bs.select.notify', monitFieldVisibility);
             monitPlaceholder();
             $('#channel\\.monitServices').off('tokenize:tokens:change.notify')
@@ -330,8 +330,11 @@
 
         /* the Monit filter only means anything when the channel takes Monit alerts */
         function monitFieldVisibility() {
-            const events = $('#channel\\.events').val() || [];
+            const summary = $('#channel\\.summary').val() !== 'none';
+            const events = ($('#channel\\.events').val() || [])
+                .concat(summary ? ($('#channel\\.summaryEvents').val() || []) : []);
             $('#row_channel\\.monitServices').toggle(events.includes('monit'));
+            $('#row_channel\\.summaryEvents, #row_channel\\.summarySections').toggle(summary);
         }
 
         let channelGrid = null;
@@ -379,6 +382,31 @@
                         classname: 'fa fa-fw fa-paper-plane',
                         title: "{{ lang._('Send test notification') }}",
                         sequence: 10
+                    },
+                    summary: {
+                        method: function () {
+                            const uuid = $(this).data("row-id") !== undefined ? $(this).data("row-id") : '';
+                            const $icon = $(this).find('span');
+                            $icon.removeClass('fa-list-alt').addClass('fa-spinner fa-pulse');
+                            ajaxCall('/api/notify/service/summary/' + uuid, {}, function (data, status) {
+                                $icon.removeClass('fa-spinner fa-pulse').addClass('fa-list-alt');
+                                const ok = data && data.status === 'ok';
+                                BootstrapDialog.show({
+                                    type: ok ? BootstrapDialog.TYPE_SUCCESS : BootstrapDialog.TYPE_DANGER,
+                                    title: "{{ lang._('Summary') }}",
+                                    message: ok ? "{{ lang._('The summary so far was sent. Its period carries on until the next scheduled summary.') }}"
+                                                : $('<div>').text((data && data.message) || "{{ lang._('The summary could not be sent.') }}"),
+                                    buttons: [{label: "{{ lang._('Close') }}", action: function (dlg) { dlg.close(); }}]
+                                });
+                            });
+                        },
+                        /* only for enabled channels that have a summary */
+                        filter: function (cell) {
+                            return cell.getData().enabled === '1' && cell.getData().summary !== 'none';
+                        },
+                        classname: 'fa fa-fw fa-list-alt',
+                        title: "{{ lang._('Send summary so far') }}",
+                        sequence: 11
                     }
                 }
             });
@@ -455,7 +483,7 @@
     <div id="channels" class="tab-pane fade in">
         {{
             partial('layout_partials/base_bootgrid_table', formGridChannel + {
-                'command_width': '140',
+                'command_width': '170',
                 'grid_commands': {
                     'import_url': {
                         'title': lang._('Create a channel from an Apprise URL'),
@@ -467,7 +495,7 @@
             })
         }}
         <div style="padding: 10px;">
-            {{ lang._('Each channel is one destination. Import an Apprise URL to fill in a channel, or add one and pick its service by hand. Save a channel, then use the paper plane button to send a test notification. Notifications that cannot be delivered are retried, less often each time, for up to 24 hours.') }}
+            {{ lang._('Each channel is one destination. Import an Apprise URL to fill in a channel, or add one and pick its service by hand. Save a channel, then use the paper plane button to send a test notification, or the list button to send the summary so far. Notifications that cannot be delivered are retried, less often each time, for up to 24 hours.') }}
         </div>
     </div>
     <div id="status" class="tab-pane fade in">

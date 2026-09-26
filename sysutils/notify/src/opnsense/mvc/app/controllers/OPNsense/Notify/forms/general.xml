@@ -95,4 +95,26 @@
         <type>text</type>
         <help>Warn when the firewall state table reaches this share of its limit, and again when it drops back. Applies to channels that take the State table event.</help>
     </field>
+    <field>
+        <type>header</type>
+        <label>Summary</label>
+    </field>
+    <field>
+        <id>notify.general.summaryHour</id>
+        <label>Summary hour</label>
+        <type>text</type>
+        <help>Hour of the day (0 to 23) at which summaries are sent, by the first check after it starts.</help>
+    </field>
+    <field>
+        <id>notify.general.summaryDay</id>
+        <label>Weekly summary day</label>
+        <type>dropdown</type>
+        <help>Day on which weekly summaries are sent.</help>
+    </field>
+    <field>
+        <id>notify.general.summaryDate</id>
+        <label>Monthly summary day</label>
+        <type>text</type>
+        <help>Day of the month (1 to 31) on which monthly summaries are sent. In a shorter month the summary goes on its last day, so 31 means the end of every month.</help>
+    </field>
 </form>

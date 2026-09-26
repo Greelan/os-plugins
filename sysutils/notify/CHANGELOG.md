@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.4 - 2026-09-26
+
+- Daily, weekly or monthly summary per channel: current status, chosen events, firewall blocks, traffic and system health; by email as HTML with graphs.
+- Long summaries are split to fit the service.
+- Wireless access point links in running state count as up.
+- IDS alerts are no longer missed around log rotation or in a busy log.
+- A malformed IDS alert is skipped instead of stalling the log.
+- A failed command no longer resets link, address, CARP or counter baselines.
+- Templates and public keys are fetched over https only.
+- A failed settings read no longer resets recorded state.
+- Queued digests are dropped once the channel no longer takes their events.
+
 ## 1.3_6 - 2026-09-26
 
 - Email set to mailto with STARTTLS uses STARTTLS instead of unencrypted SMTP, and the dialog shows the mode actually used.

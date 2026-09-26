@@ -2,6 +2,8 @@ Sends push notifications about system events to Telegram, Pushover, ntfy, Gotify
 
 Events: configuration changes (who changed what), logins and lockouts, gateway down and recovery (with outage duration), WAN address changes, interface link up and down, VPN peers connecting and disconnecting, new devices on the network, intrusion detection alerts, Monit checks failing and recovering, a state table filling up, UPS power events from apcupsd or NUT, firmware updates, certificates nearing expiry, System Status notices, CARP state changes and firewall startup.
 
+A channel can also get a daily, weekly or monthly summary: current status, the events it chose, firewall blocks and traffic per interface, and system health. The figures come from the packet filter's own counters, so building a summary reads no logs.
+
 Notifications that cannot be delivered, for example while the only WAN is down, are retried with a backoff for up to 24 hours.
 
 WWW: https://github.com/caronc/apprise

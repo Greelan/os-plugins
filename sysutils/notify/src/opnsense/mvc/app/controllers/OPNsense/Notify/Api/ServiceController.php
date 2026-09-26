@@ -98,4 +98,23 @@ class ServiceController extends ApiControllerBase
         }
         return $result;
     }
+
+    /**
+     * Send a channel's summary of its period so far; it reports on the whole firewall.
+     */
+    public function summaryAction($uuid)
+    {
+        $this->throwNotFullAdmin();
+
+        if (!$this->request->isPost() || !preg_match('/^[0-9a-f-]{36}$/i', (string)$uuid)) {
+            return ['status' => 'failed', 'message' => gettext('Save the channel before sending its summary.')];
+        }
+        /* the lock, graphs and delivery can take longer than configd's default wait */
+        $result = json_decode((new Backend())->configdpRun('notify summary', [$uuid], false, 300), true);
+        if (!is_array($result)) {
+            /* no answer when a running check kept the lock for too long */
+            return ['status' => 'failed', 'message' => gettext('A check is still running; try again in a minute.')];
+        }
+        return $result;
+    }
 }

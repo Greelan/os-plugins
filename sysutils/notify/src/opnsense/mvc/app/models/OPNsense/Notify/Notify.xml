@@ -96,6 +96,33 @@
                 <Default>1</Default>
                 <Required>Y</Required>
             </firmwareCheck>
+            <summaryHour type="IntegerField">
+                <Default>7</Default>
+                <Required>Y</Required>
+                <MinimumValue>0</MinimumValue>
+                <MaximumValue>23</MaximumValue>
+                <ValidationMessage>Enter an hour between 0 and 23.</ValidationMessage>
+            </summaryHour>
+            <summaryDay type="OptionField">
+                <Default>1</Default>
+                <Required>Y</Required>
+                <OptionValues>
+                    <_1 value="1">Monday</_1>
+                    <_2 value="2">Tuesday</_2>
+                    <_3 value="3">Wednesday</_3>
+                    <_4 value="4">Thursday</_4>
+                    <_5 value="5">Friday</_5>
+                    <_6 value="6">Saturday</_6>
+                    <_7 value="7">Sunday</_7>
+                </OptionValues>
+            </summaryDay>
+            <summaryDate type="IntegerField">
+                <Default>1</Default>
+                <Required>Y</Required>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>31</MaximumValue>
+                <ValidationMessage>Enter a day between 1 and 31.</ValidationMessage>
+            </summaryDate>
         </general>
         <channels type="ArrayField">
             <enabled type="BooleanField">
@@ -126,7 +153,6 @@
             </monitServices>
             <events type="OptionField">
                 <Default>gateway,config,auth,wanip,link,firmware,certificate,monit,status</Default>
-                <Required>Y</Required>
                 <Multiple>Y</Multiple>
                 <OptionValues>
                     <gateway>Gateway status</gateway>
@@ -147,6 +173,47 @@
                     <boot>Firewall started</boot>
                 </OptionValues>
             </events>
+            <summary type="OptionField">
+                <Default>none</Default>
+                <Required>Y</Required>
+                <OptionValues>
+                    <none>None</none>
+                    <daily>Daily</daily>
+                    <weekly>Weekly</weekly>
+                    <monthly>Monthly</monthly>
+                </OptionValues>
+            </summary>
+            <summaryEvents type="OptionField">
+                <Multiple>Y</Multiple>
+                <OptionValues>
+                    <gateway>Gateway status</gateway>
+                    <config>Configuration changes</config>
+                    <auth>Logins</auth>
+                    <vpn>VPN peers</vpn>
+                    <device>New devices</device>
+                    <ids>Intrusion detection alerts</ids>
+                    <firmware>Firmware updates</firmware>
+                    <certificate>Certificate expiry</certificate>
+                    <monit>Monit alerts</monit>
+                    <status>System Status</status>
+                    <carp>CARP state</carp>
+                    <wanip>WAN address changes</wanip>
+                    <link>Interface link</link>
+                    <states>State table</states>
+                    <ups>UPS power</ups>
+                    <boot>Firewall started</boot>
+                </OptionValues>
+            </summaryEvents>
+            <summarySections type="OptionField">
+                <Default>status,firewall,traffic,health</Default>
+                <Multiple>Y</Multiple>
+                <OptionValues>
+                    <status>Current status</status>
+                    <firewall>Firewall blocks</firewall>
+                    <traffic>Interface traffic</traffic>
+                    <health>System health</health>
+                </OptionValues>
+            </summarySections>
         </channels>
     </items>
 </model>
