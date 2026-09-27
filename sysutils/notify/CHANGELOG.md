@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4_1 - 2026-09-27
+
+- The Status queue and the Archive are grids, with paging, search and sorting.
+
 ## 1.4 - 2026-09-27
 
 - Daily, weekly or monthly summary per channel: current status, chosen events, firewall blocks, traffic and system health; by email as HTML with graphs and pie charts.

@@ -421,9 +421,9 @@
                 appriseLoad();
                 initChannelGrid();
             } else if (e.target.hash === '#status') {
-                loadStatus();
+                initQueueGrid();
             } else if (e.target.hash === '#archive') {
-                loadArchive();
+                initArchiveGrid();
             }
         });
         function openTabFromHash() {
@@ -435,11 +435,8 @@
         /* the menu entries only change the hash when this page is already open */
         $(window).on('hashchange', openTabFromHash);
 
-        function loadStatus(done) {
+        function loadStatus() {
             ajaxGet('/api/notify/service/status', {}, function (data) {
-                if (done) {
-                    done();
-                }
                 data = appriseDecode(data);
                 if (!data || data.status === 'failed') {
                     $('#status_summary').text("{{ lang._('The status could not be read.') }}");
@@ -453,55 +450,57 @@
                     (data.events || []).join(', ')
                 ];
                 $('#status_summary').text(bits.filter(Boolean).join(' - '));
-                const $body = $('#status_queue tbody').empty();
-                (data.queued || []).forEach(function (row) {
-                    $body.append($('<tr>').append(
-                        ['title', 'channel', 'event', 'age', 'tries', 'retry_in'].map(
-                            key => $('<td>').text(row[key]))));
-                });
-                $('#status_empty').toggle((data.queued || []).length === 0);
             });
         }
 
-        /* core's spinner while loading; clicks meanwhile are ignored */
-        function refreshing($button, load) {
-            $button.on('click', function () {
-                this.blur();
-                const $icon = $button.find('i');
-                if ($icon.hasClass('fa-spinner')) {
-                    return;
+        let queueGrid = null;
+        function initQueueGrid() {
+            if (queueGrid !== null) {
+                queueGrid.bootgrid('reload');
+                return;
+            }
+            queueGrid = $("#queue_grid").UIBootgrid({
+                search: '/api/notify/service/search_queue/',
+                datakey: 'id',
+                options: {
+                    selection: false,
+                    multiSelect: false
                 }
-                const started = Date.now();
-                $icon.removeClass('fa-refresh').addClass('fa-spinner fa-pulse');
-                load(function () {
-                    /* long enough to see, as the answer is usually instant */
-                    setTimeout(function () {
-                        $icon.removeClass('fa-spinner fa-pulse').addClass('fa-refresh');
-                    }, Math.max(0, 500 - (Date.now() - started)));
-                });
             });
+            /* the grid's refresh button updates the line above it too */
+            queueGrid.on('loaded.rs.jquery.bootgrid', loadStatus);
         }
-        refreshing($("#status_refresh"), loadStatus);
 
-        function loadArchive(done) {
-            ajaxGet('/api/notify/service/reports', {}, function (data) {
-                if (done) {
-                    done();
+        let archiveGrid = null;
+        function initArchiveGrid() {
+            if (archiveGrid !== null) {
+                archiveGrid.bootgrid('reload');
+                return;
+            }
+            archiveGrid = $("#archive_grid").UIBootgrid({
+                search: '/api/notify/service/search_reports/',
+                datakey: 'name',
+                commands: {
+                    remove_report: {
+                        method: function () {
+                            deleteReport($(this).data("row-id"));
+                        },
+                        classname: 'fa fa-fw fa-trash-o',
+                        title: "{{ lang._('Delete') }}",
+                        sequence: 10
+                    }
+                },
+                options: {
+                    selection: false,
+                    multiSelect: false,
+                    formatters: {
+                        report: function (column, row) {
+                            return $('<a target="_blank" rel="noopener noreferrer">')
+                                .attr('href', '/ui/notify/report/view/' + encodeURIComponent(row.name))
+                                .text(row.when)[0].outerHTML;
+                        }
+                    }
                 }
-                const $body = $('#archive_list tbody').empty();
-                const reports = (data && data.reports) || [];
-                reports.forEach(function (row) {
-                    const $link = $('<a target="_blank" rel="noopener noreferrer">')
-                        .attr('href', '/ui/notify/report/view/' + encodeURIComponent(row.name)).text(row.when);
-                    const $delete = $('<button type="button" class="btn btn-default btn-xs">')
-                        .attr('title', "{{ lang._('Delete') }}").append($('<span class="fa fa-fw fa-trash-o">'))
-                        .click(function () { deleteReport(row.name); });
-                    $body.append($('<tr>').append($('<td>').append($link), $('<td>').text(row.channel),
-                                                  $('<td>').text(row.schedule), $('<td>').append($delete)));
-                });
-                $('#archive_empty').text(data && data.status === 'ok'
-                    ? "{{ lang._('No summaries have been sent yet.') }}"
-                    : "{{ lang._('The archive could not be read.') }}").toggle(reports.length === 0);
             });
         }
         function deleteReport(name) {
@@ -516,11 +515,10 @@
                             buttons: [{label: "{{ lang._('Close') }}", action: function (dlg) { dlg.close(); }}]
                         });
                     }
-                    loadArchive();
+                    archiveGrid.bootgrid('reload');
                 });
             });
         }
-        refreshing($("#archive_refresh"), loadArchive);
         $("#import_url").click(appriseImportDialog);
 
         $("#reconfigureAct").SimpleActionButton({
@@ -567,43 +565,37 @@
     <div id="status" class="tab-pane fade in">
         <div style="padding: 10px;">
             <p id="status_summary">&nbsp;</p>
-            <table class="table table-condensed" id="status_queue">
+            <table id="queue_grid" class="table table-condensed table-hover table-striped">
                 <thead>
                     <tr>
-                        <th>{{ lang._('Waiting to be sent') }}</th>
-                        <th>{{ lang._('Channel') }}</th>
-                        <th>{{ lang._('Event') }}</th>
-                        <th>{{ lang._('Age') }}</th>
-                        <th>{{ lang._('Attempts') }}</th>
-                        <th>{{ lang._('Next attempt') }}</th>
+                        <th data-column-id="id" data-type="numeric" data-identifier="true" data-visible="false">#</th>
+                        <th data-column-id="title" data-type="string">{{ lang._('Waiting to be sent') }}</th>
+                        <th data-column-id="channel" data-type="string">{{ lang._('Channel') }}</th>
+                        <th data-column-id="event" data-type="string">{{ lang._('Event') }}</th>
+                        <th data-column-id="age" data-type="string" data-sortable="false">{{ lang._('Age') }}</th>
+                        <th data-column-id="tries" data-type="numeric">{{ lang._('Attempts') }}</th>
+                        <th data-column-id="retry_in" data-type="string" data-sortable="false">{{ lang._('Next attempt') }}</th>
                     </tr>
                 </thead>
                 <tbody></tbody>
             </table>
-            <p id="status_empty">{{ lang._('Nothing is waiting to be sent.') }}</p>
-            <button class="btn btn-default" id="status_refresh" type="button">
-                <i class="fa fa-refresh"></i> {{ lang._('Refresh') }}
-            </button>
         </div>
     </div>
     <div id="archive" class="tab-pane fade in">
         <div style="padding: 10px;">
             <p>{{ lang._('Summaries, newest first, including any still waiting to be delivered. Each channel keeps its last 60 daily, 52 weekly and 12 monthly summaries, and 10 sent by hand.') }}</p>
-            <table class="table table-condensed" id="archive_list">
+            <table id="archive_grid" class="table table-condensed table-hover table-striped">
                 <thead>
                     <tr>
-                        <th>{{ lang._('Sent') }}</th>
-                        <th>{{ lang._('Channel') }}</th>
-                        <th>{{ lang._('Schedule') }}</th>
-                        <th></th>
+                        <th data-column-id="name" data-type="string" data-identifier="true" data-visible="false">{{ lang._('File') }}</th>
+                        <th data-column-id="when" data-type="string" data-formatter="report">{{ lang._('Sent') }}</th>
+                        <th data-column-id="channel" data-type="string">{{ lang._('Channel') }}</th>
+                        <th data-column-id="schedule" data-type="string">{{ lang._('Schedule') }}</th>
+                        <th data-column-id="commands" data-width="100" data-formatter="commands" data-sortable="false">{{ lang._('Commands') }}</th>
                     </tr>
                 </thead>
                 <tbody></tbody>
             </table>
-            <p id="archive_empty">{{ lang._('No summaries have been sent yet.') }}</p>
-            <button class="btn btn-default" id="archive_refresh" type="button">
-                <i class="fa fa-refresh"></i> {{ lang._('Refresh') }}
-            </button>
         </div>
     </div>
 </div>

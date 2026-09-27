@@ -101,14 +101,29 @@ class ServiceController extends ApiControllerBase
     }
 
     /**
-     * Archived summaries, newest first.
+     * Notifications waiting to be delivered, for the queue grid.
      */
-    public function reportsAction()
+    public function searchQueueAction()
+    {
+        $this->throwNotFullAdmin();
+
+        $status = json_decode((new Backend())->configdRun('notify status'), true);
+        $queued = is_array($status['queued'] ?? null) ? $status['queued'] : [];
+        foreach ($queued as $index => &$item) {
+            $item['id'] = $index;
+        }
+        return $this->searchRecordsetBase($queued);
+    }
+
+    /**
+     * Archived summaries, newest first, for the archive grid.
+     */
+    public function searchReportsAction()
     {
         $this->throwNotFullAdmin();
 
         $reports = json_decode((new Backend())->configdRun('notify reports'), true);
-        return is_array($reports) ? ['status' => 'ok', 'reports' => $reports] : ['status' => 'failed'];
+        return $this->searchRecordsetBase(is_array($reports) ? $reports : []);
     }
 
     /**
