@@ -90,9 +90,43 @@
         <help>Lowest severity of System Status entries to send. Each new occurrence is reported, and so is an entry being resolved or dismissed. These are the alerts behind the bell icon in the menu bar, such as crash reports, low disk space and expired certificates. Notice also includes configuration override warnings.</help>
     </field>
     <field>
+        <id>notify.general.logSeverity</id>
+        <label>Log message level</label>
+        <type>dropdown</type>
+        <help>Lowest severity of messages in the firewall's local logs to send, for channels that take Critical log messages. Errors are common on a healthy firewall, so critical and above is a sensible start. The same message is sent at most once an hour. The audit and packet logs are not read.</help>
+    </field>
+    <field>
         <id>notify.general.statesPercent</id>
         <label>State table warning (%)</label>
         <type>text</type>
         <help>Warn when the firewall state table reaches this share of its limit, and again when it drops back. Applies to channels that take the State table event.</help>
+    </field>
+    <field>
+        <type>header</type>
+        <label>Summary</label>
+    </field>
+    <field>
+        <id>notify.general.summaryHour</id>
+        <label>Summary hour</label>
+        <type>text</type>
+        <help>Hour of the day (0 to 23) at which summaries are sent, by the first check after it starts.</help>
+    </field>
+    <field>
+        <id>notify.general.summaryDay</id>
+        <label>Weekly summary day</label>
+        <type>dropdown</type>
+        <help>Day on which weekly summaries are sent.</help>
+    </field>
+    <field>
+        <id>notify.general.summaryDate</id>
+        <label>Monthly summary day</label>
+        <type>text</type>
+        <help>Day of the month (1 to 31) on which monthly summaries are sent. In a shorter month the summary goes on its last day, so 31 means the end of every month.</help>
+    </field>
+    <field>
+        <id>notify.general.reportAddress</id>
+        <label>Report link address</label>
+        <type>text</type>
+        <help>Address of this firewall's web interface in the link to each summary, e.g. https://fw.example.lan:8443. Leave empty to use its host name and web GUI port.</help>
     </field>
 </form>

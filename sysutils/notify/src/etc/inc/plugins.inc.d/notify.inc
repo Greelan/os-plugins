@@ -36,7 +36,11 @@ function notify_cron()
         /* state poll; the gateway and CARP syshooks only make it sooner */
         $jobs[]['autocron'] = ['/usr/local/sbin/configctl -d notify check', $minutes == '1' ? '*' : "*/{$minutes}"];
 
-        if ((string)$model->general->firmwareCheck == '1' && $model->hasEvent('firmware')) {
+        /* the summary's status section reports pending updates too */
+        if (
+            (string)$model->general->firmwareCheck == '1' &&
+            ($model->hasEvent('firmware') || $model->hasSummarySection('status'))
+        ) {
             $jobs[]['autocron'] = ['/usr/local/sbin/configctl -d firmware poll', '0', '4'];
         }
     }
