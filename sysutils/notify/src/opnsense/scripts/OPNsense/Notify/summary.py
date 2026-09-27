@@ -491,6 +491,7 @@ def build_summary(config, channel, period, now, shared=None):
         return shared[key]
 
     names, keys = config.get("interfaces", {}), config.get("ifnames", {})
+    graphing = config.get("healthReporting", True)
     totals, peaks = period.get("totals", {}), period.get("peaks", {})
     sections = channel.get("summarySections", [])
     title = f"{period.get('schedule', channel['summary']).capitalize()} summary"
@@ -521,6 +522,8 @@ def build_summary(config, channel, period, now, shared=None):
         part["rows"].append(cells.split(": ", 1) if isinstance(cells, str) else cells)
 
     def graph(part, kind, device, heading):
+        if not graphing:
+            return
         key = keys.get(device, "") if device else "system"
         if re.fullmatch(r"[A-Za-z0-9_]+", key) and len(part["graphs"]) < SUMMARY_GRAPHS:
             part["graphs"].append({"kind": kind, "key": key, "title": heading, "name": f"{kind}-{key}.png",
@@ -628,8 +631,10 @@ def build_summary(config, channel, period, now, shared=None):
         graph(part, "states", None, "State table")
 
     body = "\n".join([f"{host} · {span}" if host else span] + brief)
+    note = "" if graphing or not {"firewall", "traffic", "health"} & set(sections) else \
+        "No graphs: health reporting is off, under Reporting: Health."
     return dict(message("summary", "info", title, body), uuid=channel["uuid"],
-                report={"title": title, "host": host, "span": span, "sections": report})
+                report={"title": title, "host": host, "span": span, "sections": report, "note": note})
 
 
 def report_page(report, drawn):
@@ -748,6 +753,7 @@ def draw_series(spec, directory):
             values.append(sum(known) * factor if known else None)
         lines.append((label, values, color, filled))
     if all(v is None for _, values, _, _ in lines for v in values):
+        log(syslog.LOG_WARNING, f"no {spec['title']} graph: {rrd} has no data for the period")
         return None
     stamps = [stamp for stamp, _ in rows]
     os.makedirs(directory, exist_ok=True)
@@ -831,6 +837,8 @@ def summary_html(report, drawn, embed=False):
            f'<div style="color:#666">{html.escape(" · ".join(filter(None, [report.get("host"), report["span"]])))}</div>']
     if report.get("delayed"):
         out.append(f'<p style="color:#a15c00"><em>{html.escape(report["delayed"])}</em></p>')
+    if report.get("note"):
+        out.append(f'<p style="color:#666"><em>{html.escape(report["note"])}</em></p>')
     for part in report["sections"]:
         style = subheading if part.get("sub") else heading
         tag = "h4" if part.get("sub") else "h3"

@@ -665,6 +665,36 @@ class SummaryTiming(unittest.TestCase):
                                            ("Out", "#76b7b2", "peak 5 packets/s, average 4 packets/s")],
                          "IPv4 and IPv6 added")
 
+    def test_stale_health_data_is_logged(self):
+        rrd, logged = tempfile.mkdtemp(), []
+        saved = summary.RRD_DIR, summary.command_output, summary.log
+        open(os.path.join(rrd, "system-processor.rrd"), "w").close()
+        summary.RRD_DIR = rrd
+        summary.command_output = lambda command, timeout=30: "  user\n\n1727000000: nan\n1727000060: nan\n"
+        summary.log = lambda priority, text: logged.append(text)
+        try:
+            graph = summary.draw_graph({"kind": "cpu", "key": "system", "name": "c.png", "title": "Processor",
+                                        "start": 1, "end": 2}, rrd)
+        finally:
+            summary.RRD_DIR, summary.command_output, summary.log = saved
+            shutil.rmtree(rrd)
+        self.assertIsNone(graph)
+        self.assertIn("has no data for the period", logged[0], "files left from when health reporting was on")
+
+    def test_no_graphs_without_health_reporting(self):
+        channel = {"uuid": "c1", "summary": "daily", "summarySections": ["health"], "summaryEvents": []}
+        period = {"since": 0, "schedule": "daily", "peaks": {}}
+        saved = summary.system_health
+        summary.system_health = lambda: []
+        try:
+            off = summary.build_summary({"healthReporting": False}, channel, period, 100)["report"]
+            on = summary.build_summary({"healthReporting": True}, channel, period, 100)["report"]
+        finally:
+            summary.system_health = saved
+        self.assertEqual([p["graphs"] for p in off["sections"]], [[]])
+        self.assertIn("health reporting is off", summary.summary_html(off, {}))
+        self.assertEqual((on["note"], len(on["sections"][0]["graphs"])), ("", 2))
+
     def test_brief_status(self):
         lines = ["WAN address: 203.0.113.7, 2001:db8::7, fd00::7", "Gateway WAN: Online"] + \
             [f"Certificate c{i} expires in {i} day(s)" for i in range(5)]

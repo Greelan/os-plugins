@@ -536,8 +536,8 @@
 <ul class="nav nav-tabs" data-tabs="tabs" id="maintabs">
     <li class="active"><a data-toggle="tab" href="#general">{{ lang._('General') }}</a></li>
     <li><a data-toggle="tab" href="#channels">{{ lang._('Channels') }}</a></li>
-    <li><a data-toggle="tab" href="#status">{{ lang._('Status') }}</a></li>
-    <li><a data-toggle="tab" href="#archive">{{ lang._('Archive') }}</a></li>
+    <li><a data-toggle="tab" id="status_tab" href="#status">{{ lang._('Status') }}</a></li>
+    <li><a data-toggle="tab" id="archive_tab" href="#archive">{{ lang._('Archive') }}</a></li>
 </ul>
 
 <div class="tab-content content-box __mb">
@@ -565,40 +565,40 @@
     <div id="status" class="tab-pane fade in">
         <div style="padding: 10px;">
             <p id="status_summary">&nbsp;</p>
-            <table id="queue_grid" class="table table-condensed table-hover table-striped">
-                <thead>
-                    <tr>
-                        <th data-column-id="id" data-type="numeric" data-identifier="true" data-visible="false">#</th>
-                        <th data-column-id="title" data-type="string">{{ lang._('Waiting to be sent') }}</th>
-                        <th data-column-id="channel" data-type="string">{{ lang._('Channel') }}</th>
-                        <th data-column-id="event" data-type="string">{{ lang._('Event') }}</th>
-                        <th data-column-id="age" data-type="string" data-sortable="false">{{ lang._('Age') }}</th>
-                        <th data-column-id="tries" data-type="numeric">{{ lang._('Attempts') }}</th>
-                        <th data-column-id="retry_in" data-type="string" data-sortable="false">{{ lang._('Next attempt') }}</th>
-                    </tr>
-                </thead>
-                <tbody></tbody>
-            </table>
         </div>
+        <table id="queue_grid" class="table table-condensed table-hover table-striped">
+            <thead>
+                <tr>
+                    <th data-column-id="id" data-type="numeric" data-identifier="true" data-visible="false">#</th>
+                    <th data-column-id="title" data-type="string">{{ lang._('Waiting to be sent') }}</th>
+                    <th data-column-id="channel" data-type="string">{{ lang._('Channel') }}</th>
+                    <th data-column-id="event" data-type="string">{{ lang._('Event') }}</th>
+                    <th data-column-id="age" data-type="string" data-sortable="false">{{ lang._('Age') }}</th>
+                    <th data-column-id="tries" data-type="numeric">{{ lang._('Attempts') }}</th>
+                    <th data-column-id="retry_in" data-type="string" data-sortable="false">{{ lang._('Next attempt') }}</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
     </div>
     <div id="archive" class="tab-pane fade in">
+        <table id="archive_grid" class="table table-condensed table-hover table-striped">
+            <thead>
+                <tr>
+                    <th data-column-id="name" data-type="string" data-identifier="true" data-visible="false">{{ lang._('File') }}</th>
+                    <th data-column-id="when" data-type="string" data-formatter="report">{{ lang._('Sent') }}</th>
+                    <th data-column-id="channel" data-type="string">{{ lang._('Channel') }}</th>
+                    <th data-column-id="schedule" data-type="string">{{ lang._('Schedule') }}</th>
+                    <th data-column-id="commands" data-width="100" data-formatter="commands" data-sortable="false">{{ lang._('Commands') }}</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
         <div style="padding: 10px;">
-            <p>{{ lang._('Summaries, newest first, including any still waiting to be delivered. Each channel keeps its last 60 daily, 52 weekly and 12 monthly summaries, and 10 sent by hand.') }}</p>
-            <table id="archive_grid" class="table table-condensed table-hover table-striped">
-                <thead>
-                    <tr>
-                        <th data-column-id="name" data-type="string" data-identifier="true" data-visible="false">{{ lang._('File') }}</th>
-                        <th data-column-id="when" data-type="string" data-formatter="report">{{ lang._('Sent') }}</th>
-                        <th data-column-id="channel" data-type="string">{{ lang._('Channel') }}</th>
-                        <th data-column-id="schedule" data-type="string">{{ lang._('Schedule') }}</th>
-                        <th data-column-id="commands" data-width="100" data-formatter="commands" data-sortable="false">{{ lang._('Commands') }}</th>
-                    </tr>
-                </thead>
-                <tbody></tbody>
-            </table>
+            {{ lang._('Summaries, newest first, including any still waiting to be delivered. Each channel keeps its last 60 daily, 52 weekly and 12 monthly summaries, and 10 sent by hand.') }}
         </div>
     </div>
 </div>
 
-{{ partial('layout_partials/base_apply_button', {'data_endpoint': '/api/notify/service/reconfigure'}) }}
+{{ partial('layout_partials/base_apply_button', {'data_endpoint': '/api/notify/service/reconfigure', 'data_exclude_scope': 'status_tab,archive_tab'}) }}
 {{ partial("layout_partials/base_dialog", ['fields': formDialogChannel, 'id': formGridChannel['edit_dialog_id'], 'label': lang._('Edit channel')]) }}

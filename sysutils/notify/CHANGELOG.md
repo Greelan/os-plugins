@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4_2 - 2026-09-27
+
+- Apply is shown only on the General and Channels tabs.
+- With health reporting off, a summary says why it has no graphs; a graph with no data in the period is logged.
+
 ## 1.4_1 - 2026-09-27
 
 - The Status queue and the Archive are grids, with paging, search and sorting.
