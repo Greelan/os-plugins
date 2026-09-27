@@ -80,7 +80,7 @@
         <id>channel.summarySections</id>
         <label>Summary sections</label>
         <type>select_multiple</type>
-        <help><![CDATA[What to add to the summary besides its events. Current status is how things stand when it is sent: uplink addresses, gateways, interface links, CARP, pending firmware updates and certificates about to expire. Firewall blocks and traffic come from the packet filter's own counters, so no log is read: blocked packets per interface and the block rules that matched most, and traffic in and out per interface. System health is uptime, load, memory, disk and the state table peak.]]></help>
+        <help><![CDATA[What to add to the summary besides its events. Current status is how things stand when it is sent: uplink addresses, gateways, interface links, stopped services, CARP, pending firmware updates and certificates about to expire. Firewall blocks and traffic come from the packet filter's own counters, so no log is read: blocked packets per interface and the block rules that matched most, and traffic in and out per interface. System health is uptime, load, memory, disk and the state table peak.]]></help>
         <grid_view>
             <ignore>true</ignore>
         </grid_view>

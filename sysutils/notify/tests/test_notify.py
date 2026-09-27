@@ -355,8 +355,15 @@ pass in quick on lo0 all label "0f8a3d1e5b6c4d2e8f9a0b1c2d3e4f5a"
         summary.addresses = lambda: {"vtnet0": ["2001:db8::1", "192.0.2.1"]}
         summary.link_states = lambda names: {"vtnet0": "active", "vtnet1": "no carrier"}
         summary.carp_states = lambda: ["MASTER", "MASTER", "BACKUP"]
-        summary.configctl_json = lambda *args: {"WAN_GW": {"status_translated": "Online", "delay": "5.1 ms",
-                                                           "loss": "0.0 %"}, "WAN6_GW": {"status": "down"}}
+        gateways = {"WAN_GW": {"status_translated": "Online", "delay": "5.1 ms", "loss": "0.0 %"},
+                    "WAN6_GW": {"status": "down"}}
+        services = [{"name": "unbound", "description": "Unbound DNS", "status": "unbound is running as pid 7."},
+                    {"name": "openvpn", "id": "1", "description": "OpenVPN client", "status": "openvpn is not running."},
+                    {"name": "openvpn", "id": "2", "description": "OpenVPN client", "status": "openvpn is not running."},
+                    {"name": "cron", "description": "Cron", "status": "cron is not running."},
+                    {"name": "pf", "description": "Packet Filter", "nocheck": True, "status": "pf is running."}]
+        answers = {("interface", "gateways", "status"): gateways, ("service", "list"): services}
+        summary.configctl_json = lambda *args: answers.get(args)
         folder = tempfile.mkdtemp()
         try:
             summary.FIRMWARE = os.path.join(folder, "pkg_upgrade.json")
@@ -381,6 +388,7 @@ pass in quick on lo0 all label "0f8a3d1e5b6c4d2e8f9a0b1c2d3e4f5a"
         self.assertIn("Gateway WAN6_GW: down", lines)
         self.assertIn("Links down: LAN no carrier", lines)
         self.assertIn("CARP: 1 BACKUP, 2 MASTER", lines)
+        self.assertIn("Services: 1 of 4 running; stopped: Cron, OpenVPN client (2)", lines, "unchecked left out")
         self.assertTrue([line for line in lines if line.startswith("Firmware: 1 update(s) pending, 27.1 available")])
         self.assertEqual([line for line in lines if line.startswith(("Certificate", "Authority"))],
                          ["Authority old expired", "Certificate web expires in 3 day(s)"], "soonest first")
@@ -696,11 +704,14 @@ class SummaryTiming(unittest.TestCase):
         self.assertEqual((on["note"], len(on["sections"][0]["graphs"])), ("", 2))
 
     def test_brief_status(self):
-        lines = ["WAN address: 203.0.113.7, 2001:db8::7, fd00::7", "Gateway WAN: Online"] + \
-            [f"Certificate c{i} expires in {i} day(s)" for i in range(5)]
+        lines = ["WAN address: 203.0.113.7, 2001:db8::7, fd00::7", "Gateway WAN: Online, RTT 1.1 ms, loss 0.0 %",
+                 "Gateway WAN6: Online", "Gateway VPN: Latency, Packetloss, RTT 900 ms, loss 30.0 %",
+                 "6 of 6 interface links up"] + [f"Certificate c{i} expires in {i} day(s)" for i in range(5)]
         self.assertEqual(summary.brief_status(lines), [
-            "WAN address: 203.0.113.7 (+2)", "Gateway WAN: Online", "Certificate c0 expires in 0 day(s)",
-            "Certificate c1 expires in 1 day(s)", "Certificate c2 expires in 2 day(s)", "and 2 more certificates"])
+            "WAN address: 203.0.113.7 (+2)", "Gateways: 2 online; VPN Latency, Packetloss", "6 of 6 interface links up",
+            "Certificate c0 expires in 0 day(s)", "Certificate c1 expires in 1 day(s)", "Certificate c2 expires in 2 day(s)",
+            "and 2 more certificates"])
+        self.assertIn("Gateways: WAN down", summary.brief_status(["Gateway WAN: down"]), "none online")
 
     def test_rates(self):
         self.assertEqual(summary.rate(950, "bits"), "950 bit/s")

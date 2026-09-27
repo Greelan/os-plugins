@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4_3 - 2026-09-27
+
+- The summary's current status lists stopped services, as the Services widget shows them.
+- The short text summary counts gateways online and names only those with a problem.
+
 ## 1.4_2 - 2026-09-27
 
 - Apply is shown only on the General and Channels tabs.

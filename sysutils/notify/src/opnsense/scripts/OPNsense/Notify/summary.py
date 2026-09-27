@@ -416,7 +416,7 @@ def system_health():
 
 
 def current_status(config, now):
-    """Status lines: uplink addresses, gateways, links, CARP, firmware, certificates."""
+    """Status lines: uplink addresses, gateways, links, services, CARP, firmware, certificates."""
     names, lines = config.get("interfaces", {}), []
     held = addresses()
     disabled = set(config.get("disabled", []))
@@ -434,6 +434,17 @@ def current_status(config, now):
     down = [f"{names[d]} {s}" for d, s in links.items() if s not in LINK_UP]
     if links:
         lines.append(f"Links down: {', '.join(down)}" if down else f"{len(links)} of {len(links)} interface links up")
+    services = configctl_json("service", "list")
+    # as the Services widget; those core does not check always read as running
+    checked = [s for s in services if isinstance(s, dict) and not s.get("nocheck")] \
+        if isinstance(services, list) else []
+    stopped = [str(s.get("description") or s.get("name", "?")) for s in checked
+               if "is running" not in str(s.get("status", ""))]
+    if stopped:
+        listed = ", ".join(f"{n} ({stopped.count(n)})" if stopped.count(n) > 1 else n for n in sorted(set(stopped)))
+        lines.append(f"Services: {len(checked) - len(stopped)} of {len(checked)} running; stopped: {listed}")
+    elif checked:
+        lines.append(f"{len(checked)} of {len(checked)} services running")
     carp = carp_states()
     if carp:
         lines.append(f"CARP: {', '.join(f'{carp.count(s)} {s}' for s in sorted(set(carp)))}")
@@ -463,10 +474,21 @@ def current_status(config, now):
 
 
 def brief_status(lines):
-    """The status for the short text: first address, three certificates."""
-    shown, certificates = [], []
+    """The status for the short text: first address, gateways counted, three certificates."""
+    shown: list = []
+    certificates: list = []
+    troubled: list = []
+    online, at = 0, None
     for line in lines:
         label, _, value = line.partition(": ")
+        if label.startswith("Gateway "):
+            at = len(shown) if at is None else at
+            state = re.split(r", (?:RTT|loss) ", value)[0]
+            if state == "Online":
+                online += 1
+            else:
+                troubled.append(f"{label[len('Gateway '):]} {state}")
+            continue
         if label.endswith(" address") and ", " in value:
             first, *rest = value.split(", ")
             line = f"{label}: {first} (+{len(rest)})"
@@ -474,6 +496,8 @@ def brief_status(lines):
             certificates.append(line)
             continue
         shown.append(line)
+    if at is not None:
+        shown.insert(at, "Gateways: " + "; ".join(([f"{online} online"] if online else []) + troubled))
     shown += certificates[:3]
     if len(certificates) > 3:
         shown.append(f"and {len(certificates) - 3} more certificates")
