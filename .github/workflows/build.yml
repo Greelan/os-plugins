@@ -287,11 +287,13 @@ jobs:
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: ${{ secrets.MAIL_SERVER }}
-          server_port: 465
-          secure: true
+          # STARTTLS, e.g. Google Workspace; secure means TLS from the start, as on port 465
+          server_port: 587
+          secure: false
+          require_tls: true
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          from: ${{ secrets.MAIL_FROM }}
+          from: ${{ vars.MAIL_FROM_NAME && format('{0} <{1}>', vars.MAIL_FROM_NAME, vars.MAIL_FROM_EMAIL || secrets.MAIL_FROM) || vars.MAIL_FROM_EMAIL || secrets.MAIL_FROM }}
           to: ${{ secrets.MAIL_TO }}
           subject: "New blocky release: v${{ steps.v.outputs.version }}"
           body: |
@@ -322,11 +324,13 @@ jobs:
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: ${{ secrets.MAIL_SERVER }}
-          server_port: 465
-          secure: true
+          # STARTTLS, e.g. Google Workspace; secure means TLS from the start, as on port 465
+          server_port: 587
+          secure: false
+          require_tls: true
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          from: ${{ secrets.MAIL_FROM }}
+          from: ${{ vars.MAIL_FROM_NAME && format('{0} <{1}>', vars.MAIL_FROM_NAME, vars.MAIL_FROM_EMAIL || secrets.MAIL_FROM) || vars.MAIL_FROM_EMAIL || secrets.MAIL_FROM }}
           to: ${{ secrets.MAIL_TO }}
           subject: "Vendored library updates available"
           body: |
