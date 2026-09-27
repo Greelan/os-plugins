@@ -3,8 +3,8 @@ name: build
 # Build plugins + blocky per ABI and publish a pkg repo to Cloudflare R2.
 
 on:
-  # push to main publishes both channels; schedule builds nightly (no deploy)
-  # + emails on new blocky
+  # push to main publishes both channels; nightly, lint and the tests run against the latest core
+  # (no build); notify.yml sends the maintainer emails
   push:
     branches: [main]
   schedule:
@@ -137,7 +137,7 @@ jobs:
             BLOCKY="${BLOCKY}" PYTHON=python sh tools/run-tests.sh
 
   build:
-    # the nightly (schedule) only runs the notify version-check; build on push/dispatch
+    # on push and dispatch only; nightly is lint and the tests
     needs: [lint, vendored]
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
@@ -248,99 +248,3 @@ jobs:
             prod) sync_prod ;;
             both) sync_prod; sync_dev ;;
           esac
-
-  notify:
-    # nightly: version check only (no build); email once per new blocky release and once per
-    # set of newer vendored libraries
-    if: github.event_name == 'schedule'
-    runs-on: ubuntu-latest
-    env:
-      # the sender, as a repository variable or secret; the address falls back to MAIL_FROM
-      MAIL_FROM_NAME: ${{ vars.MAIL_FROM_NAME || secrets.MAIL_FROM_NAME }}
-      MAIL_FROM_EMAIL: ${{ vars.MAIL_FROM_EMAIL || secrets.MAIL_FROM_EMAIL || secrets.MAIL_FROM }}
-    steps:
-      # first: checkout empties a workspace that is not a repo, state files included
-      - uses: actions/checkout@v7
-      - name: Resolve latest blocky version
-        id: v
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          ver=$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
-                https://api.github.com/repos/0xERR0R/blocky/releases/latest \
-                | sed -n 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/p' | head -1)
-          [ -n "${ver}" ] || exit 0
-          echo "version=${ver}" >> "$GITHUB_OUTPUT"
-      - name: Have we notified before?
-        id: init
-        if: steps.v.outputs.version != ''
-        uses: actions/cache@v5
-        with:
-          path: .init
-          key: blocky-notify-init
-      - name: Already emailed this version?
-        id: seen
-        if: steps.v.outputs.version != ''
-        uses: actions/cache@v5
-        with:
-          path: .notified
-          key: blocky-notified-${{ steps.v.outputs.version }}
-      - name: Email the maintainer
-        # only a genuinely new version, and never on the first-ever run (just seed then)
-        if: steps.v.outputs.version != '' && steps.init.outputs.cache-hit == 'true' && steps.seen.outputs.cache-hit != 'true'
-        uses: dawidd6/action-send-mail@v22
-        with:
-          server_address: ${{ secrets.MAIL_SERVER }}
-          # STARTTLS; secure means TLS from the start, as on port 465
-          server_port: 587
-          secure: false
-          require_tls: true
-          username: ${{ secrets.MAIL_USERNAME }}
-          password: ${{ secrets.MAIL_PASSWORD }}
-          from: ${{ env.MAIL_FROM_NAME && format('{0} <{1}>', env.MAIL_FROM_NAME, env.MAIL_FROM_EMAIL) || env.MAIL_FROM_EMAIL }}
-          to: ${{ secrets.MAIL_TO }}
-          subject: "New blocky release: v${{ steps.v.outputs.version }}"
-          body: |
-            blocky v${{ steps.v.outputs.version }}: https://github.com/0xERR0R/blocky/releases/tag/v${{ steps.v.outputs.version }}
-
-            To ship it, update dns/blocky/BLOCKY_VERSION.
-      # persist state after a successful send (transient failures retry next run):
-      # mark this version handled and that notify has now run at least once
-      - name: Record state
-        if: steps.v.outputs.version != '' && steps.seen.outputs.cache-hit != 'true'
-        run: touch .notified .init
-      - name: Check vendored libraries
-        id: vendored
-        run: |
-          out=$(python3 tools/vendor.py check) || exit 0
-          [ -n "${out}" ] || exit 0
-          { echo "list<<EOF"; echo "${out}"; echo "EOF"; } >> "$GITHUB_OUTPUT"
-          echo "key=$(printf '%s' "${out}" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
-      - name: Already emailed these vendored versions?
-        id: vendoredseen
-        if: steps.vendored.outputs.key != ''
-        uses: actions/cache@v5
-        with:
-          path: .vendored-notified
-          key: vendored-notified-${{ steps.vendored.outputs.key }}
-      - name: Email the maintainer about vendored libraries
-        if: steps.vendored.outputs.key != '' && steps.vendoredseen.outputs.cache-hit != 'true'
-        uses: dawidd6/action-send-mail@v22
-        with:
-          server_address: ${{ secrets.MAIL_SERVER }}
-          # STARTTLS; secure means TLS from the start, as on port 465
-          server_port: 587
-          secure: false
-          require_tls: true
-          username: ${{ secrets.MAIL_USERNAME }}
-          password: ${{ secrets.MAIL_PASSWORD }}
-          from: ${{ env.MAIL_FROM_NAME && format('{0} <{1}>', env.MAIL_FROM_NAME, env.MAIL_FROM_EMAIL) || env.MAIL_FROM_EMAIL }}
-          to: ${{ secrets.MAIL_TO }}
-          subject: "Vendored library updates available"
-          body: |
-            ${{ steps.vendored.outputs.list }}
-
-            Run tools/vendor.py update --latest, then bump PLUGIN_REVISION and the changelog of each plugin that changed.
-      - name: Record vendored state
-        if: steps.vendored.outputs.key != '' && steps.vendoredseen.outputs.cache-hit != 'true'
-        run: touch .vendored-notified
