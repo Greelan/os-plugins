@@ -254,6 +254,10 @@ jobs:
     # set of newer vendored libraries
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
+    env:
+      # the sender, as a repository variable or secret; the address falls back to MAIL_FROM
+      MAIL_FROM_NAME: ${{ vars.MAIL_FROM_NAME || secrets.MAIL_FROM_NAME }}
+      MAIL_FROM_EMAIL: ${{ vars.MAIL_FROM_EMAIL || secrets.MAIL_FROM_EMAIL || secrets.MAIL_FROM }}
     steps:
       # first: checkout empties a workspace that is not a repo, state files included
       - uses: actions/checkout@v7
@@ -284,16 +288,16 @@ jobs:
       - name: Email the maintainer
         # only a genuinely new version, and never on the first-ever run (just seed then)
         if: steps.v.outputs.version != '' && steps.init.outputs.cache-hit == 'true' && steps.seen.outputs.cache-hit != 'true'
-        uses: dawidd6/action-send-mail@v3
+        uses: dawidd6/action-send-mail@v22
         with:
           server_address: ${{ secrets.MAIL_SERVER }}
-          # STARTTLS, e.g. Google Workspace; secure means TLS from the start, as on port 465
+          # STARTTLS; secure means TLS from the start, as on port 465
           server_port: 587
           secure: false
           require_tls: true
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          from: ${{ vars.MAIL_FROM_NAME && format('{0} <{1}>', vars.MAIL_FROM_NAME, vars.MAIL_FROM_EMAIL || secrets.MAIL_FROM) || vars.MAIL_FROM_EMAIL || secrets.MAIL_FROM }}
+          from: ${{ env.MAIL_FROM_NAME && format('{0} <{1}>', env.MAIL_FROM_NAME, env.MAIL_FROM_EMAIL) || env.MAIL_FROM_EMAIL }}
           to: ${{ secrets.MAIL_TO }}
           subject: "New blocky release: v${{ steps.v.outputs.version }}"
           body: |
@@ -321,16 +325,16 @@ jobs:
           key: vendored-notified-${{ steps.vendored.outputs.key }}
       - name: Email the maintainer about vendored libraries
         if: steps.vendored.outputs.key != '' && steps.vendoredseen.outputs.cache-hit != 'true'
-        uses: dawidd6/action-send-mail@v3
+        uses: dawidd6/action-send-mail@v22
         with:
           server_address: ${{ secrets.MAIL_SERVER }}
-          # STARTTLS, e.g. Google Workspace; secure means TLS from the start, as on port 465
+          # STARTTLS; secure means TLS from the start, as on port 465
           server_port: 587
           secure: false
           require_tls: true
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          from: ${{ vars.MAIL_FROM_NAME && format('{0} <{1}>', vars.MAIL_FROM_NAME, vars.MAIL_FROM_EMAIL || secrets.MAIL_FROM) || vars.MAIL_FROM_EMAIL || secrets.MAIL_FROM }}
+          from: ${{ env.MAIL_FROM_NAME && format('{0} <{1}>', env.MAIL_FROM_NAME, env.MAIL_FROM_EMAIL) || env.MAIL_FROM_EMAIL }}
           to: ${{ secrets.MAIL_TO }}
           subject: "Vendored library updates available"
           body: |
