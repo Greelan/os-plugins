@@ -37,6 +37,7 @@
 require_once('script/load_phalcon.php');
 
 use OPNsense\Core\Config;
+use OPNsense\Diagnostics\SystemHealth;
 use OPNsense\Monit\Monit;
 use OPNsense\Notify\Notify;
 use OPNsense\Trust\Ca;
@@ -164,6 +165,8 @@ echo json_encode([
     'disabled' => $disabled,
     /* Firewall: Settings: Advanced, Keep counters: rule counters survive a reload */
     'keepCounters' => !empty((string)($config->system->keepcounters ?? '')),
+    /* Reporting: Health, which the summary graphs draw on; as core decides whether to collect */
+    'healthReporting' => !(new SystemHealth())->enabled->isEmpty(),
     'monit' => [
         'username' => trim((string)$monit->general->httpdUsername),
         'password' => trim((string)$monit->general->httpdPassword),
