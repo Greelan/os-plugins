@@ -124,6 +124,16 @@
                     <_7 value="7">Sunday</_7>
                 </OptionValues>
             </summaryDay>
+            <summaryGraphs type="OptionField">
+                <Default>top3</Default>
+                <Required>Y</Required>
+                <OptionValues>
+                    <none>None</none>
+                    <top1>Busiest interface</top1>
+                    <top3>3 busiest interfaces</top3>
+                    <all>All interfaces</all>
+                </OptionValues>
+            </summaryGraphs>
             <reportAddress type="TextField">
                 <Mask>/^https?:\/\/[^\s\/?#]+(\/[^\s?#]*)?$/</Mask>
                 <ValidationMessage>Enter an address such as https://fw.example.lan:8443.</ValidationMessage>

@@ -648,7 +648,10 @@ def is_carp_backup(config, unknown=True):
 def check_vpn(config, previous):
     now = int(time.time())
     current, messages, idle = {}, [], {}
-    peers = configctl_json("wireguard", "show") or {}
+    peers = configctl_json("wireguard", "show")
+    if peers is None:
+        # unreadable: keep what was known, rather than report every peer gone
+        current.update({k: v for k, v in (previous or {}).items() if k.startswith("WireGuard ")})
     for record in peers.get("records", []) if isinstance(peers, dict) else []:
         if record.get("type") != "peer":
             continue
@@ -662,7 +665,10 @@ def check_vpn(config, previous):
                                                          else "stale")
         if current[name] == "stale":
             idle[name] = now - handshake
-    sessions = configctl_json("openvpn", "connections", "server,client") or {}
+    sessions = configctl_json("openvpn", "connections", "server,client")
+    if sessions is None:
+        current.update({k: v for k, v in (previous or {}).items() if k.startswith("OpenVPN ")})
+    sessions = sessions if isinstance(sessions, dict) else {}
     servers = sessions.get("server")
     for identifier, instance in (servers.items() if isinstance(servers, dict) else []):
         if not isinstance(instance, dict):

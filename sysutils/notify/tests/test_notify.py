@@ -336,6 +336,13 @@ pass in quick on lo0 all label "0f8a3d1e5b6c4d2e8f9a0b1c2d3e4f5a"
         self.pf("")
         self.assertIsNone(summary.pf_block_rules())
 
+    def test_an_odd_pf_value_costs_only_its_counter(self):
+        odd = {"interfaces": {"vtnet0": {"in4_pass_packets": 5, "in4_pass_bytes": 50, "in4_block_packets": None,
+                                         "in4_block_bytes": 1}}}
+        summary.configctl_json = lambda *args: odd
+        found, _ = summary.pf_interfaces()
+        self.assertEqual(found, {"vtnet0": {"in_pass": [5, 50]}})
+
     def test_counters_sampled(self):
         summary.configctl_json = lambda *args: self.PF_INTERFACES
         self.pf(self.PF_RULES)
@@ -641,6 +648,15 @@ class SummaryTiming(unittest.TestCase):
 1727000600: 3.0000000000e+01 4.0000000000e+00 nan 1.0000000000e+00
 """
 
+    def test_an_infinite_reading_is_a_gap(self):
+        saved = summary.command_output
+        summary.command_output = lambda command, timeout=30: "  user\n\n1: 1.0\n2: inf\n3: -inf\n"
+        try:
+            rows = summary.rrd_fetch("/x.rrd", 1, 3)
+        finally:
+            summary.command_output = saved
+        self.assertEqual([row["user"] for _, row in rows], [1.0, None, None])
+
     def test_fetch_keeps_gaps(self):
         saved = summary.command_output
         summary.command_output = lambda command, timeout=30: self.FETCH
@@ -669,8 +685,8 @@ class SummaryTiming(unittest.TestCase):
         self.assertEqual(calls[0][1:4], ["fetch", os.path.join(rrd, "wan-packets.rrd"), "AVERAGE"])
         self.assertEqual(image[:8], b"\x89PNG\r\n\x1a\n")
         self.assertEqual(chart.struct.unpack(">II", image[16:24]), chart.GRAPH_SIZE)
-        self.assertEqual(graph["legend"], [("In", "#e15759", "peak 30 packets/s, average 22 packets/s"),
-                                           ("Out", "#76b7b2", "peak 5 packets/s, average 4 packets/s")],
+        self.assertEqual(graph["legend"], [("In", "#e15759", "peak 30 packets/s, average 22 packets/s", "fill"),
+                                           ("Out", "#76b7b2", "peak 5 packets/s, average 4 packets/s", "line")],
                          "IPv4 and IPv6 added")
 
     def test_stale_health_data_is_logged(self):
@@ -689,6 +705,35 @@ class SummaryTiming(unittest.TestCase):
         self.assertIsNone(graph)
         self.assertIn("has no data for the period", logged[0], "files left from when health reporting was on")
 
+    def test_graphs_per_setting(self):
+        totals = {f"if igc{i} {kind} {unit}": 1000 - i for i in range(5)
+                  for kind in ("in_pass", "in_block") for unit in ("bytes", "packets")}
+        # busiest, but unassigned since, so it has no health data
+        totals.update({f"if igc9 {kind} {unit}": 5000 for kind in ("in_pass", "in_block") for unit in ("bytes", "packets")})
+        config = {"interfaces": {f"igc{i}": f"NET{i}" for i in range(5)},
+                  "ifnames": {f"igc{i}": f"opt{i}" for i in range(5)}}
+        channel = {"uuid": "c1", "summary": "daily", "summarySections": ["firewall", "traffic", "health"],
+                   "summaryEvents": []}
+        period = {"since": 0, "schedule": "daily", "totals": totals, "peaks": {}}
+        saved = summary.system_health, summary.configctl_json
+        summary.system_health, summary.configctl_json = (lambda: []), (lambda *a: None)
+        try:
+            drawn, colored = {}, {}
+            for choice in ("none", "top1", "top3", "all"):
+                report = summary.build_summary(dict(config, general={"summaryGraphs": choice}), channel, period, 100)
+                drawn[choice] = [[g["name"] for g in p["graphs"]] for p in report["report"]["sections"]]
+                colored[choice] = [[g.get("color") for g in p["graphs"]] for p in report["report"]["sections"]]
+        finally:
+            summary.system_health, summary.configctl_json = saved
+        self.assertEqual(drawn["none"], [[], [], []])
+        self.assertEqual(drawn["top1"], [["blocks-opt0.png"], ["traffic-opt0.png"], ["cpu-system.png", "states-system.png"]],
+                         "one without health data is passed over, not counted")
+        self.assertEqual([len(p) for p in drawn["top3"]], [3, 3, 2], "busiest first, blocks as well as traffic")
+        self.assertEqual([len(p) for p in drawn["all"]], [5, 5, 2])
+        self.assertEqual(colored["top3"][1], list(chart.PIE_COLORS[1:4]),
+                         "each as its donut slice; the busiest, without health data, keeps its color")
+        self.assertEqual(colored["top3"][2], [None, None], "system graphs keep their own")
+
     def test_no_graphs_without_health_reporting(self):
         channel = {"uuid": "c1", "summary": "daily", "summarySections": ["health"], "summaryEvents": []}
         period = {"since": 0, "schedule": "daily", "peaks": {}}
@@ -702,6 +747,39 @@ class SummaryTiming(unittest.TestCase):
         self.assertEqual([p["graphs"] for p in off["sections"]], [[]])
         self.assertIn("health reporting is off", summary.summary_html(off, {}))
         self.assertEqual((on["note"], len(on["sections"][0]["graphs"])), ("", 2))
+        saved = summary.system_health
+        summary.system_health = lambda: []
+        try:
+            none = summary.build_summary({"healthReporting": False, "general": {"summaryGraphs": "none"}},
+                                         channel, period, 100)["report"]
+        finally:
+            summary.system_health = saved
+        self.assertEqual(none["note"], "", "no graphs were wanted")
+        summary.system_health = lambda: []
+        try:
+            every = summary.build_summary({"healthReporting": False, "general": {"summaryGraphs": "all"}},
+                                          channel, period, 100)["report"]
+        finally:
+            summary.system_health = saved
+        self.assertIn("health reporting is off", every["note"], "all is no limit, not none")
+
+    def test_an_interface_graph_takes_its_slice_color(self):
+        rrd = tempfile.mkdtemp()
+        saved = summary.RRD_DIR, summary.command_output
+        open(os.path.join(rrd, "wan-traffic.rrd"), "w").close()
+        summary.RRD_DIR = rrd
+        summary.command_output = lambda command, timeout=30: "  inpass outpass\n\n1: 1.0 2.0\n2: 3.0 4.0\n"
+        try:
+            graph = summary.draw_graph({"kind": "traffic", "key": "wan", "name": "t.png", "title": "WAN traffic",
+                                        "start": 1, "end": 2, "color": "#f28e2b"}, rrd)
+        finally:
+            summary.RRD_DIR, summary.command_output = saved
+            shutil.rmtree(rrd)
+        self.assertEqual([(color, look) for _, color, _, look in graph["legend"]],
+                         [("#f28e2b", "area"), ("#f28e2b", "line")], "In the area, Out the line")
+        caption = summary.graph_caption_html("WAN traffic", graph)
+        self.assertIn(f'<span style="color:#f28e2b;opacity:{chart.AREA_SHADE}">&#9632;</span>&nbsp;In', caption,
+                      "its square shaded as the area")
 
     def test_brief_status(self):
         lines = ["WAN address: 203.0.113.7, 2001:db8::7, fd00::7", "Gateway WAN: Online, RTT 1.1 ms, loss 0.0 %",
@@ -760,15 +838,16 @@ class SummaryEmail(unittest.TestCase):
         self.assertIn("<em>(Delayed: this happened at 07:00.)</em>", body)
 
     def test_escaped_with_graphs_in_their_section(self):
-        body = summary.summary_html(self.REPORT, {"cpu-system.png": {"path": "/tmp/x", "legend": [("", "#4e79a7", "<peak>")]}})
+        body = summary.summary_html(self.REPORT, {"cpu-system.png": {"path": "/tmp/x", "legend": [("", "#4e79a7", "<peak>", "fill")]}})
         self.assertIn("Failed login for &lt;b&gt;x&lt;/b&gt;", body)
         self.assertIn('<img src="cid:cpu-system.png"', body)
         self.assertIn("&#9632;</span>&nbsp;&lt;peak&gt;</small>", body)
-        legend = {"path": "/tmp/x", "legend": [("In", "#4e79a7", "peak 2 bit/s, average 1 bit/s"),
-                                                               ("Out", "#e15759", "peak <1>, average 0")]}
+        legend = {"path": "/tmp/x", "legend": [("In", "#4e79a7", "peak 2 bit/s, average 1 bit/s", "fill"),
+                                                               ("Out", "#e15759", "peak <1>, average 0", "line")]}
         body = summary.summary_html(self.REPORT, {"cpu-system.png": legend})
         self.assertIn('<span style="color:#4e79a7">&#9632;</span>&nbsp;In peak 2 bit/s', body)
-        self.assertIn('<span style="color:#e15759">&#9632;</span>&nbsp;Out peak &lt;1&gt;', body, "kept with its swatch")
+        self.assertIn('<span style="color:#e15759">&#9473;</span>&nbsp;Out peak &lt;1&gt;', body,
+                      "a line's swatch is a bar, kept with its label")
         self.assertNotIn("cid:", summary.summary_html(self.REPORT, {}), "a graph not drawn is left out")
 
     def test_html_only_for_email(self):
@@ -1113,6 +1192,20 @@ class SummaryFacts(unittest.TestCase):
         self.assertEqual(sorted(state.values()), ["offline", "online", "stale"])
         self.assertEqual([m["title"] for m in messages], [f"WireGuard wg0 {'a' * 12} is online"],
                          "down as recorded before 1.4 covered both stale and never connected")
+
+    def test_an_unread_vpn_status_is_not_everyone_gone(self):
+        saved = notify.configctl_json
+        before = {"WireGuard wg0 aaaaaaaaaaaa": "online", "OpenVPN client 1": "up",
+                  "OpenVPN server 2 alice": "up"}
+        try:
+            for failed in ("wireguard", "openvpn"):
+                notify.configctl_json = lambda *a, failed=failed: None if a[0] == failed else {}
+                state, messages = notify.check_vpn({}, before)
+                self.assertEqual({k: v for k, v in state.items() if failed in k.lower()},
+                                 {k: v for k, v in before.items() if failed in k.lower()}, failed)
+                self.assertFalse([m for m in messages if failed in m["title"].lower()], failed)
+        finally:
+            notify.configctl_json = saved
 
 
 class Hardening(unittest.TestCase):

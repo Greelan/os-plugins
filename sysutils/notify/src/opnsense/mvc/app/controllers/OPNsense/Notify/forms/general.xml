@@ -124,6 +124,12 @@
         <help>Day of the month (1 to 31) on which monthly summaries are sent. In a shorter month the summary goes on its last day, so 31 means the end of every month.</help>
     </field>
     <field>
+        <id>notify.general.summaryGraphs</id>
+        <label>Summary graphs</label>
+        <type>dropdown</type>
+        <help><![CDATA[Interfaces graphed in each summary's Firewall blocks and Interface traffic sections, busiest first; with any, System health also gets processor and state table graphs. Graphs are drawn from <a href="/ui/diagnostics/systemhealth">Reporting: Health</a>, which needs to be enabled. Each graph takes a moment to draw and adds to the email, so on a firewall with many interfaces, All interfaces can slow the check that sends summaries and make large emails.]]></help>
+    </field>
+    <field>
         <id>notify.general.reportAddress</id>
         <label>Report link address</label>
         <type>text</type>

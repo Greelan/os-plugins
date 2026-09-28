@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4_5 - 2026-09-28
+
+- Summary graphs setting: none, the busiest interface, the 3 busiest (the default, now for blocks as well as traffic) or all.
+- A VPN status that cannot be read no longer reports every peer as disconnected, then connected again.
+
 ## 1.4_4 - 2026-09-28
 
 - Summary reports follow dark mode, charts included, where the browser or mail app supports it.

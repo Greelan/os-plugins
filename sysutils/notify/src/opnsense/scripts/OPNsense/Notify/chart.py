@@ -46,6 +46,9 @@ PIE_OTHER = "#bab0ac"
 # gray at part opacity, visible on light and dark: (premultiplied gray, alpha)
 GRID = (38, 77)
 MARK = (58, 115)
+# share of the color in a filled area: outlined, or on its own (shaded more, so it still reads)
+SHADE = 0.35
+AREA_SHADE = 0.4
 
 
 def day_marks(first, last):
@@ -64,8 +67,8 @@ def day_marks(first, last):
 
 
 def chart_png(series, marks, scale=2):
-    """A line chart as PNG: series of (values, color, filled), None being a gap. Drawn at scale and
-    averaged down to smooth edges."""
+    """A line chart as PNG: series of (values, color, filled[, outlined]), None being a gap; a filled
+    one is outlined unless told otherwise. Drawn at scale and averaged down to smooth edges."""
     width, height = GRAPH_SIZE
     w, h = width * scale, height * scale
     # a plane per channel, column after column, so a column is one slice; colors are
@@ -77,7 +80,7 @@ def chart_png(series, marks, scale=2):
             for k in range(4):
                 planes[k][x * h + y] = rgba[k]
 
-    top = max([v for values, _, _ in series for v in values if v is not None] + [0]) * 1.1 or 1
+    top = max([v for values, *_ in series for v in values if v is not None] + [0]) * 1.1 or 1
     for step in range(1, 4):
         y = h - 1 - round(step / 4 * (h - 1))
         for x in range(0, w, 2 * scale):
@@ -88,7 +91,9 @@ def chart_png(series, marks, scale=2):
         if 0 <= x < w:
             for k in range(4):
                 planes[k][x * h:(x + 1) * h] = bytes([MARK[k == 3]]) * h
-    for values, color, filled in series:
+    for values, color, filled, *style in series:
+        outlined = not filled or not style or style[0]
+        shade = SHADE if outlined else AREA_SHADE
         rgb = tuple(int(color[i:i + 2], 16) for i in (1, 3, 5)) + (255,)
         count = len(values)
         ys = [None if v is None else h - 1 - round(v / top * (h - 1)) for v in values]
@@ -96,7 +101,7 @@ def chart_png(series, marks, scale=2):
             continue
         if filled:
             # a fixed blend maps each byte to one other
-            tables = [bytes(round(v * 0.65 + rgb[k] * 0.35) for v in range(256)) for k in range(4)]
+            tables = [bytes(round(v * (1 - shade) + rgb[k] * shade) for v in range(256)) for k in range(4)]
             for x in range(w):
                 at = x / (w - 1) * (count - 1)
                 i = min(int(at), count - 2)
@@ -107,7 +112,7 @@ def chart_png(series, marks, scale=2):
                 end = (x + 1) * h
                 for k in range(4):
                     planes[k][start:end] = planes[k][start:end].translate(tables[k])
-        for i in range(count - 1):
+        for i in range(count - 1 if outlined else 0):
             y0, y1 = ys[i], ys[i + 1]
             if y0 is None or y1 is None:
                 continue

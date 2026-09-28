@@ -166,7 +166,7 @@ def setting(general, key, default):
     """An integer setting, or default when it is unset or unreadable."""
     try:
         return int(general.get(key, default))
-    except ValueError:
+    except (TypeError, ValueError):
         return default
 
 

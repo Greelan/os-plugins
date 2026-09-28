@@ -62,7 +62,7 @@
         <id>channel.summary</id>
         <label>Summary</label>
         <type>dropdown</type>
-        <help><![CDATA[Also send a summary of the period, at the time set under Summary on the General tab. The first summary covers the period from when this was set. The list button on the channel sends the summary so far without ending the period. An email channel gets it formatted, with graphs in its sections from <a href="/ui/diagnostics/systemhealth">Reporting: Health</a>, which needs to be enabled there. Other services get the headline figures as text, with a link to the full report on this firewall (see Report link address on the General tab).]]></help>
+        <help><![CDATA[Also send a summary of the period, at the time set under Summary on the <a href="/ui/notify#general">General</a> tab. The first summary covers the period from when this was set. The list button on the channel sends the summary so far without ending the period. An email channel gets it formatted, with graphs in its sections as set by Summary graphs there; the graphs need <a href="/ui/diagnostics/systemhealth">Reporting: Health</a> to be enabled. Other services get the headline figures as text, with a link to the full report on this firewall (see Report link address, also there).]]></help>
         <grid_view>
             <width>8em</width>
         </grid_view>

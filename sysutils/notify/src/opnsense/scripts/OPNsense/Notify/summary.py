@@ -44,7 +44,7 @@ import syslog
 import tempfile
 import time
 
-from chart import GRAPH_SIZE, PIE_COLORS, PIE_OTHER, PIE_SIZE, chart_png, day_marks, donut_png
+from chart import AREA_SHADE, GRAPH_SIZE, PIE_COLORS, PIE_OTHER, PIE_SIZE, chart_png, day_marks, donut_png
 from common import (FIRMWARE, LINK_UP, PFCTL, SYSCTL, addresses, carp_states, clock, command_output,
                     configctl_json, duration, link_states, log, message, pf_states, read_firmware, setting,
                     size, stale_tmp, write_private)
@@ -71,7 +71,8 @@ SAMPLE_SECONDS = 300
 SUMMARY_TRIES = 5
 RRDTOOL = "/usr/local/bin/rrdtool"
 RRD_DIR = "/var/db/rrd"
-SUMMARY_GRAPHS = 3
+# interfaces graphed per section, by the Summary graphs setting; None is all
+GRAPH_INTERFACES = {"none": 0, "top1": 1, "top3": 3, "all": None}
 # rewritten on each rule load
 RULESET = "/tmp/rules.debug"
 # per channel, as Sophos UTM keeps
@@ -85,8 +86,9 @@ GRAPHS: dict = {}  # drawn once per run, by spec
 # otherwise enlarges some blocks and not others, even captions), a narrow screen stacks a pie
 # over its table, and dark mode
 TEXT_AS_IS = "-webkit-text-size-adjust:100%;text-size-adjust:100%"
-REPORT_STYLE = f""":root{{color-scheme:light dark;supported-color-schemes:light dark}}
-html,body,.nr{{{TEXT_AS_IS}}}
+# apart, as Gmail drops a whole style block over one rule it does not take
+SCHEME_STYLE = ":root{color-scheme:light dark;supported-color-schemes:light dark}"
+REPORT_STYLE = f"""html,body,.nr{{{TEXT_AS_IS}}}
 @media (max-width:540px){{
 .nr .pie,.nr .rows{{display:block!important;width:auto!important}}
 .nr .pie{{padding:0 0 8px!important}}
@@ -171,8 +173,11 @@ def pf_interfaces():
             way, action = key.split("_")
             names = [f"{way}{v}_{action}" for v in (4, 6)]
             if any(f"{n}_packets" in values for n in names):
-                found.setdefault(device, {})[key] = [sum(int(values.get(f"{n}_{unit}", 0)) for n in names)
-                                                     for unit in ("packets", "bytes")]
+                try:
+                    counts = [sum(int(values.get(f"{n}_{unit}", 0)) for n in names) for unit in ("packets", "bytes")]
+                except (TypeError, ValueError):
+                    continue  # an odd value costs only this counter
+                found.setdefault(device, {})[key] = counts
     return (found, cleared) if found else None
 
 
@@ -534,7 +539,10 @@ def build_summary(config, channel, period, now, shared=None):
         return shared[key]
 
     names, keys = config.get("interfaces", {}), config.get("ifnames", {})
-    graphing = config.get("healthReporting", True)
+    choice = config.get("general", {}).get("summaryGraphs")
+    graphed = GRAPH_INTERFACES.get(choice, GRAPH_INTERFACES["top3"])
+    reporting = config.get("healthReporting", True)
+    graphing = reporting and graphed != 0
     totals, peaks = period.get("totals", {}), period.get("peaks", {})
     sections = channel.get("summarySections", [])
     title = f"{period.get('schedule', channel['summary']).capitalize()} summary"
@@ -548,11 +556,15 @@ def build_summary(config, channel, period, now, shared=None):
         report.append({"title": heading, "head": head, "rows": [], "graphs": [], "sub": sub})
         return report[-1]
 
+    def color(index):
+        """A row's color, in its pie and its graph."""
+        return PIE_COLORS[index] if index < len(PIE_COLORS) else PIE_OTHER
+
     def pie(part, name, values, rest=False):
         """A donut of the rows; with rest, the last is gray."""
         if sum(values) <= 0 or len(values) < 2:
             return
-        colors = [PIE_COLORS[i] if i < len(PIE_COLORS) else PIE_OTHER for i in range(len(values))]
+        colors = [color(i) for i in range(len(values))]
         if rest:
             colors[-1] = PIE_OTHER
         part["swatches"] = colors
@@ -564,13 +576,22 @@ def build_summary(config, channel, period, now, shared=None):
         """A row; text splits at its first colon."""
         part["rows"].append(cells.split(": ", 1) if isinstance(cells, str) else cells)
 
-    def graph(part, kind, device, heading):
+    def graph_key(device):
+        """The name core keeps a device's health data under, if usable."""
+        key = keys.get(device, "") if device else "system"
+        return key if re.fullmatch(r"[A-Za-z0-9_]+", key) else None
+
+    def busiest(devices):
+        """Those to graph: the busiest that have health data, up to the setting."""
+        return [d for d in devices if graph_key(d)][:graphed]
+
+    def graph(part, kind, device, heading, hue=None):
         if not graphing:
             return
-        key = keys.get(device, "") if device else "system"
-        if re.fullmatch(r"[A-Za-z0-9_]+", key) and len(part["graphs"]) < SUMMARY_GRAPHS:
+        key = graph_key(device)
+        if key:
             part["graphs"].append({"kind": kind, "key": key, "title": heading, "name": f"{kind}-{key}.png",
-                                   "start": period["since"], "end": now})
+                                   "start": period["since"], "end": now, **({"color": hue} if hue else {})})
 
     if "status" in sections:
         part = section("Current status")
@@ -627,8 +648,8 @@ def build_summary(config, channel, period, now, shared=None):
         brief.append(f"Blocked: {sum(n for _, n in each):,} packets"
                      + (f" ({', '.join(f'{name} {n:,}' for name, n in each[:3])})" if len(each) > 1 else ""))
         pie(part, "blocks", [packets_in.get(d, 0) + packets_out.get(d, 0) for d in blocked])
-        for device in blocked[:1]:
-            graph(part, "blocks", device, f"{names.get(device, device)} blocked")
+        for device in busiest(blocked):
+            graph(part, "blocks", device, f"{names.get(device, device)} blocked", color(blocked.index(device)))
         every = sorted(((k.split(" ", 1)[1], v) for k, v in totals.items() if k.startswith("rule ")),
                        key=lambda kv: -kv[1])
         rules, rest = every[:SUMMARY_RULES], sum(v for _, v in every[SUMMARY_RULES:])
@@ -651,9 +672,9 @@ def build_summary(config, channel, period, now, shared=None):
         if not devices:
             row(part, ["None recorded"])
         for device in devices:
-            name = names.get(device, device)
-            row(part, [name, size(received.get(device, 0)), size(sent.get(device, 0))])
-            graph(part, "traffic", device, f"{name} traffic")
+            row(part, [names.get(device, device), size(received.get(device, 0)), size(sent.get(device, 0))])
+        for device in busiest(devices):
+            graph(part, "traffic", device, f"{names.get(device, device)} traffic", color(devices.index(device)))
         brief.append("Traffic: " + (" · ".join(f"{names.get(d, d)} {size(received.get(d, 0))} in, "
                                                 f"{size(sent.get(d, 0))} out" for d in devices[:3]) or "none recorded"))
         pie(part, "traffic", [received.get(d, 0) + sent.get(d, 0) for d in devices])
@@ -674,7 +695,7 @@ def build_summary(config, channel, period, now, shared=None):
         graph(part, "states", None, "State table")
 
     body = "\n".join([f"{host} · {span}" if host else span] + brief)
-    note = "" if graphing or not {"firewall", "traffic", "health"} & set(sections) else \
+    note = "" if reporting or graphed == 0 or not {"firewall", "traffic", "health"} & set(sections) else \
         "No graphs: health reporting is off, under Reporting: Health."
     return dict(message("summary", "info", title, body), uuid=channel["uuid"],
                 report={"title": title, "host": host, "span": span, "sections": report, "note": note})
@@ -685,7 +706,8 @@ def report_page(report, drawn, embed=True):
     title = html.escape(" · ".join(filter(None, [report["title"], report.get("host")])))
     return (f'<!doctype html>\n<html><head><meta charset="utf-8"><title>{title}</title>'
             f'<meta name="viewport" content="width=device-width, initial-scale=1">'
-            f'<meta name="color-scheme" content="light dark"><style>{REPORT_STYLE}</style></head>'
+            f'<meta name="color-scheme" content="light dark"><style>{SCHEME_STYLE}</style>'
+            f'<style>{REPORT_STYLE}</style></head>'
             # a phone's mail app pads the message itself
             f'<body{"" if embed else MAIL_CLASS} style="margin:16px;{TEXT_AS_IS}">'
             f'{summary_html(report, drawn, embed)}</body></html>\n')
@@ -793,6 +815,9 @@ def draw_series(spec, directory):
         return None
     lines = []
     for label, sources, factor, color, filled in series:
+        # an interface's color from its pie: In as the area alone and Out as the line, as a
+        # shade would fade on a light or a dark page, and dashes break up on spiky data
+        color = spec.get("color") or color
         values = []
         for _, row in rows:
             known = [row[name] for name in sources if row.get(name) is not None]
@@ -805,9 +830,10 @@ def draw_series(spec, directory):
     os.makedirs(directory, exist_ok=True)
     path = os.path.join(directory, spec["name"])
     with open(path, "wb") as handle:
-        handle.write(chart_png([(values, color, filled) for _, values, color, filled in lines],
+        handle.write(chart_png([(values, color, filled, "color" not in spec)
+                                for _, values, color, filled in lines],
                                day_marks(stamps[0], stamps[-1])))
-    return {"path": path, "legend": graph_legend(unit, lines)}
+    return {"path": path, "legend": graph_legend(unit, lines, "color" in spec)}
 
 
 def rrd_fetch(rrd, start, end):
@@ -828,7 +854,7 @@ def rrd_fetch(rrd, start, end):
                 number = float(value)
             except ValueError:
                 number = math.nan
-            row[name] = None if math.isnan(number) else number
+            row[name] = number if math.isfinite(number) else None  # nan, or inf from a counter wrap
         rows.append((int(stamp), row))
     return rows if len(rows) > 1 else None
 
@@ -846,14 +872,16 @@ def rate(value, unit):
     return ""
 
 
-def graph_legend(unit, lines):
-    """[(label, color, figures)] per series with data."""
+def graph_legend(unit, lines, areas=False):
+    """[(label, color, figures, look)] per series with data; look is "line", "fill", or "area" for a
+    fill without its outline."""
     legend = []
-    for label, values, color, _ in lines:
+    for label, values, color, filled in lines:
         known = [v for v in values if v is not None]
         if known:
+            look = ("area" if areas else "fill") if filled else "line"
             legend.append((label if len(lines) > 1 else "", color,
-                           f"peak {rate(max(known), unit)}, average {rate(sum(known) / len(known), unit)}"))
+                           f"peak {rate(max(known), unit)}, average {rate(sum(known) / len(known), unit)}", look))
     return legend
 
 
@@ -862,11 +890,13 @@ MAIL_CLASS = ' class="mail"'
 
 
 def graph_caption_html(title, graph):
-    """Each series' figures after a swatch of its color."""
+    """Each series' figures after a swatch of it: a bar for a line, a square for an area, shaded as
+    drawn when it has no outline."""
     legend = graph.get("legend") or []
+    marks = {"line": ("&#9473;", ""), "fill": ("&#9632;", ""), "area": ("&#9632;", f";opacity:{AREA_SHADE}")}
     # a no-break space keeps each swatch with its label
-    parts = [f'<span style="color:{html.escape(color)}">&#9632;</span>&nbsp;'
-             + html.escape(f"{label} {figures}" if label else figures) for label, color, figures in legend]
+    parts = [f'<span style="color:{html.escape(color)}{marks[look][1]}">{marks[look][0]}</span>&nbsp;'
+             + html.escape(f"{label} {figures}" if label else figures) for label, color, figures, look in legend]
     return f"{html.escape(title)}: " + "; ".join(parts)
 
 
