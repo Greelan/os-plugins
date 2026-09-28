@@ -42,10 +42,7 @@ MENTION = re.compile(r"@(?=[\w&])")  # as Apprise's Discord finds mentions
 TITLE_MAX = 200
 BODY_MAX = 4000
 FACT_MAX = 200
-FIRMWARE = "/tmp/pkg_upgrade.json"
 CONFIGCTL = "/usr/local/sbin/configctl"
-PFCTL = "/sbin/pfctl"
-SYSCTL = "/sbin/sysctl"
 # running: a wireless access point
 LINK_UP = ("active", "associated", "running")
 
@@ -54,12 +51,17 @@ def log(priority, message):
     syslog.syslog(priority, message)
 
 
+def configctl(*args):
+    """What a configd action printed, or None."""
+    return command_output([CONFIGCTL] + list(args), timeout=120)
+
+
 def configctl_json(*args):
     """JSON from a configd action, or None; a missing action is a plugin bug, so say so.
 
     PHP renders an empty array as [], so an empty answer comes back as {}.
     """
-    output = command_output([CONFIGCTL] + list(args), timeout=120)
+    output = configctl(*args)
     try:
         answer = json.loads(output or "")
         return {} if answer == [] else answer
@@ -152,14 +154,47 @@ def clip(text, limit):
     return text if len(text) <= limit else text[:limit - 1] + "…"
 
 
+@functools.lru_cache(maxsize=1)
+def system_status():
+    """System Status's items that are not OK, {name: item}, or None; read once per run."""
+    data = configctl_json("system", "status")
+    return data if isinstance(data, dict) else None
+
+
+@functools.lru_cache(maxsize=1)
+def firmware_product():
+    """Core's firmware product details, the last update check among them, or {}."""
+    data = configctl_json("firmware", "product")
+    return data if isinstance(data, dict) else {}
+
+
+# the Firmware page's lists, and how it names each change
+FIRMWARE_CHANGES = (("upgrade_packages", "upgrade"), ("new_packages", "new"), ("reinstall_packages", "reinstall"),
+                    ("downgrade_packages", "downgrade"), ("remove_packages", "obsolete"))
+
+
+def firmware_changes(check):
+    """[(key, line, reason)] for each package change a firmware check found."""
+    found = []
+    for field, reason in FIRMWARE_CHANGES:
+        for p in check.get(field) or []:
+            name = p.get("name")
+            if field in ("upgrade_packages", "downgrade_packages"):
+                version = p.get("new_version")
+                line = f"{name} {p.get('current_version')} -> {version}"
+            else:
+                version = p.get("version")
+                line = f"{name} {version}"
+            # upgrades and new ones keep the key they had, so a change seen before is not sent again
+            key = f"{name}-{version}" if reason in ("upgrade", "new") else f"{name}-{version} {reason}"
+            found.append((key, line if reason == "upgrade" else f"{line} ({reason})", reason))
+    return found
+
+
 def read_firmware():
     """The last firmware check's result, or None."""
-    try:
-        with open(FIRMWARE) as handle:
-            data = json.load(handle)
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
+    check = firmware_product().get("product_check")
+    return check if isinstance(check, dict) else None
 
 
 def setting(general, key, default):
@@ -171,59 +206,77 @@ def setting(general, key, default):
 
 
 @functools.lru_cache(maxsize=1)
-def ifconfig():
-    return command_output(["/sbin/ifconfig", "-a"])
+def service_states():
+    """Services as the Services widget shows them, [(key, label, running)], or None if unreadable;
+    those core does not check always read as running, so are left out."""
+    services = configctl_json("service", "list")
+    if services == {}:
+        return []  # PHP's empty list
+    if not isinstance(services, list):
+        return None
+    found: list = []
+    seen: dict = {}
+    for s in services:
+        if not isinstance(s, dict) or s.get("nocheck"):
+            continue
+        key = f"{s.get('name', '')}/{s.get('id', '')}"
+        seen[key] = seen.get(key, 0) + 1
+        # a name repeated without an id stays apart
+        found.append((key if seen[key] == 1 else f"{key}#{seen[key]}", str(s.get("description") or s.get("name") or "?"),
+                      "is running" in str(s.get("status", ""))))
+    return found
+
+
+@functools.lru_cache(maxsize=1)
+def interfaces():
+    """Devices as core reads them from ifconfig, {device: details}, or None if unreadable."""
+    data = configctl_json("interface", "list", "ifconfig")
+    return data if isinstance(data, dict) and data else None
+
+
+def carp_vhids():
+    """[(device, vhid, state)] of every CARP virtual IP on this firewall."""
+    found = []
+    for device, details in (interfaces() or {}).items():
+        carp = details.get("carp") or {}
+        for entry in carp.values() if isinstance(carp, dict) else carp:
+            found.append((device, str(entry.get("vhid", "")), str(entry.get("status", ""))))
+    return found
 
 
 def carp_states():
     """CARP states of every virtual IP on this firewall."""
-    return re.findall(r"^\s+carp: (\S+) vhid", ifconfig() or "", re.M)
+    return [state for _, _, state in carp_vhids()]
 
 
 def addresses():
-    """Device -> the addresses it holds, link-local and loopback aside."""
+    """Device -> the addresses it holds, link-local, loopback and deprecated aside."""
     found: dict = {}
-    device = None
-    for line in (ifconfig() or "").splitlines():
-        match = re.match(r"^(\S+): flags=", line)
-        if match:
-            device = match.group(1)
-            continue
-        match = re.match(r"^\s+inet6? (\S+)", line)
-        if match is None or device is None:
-            continue
-        address = match.group(1).split("%")[0]
-        if address.startswith(("fe80:", "127.", "::1")):
-            continue
-        if " temporary" in line or " deprecated" in line:
-            continue  # privacy addresses rotate; reporting each one would be noise
-        found.setdefault(device, []).append(address)
+    for device, details in (interfaces() or {}).items():
+        for entry in (details.get("ipv4") or []) + (details.get("ipv6") or []):
+            address = str(entry.get("ipaddr", ""))
+            if address and not entry.get("link-local") and not entry.get("deprecated") \
+                    and not address.startswith(("127.", "::1")):
+                found.setdefault(device, []).append(address)
     return found
 
 
 def link_states(names):
     """Carrier per configured interface that reports one."""
-    found, device = {}, None
-    for line in (ifconfig() or "").splitlines():
-        match = re.match(r"^(\S+): flags=", line)
-        if match:
-            device = match.group(1)
-            continue
-        match = re.match(r"^\s+status: (.+)$", line)
-        if match is not None and device in names:
-            found[device] = match.group(1).strip()
-    return found
+    return {device: str(details["status"]).strip() for device, details in (interfaces() or {}).items()
+            if device in names and details.get("status")}
 
 
 @functools.lru_cache(maxsize=1)
 def pf_states():
-    """(entries, limit) of the state table, or None; read once per run."""
-    info, limits = command_output([PFCTL, "-si"]), command_output([PFCTL, "-sm"])
-    if info is None or limits is None:
+    """(entries, limit) of the state table, as the dashboard's Firewall States widget reads it
+    ("current N", "limit N"), or None; read once per run."""
+    values = dict(line.split(None, 1) for line in (configctl("filter", "diag", "state_size") or "").splitlines()
+                  if len(line.split()) == 2)
+    try:
+        return int(values["current"]), int(values.get("limit", 0))
+    except (KeyError, ValueError):
         return None
-    found = re.search(r"current entries\s+(\d+)", info)
-    allowed = re.search(r"states\s+hard limit\s+(\d+)", limits)
-    return (int(found.group(1)), int(allowed.group(1)) if allowed else 0) if found else None
 
 
 def size(octets):

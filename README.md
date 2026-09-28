@@ -31,7 +31,7 @@ Blocky answers on the DNS port (53 by default); disable the built-in Unbound/Dns
 
 Push notifications for OPNsense system events, sent through [Apprise](https://github.com/caronc/apprise) to Telegram, Pushover, ntfy, Gotify, Discord, Slack, Matrix, email and many other services. Channels are built from a service picker, and each one chooses which events it receives.
 
-Events: configuration changes, logins and lockouts, gateway down and recovery (with outage duration), WAN address changes, interface link changes, VPN peers, new devices, intrusion detection alerts, Monit checks, a filling state table, UPS power (apcupsd or NUT), firmware updates, certificate expiry, System Status entries, critical log messages, CARP state changes and firewall startup. Undelivered notifications are retried with a backoff for up to 24 hours.
+Events: configuration changes, logins and lockouts, gateway down and recovery (with outage duration), WAN address changes, interface link changes, VPN peers, new devices, intrusion detection alerts, Monit checks, services stopping, a filling state table, UPS power (apcupsd or NUT), firmware updates, certificate expiry, System Status entries, critical log messages, CARP state changes and firewall startup. Undelivered notifications are retried with a backoff for up to 24 hours.
 
 A channel can also get a daily, weekly or monthly summary of the firewall's status, its events, firewall blocks, traffic and system health: by email as a formatted report with graphs, elsewhere as a short text linking to the full report on the firewall, which also keeps an archive of them.
 

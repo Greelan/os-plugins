@@ -45,9 +45,8 @@ import tempfile
 import time
 
 from chart import AREA_SHADE, GRAPH_SIZE, PIE_COLORS, PIE_OTHER, PIE_SIZE, chart_png, day_marks, donut_png
-from common import (FIRMWARE, LINK_UP, PFCTL, SYSCTL, addresses, carp_states, clock, command_output,
-                    configctl_json, duration, link_states, log, message, pf_states, read_firmware, setting,
-                    size, stale_tmp, write_private)
+from common import (LINK_UP, addresses, carp_states, clock, configctl_json, duration, firmware_changes, link_states,
+                    log, message, pf_states, read_firmware, service_states, setting, size, stale_tmp, write_private)
 
 
 # ------------------------------------------------------------------ summaries
@@ -64,17 +63,14 @@ FACT_SECTIONS = {
     "auth": ("Logins", [("outcome", "Outcome"), ("user", "User"), ("source", "Source")]),
     "vpn": ("VPN peers", [("peer", "Change")]),
     "syslog": ("Critical log messages", [("program", "Program")]),
+    "service": ("Stopped services", [("service", "Service")]),
 }
 # counter reads; resets between are seen from rule loads and interface clearing
 SAMPLE_SECONDS = 300
 # builds tried before a period is dropped
 SUMMARY_TRIES = 5
-RRDTOOL = "/usr/local/bin/rrdtool"
-RRD_DIR = "/var/db/rrd"
 # interfaces graphed per section, by the Summary graphs setting; None is all
 GRAPH_INTERFACES = {"none": 0, "top1": 1, "top3": 3, "all": None}
-# rewritten on each rule load
-RULESET = "/tmp/rules.debug"
 # per channel, as Sophos UTM keeps
 REPORTS_DIR = "/var/db/notify/reports"
 REPORTS_KEEP = {"daily": 60, "weekly": 52, "monthly": 12}
@@ -182,30 +178,29 @@ def pf_interfaces():
 
 
 def pf_block_rules():
-    """Packets per block rule label, and its load as "pid/rules"; None if unreadable."""
-    output = command_output([PFCTL, "-sr", "-v"])
-    if output is None:
-        return None
+    """Packets per block rule label, and its load as "pid/rules"; None if unreadable. From core's
+    `filter diag info rules`: {rule: {"packets": n, "inserted": "uid 0 pid n ", ...}}."""
+    data = configctl_json("filter", "diag", "info", "rules")
+    rules = (data.get("rules") or {}).get("filter rules") if isinstance(data, dict) else None
+    if not isinstance(rules, dict) or not rules:
+        return None  # a firewall always has rules
     found: dict = {}
     loads: dict = {}
     expanded: dict = {}
-    label = None
-    for line in output.splitlines():
-        line = line.strip()
-        if not line.startswith("["):
-            match = re.search(r'label "([^"]+)"', line)
-            label = match.group(1) if match and line.startswith("block") else None
-            if label:
-                expanded[label] = expanded.get(label, 0) + 1
+    for rule, counters in rules.items():
+        rule = re.sub(r"^@\S+\s+", "", rule)  # the rule number -vv puts first
+        match = re.search(r'label "([^"]+)"', rule)
+        if not rule.startswith("block") or match is None or not isinstance(counters, dict):
             continue
-        packets = re.search(r"Packets:\s+(\d+)", line)
-        loaded = re.search(r"Inserted:.*\bpid\s+(\d+)", line)
-        if label and packets and "Evaluations" in line:
-            found[label] = found.get(label, 0) + int(packets.group(1))  # one rule can expand to several
-        elif label and loaded:
+        label = match.group(1)
+        expanded[label] = expanded.get(label, 0) + 1
+        if isinstance(counters.get("packets"), int):
+            found[label] = found.get(label, 0) + counters["packets"]  # one rule can expand to several
+        loaded = re.search(r"\bpid\s+(\d+)", str(counters.get("inserted", "")))
+        if loaded:
             loads.setdefault(label, loaded.group(1))
     loads = {label: f"{loads.get(label, '')}/{count}" for label, count in expanded.items()}
-    return (found, loads) if output.strip() else None  # a firewall always has rules
+    return found, loads
 
 
 def sample_counters(devices, rules):
@@ -258,15 +253,23 @@ def boot_seconds(text):
     return int(found.group(1)) if found else None
 
 
+def sysctl_values(*names):
+    """{name: value} for the sysctl values core's dashboard reads; those unknown are left out."""
+    values = configctl_json("system", "sysctl", "values", ",".join(names))
+    return values if isinstance(values, dict) else {}
+
+
 def boot_time():
-    return boot_seconds(command_output([SYSCTL, "-n", "kern.boottime"]))
+    return boot_seconds(sysctl_values("kern.boottime").get("kern.boottime"))
 
 
-def ruleset_stamp():
+def load_average():
+    """The 1-minute load, from vm.loadavg ("{ 0.52 0.41 0.38 }") as the dashboard reads it, or 0."""
+    parts = str(sysctl_values("vm.loadavg").get("vm.loadavg", "")).split()
     try:
-        return os.stat(RULESET).st_mtime_ns
-    except OSError:
-        return None
+        return float(parts[1]) if parts[:1] == ["{"] else 0.0
+    except (IndexError, ValueError):
+        return 0.0
 
 
 def last_boundary(now, schedule, hour, day, date=1):
@@ -321,15 +324,15 @@ def update_summaries(config, channels, previous, messages, now):
     sections = {s for c in wanted for s in c.get("summarySections", [])}
     health = "health" in sections
     states = pf_states() if health else None
-    load = os.getloadavg()[0] if health else 0
+    load = load_average() if health else 0
     reading = {"load": load} if health else {}
     if states is not None:
         reading.update(states=states[0], statesLimit=states[1])
     if not due_now and not opening and previous.get("counters") is not None \
             and now - previous.get("sampled", 0) < SAMPLE_SECONDS:
         grown: dict = {}
-        state = {key: previous[key] for key in ("counters", "loads", "cleared", "rules", "ruleset", "boot",
-                                                "sampled") if key in previous}
+        state = {key: previous[key] for key in ("counters", "loads", "cleared", "rules", "boot", "sampled")
+                 if key in previous}
     else:
         grown, state = sample_growth(config, sections, previous)
         state["sampled"] = now
@@ -373,12 +376,11 @@ def sample_growth(config, sections, previous):
     if cleared is None:
         sample.update({k: v for k, v in before.items() if k.startswith("if ")})
         cleared = previous.get("cleared") or {}
-    ruleset = ruleset_stamp()
     # cleared, e.g. by a reboot
     was = previous.get("cleared") or {}
     reset = {key for key in sample if key.startswith("if ")
              and was.get(key.split()[1], cleared.get(key.split()[1])) != cleared.get(key.split()[1])}
-    # resets: without Keep counters, a new pfctl pid (or rules.debug) per load; with it, a drop
+    # resets: without Keep counters, a new pfctl pid per load; with it, a drop
     # unless the label lost pf rules, or a reboot
     kept = bool(config.get("keepCounters"))
     boot = (boot_time() or previous.get("boot")) if kept else None
@@ -398,45 +400,57 @@ def sample_growth(config, sections, previous):
         shrunk = {f"rule {label}" for label, load in loads.items()
                   if None not in (rules_of(load), rules_of(loaded.get(label)))
                   and rules_of(load) < rules_of(loaded.get(label))}
-    elif any(pid_of(load) for load in loads.values()):
+    else:
         reset |= {f"rule {label}" for label, load in loads.items()
                   if pid_of(loaded.get(label, load)) != pid_of(load)}
-    elif ruleset != previous.get("ruleset"):
-        reset |= {key for key in sample if key.startswith("rule ")}
     grown = counter_growth(previous.get("counters"), sample, reset, previous.get("rules", False), shrunk)
     return grown, {"counters": sample, "loads": loads, "cleared": cleared, "rules": "firewall" in sections,
-                   "ruleset": ruleset, "boot": boot}
+                   "boot": boot}
 
 
 def system_health():
     """Uptime, memory and disk lines for a summary."""
     lines = []
-    output = command_output([SYSCTL, "kern.boottime", "hw.physmem", "vm.stats.vm.v_page_count",
-                             "vm.stats.vm.v_free_count", "vm.stats.vm.v_inactive_count",
-                             "vm.stats.vm.v_laundry_count", "kstat.zfs.misc.arcstats.size"],
-                            partial=True) or ""  # the ZFS name is missing on UFS
-    values = dict(line.split(": ", 1) for line in output.splitlines() if ": " in line)
+    values = sysctl_values("kern.boottime", "hw.physmem", "vm.stats.vm.v_page_count", "vm.stats.vm.v_free_count",
+                           "vm.stats.vm.v_inactive_count", "vm.stats.vm.v_cache_count",
+                           "vm.stats.vm.v_laundry_count", "kstat.zfs.misc.arcstats.size")
     booted = boot_seconds(values.get("kern.boottime"))
     if booted:
         lines.append(f"Up {duration(time.time() - booted)}")
     try:
         pages = int(values["vm.stats.vm.v_page_count"])
-        idle = sum(int(values.get(f"vm.stats.vm.v_{kind}_count", 0)) for kind in ("free", "inactive", "laundry"))
+        idle = sum(int(values.get(f"vm.stats.vm.v_{kind}_count", 0))
+                   for kind in ("free", "inactive", "cache", "laundry"))
         arc = int(values.get("kstat.zfs.misc.arcstats.size", 0))
-        # as the dashboard
-        lines.append(f"Memory {(pages - idle) * 100 // max(pages, 1)}% used of {size(int(values['hw.physmem']))}"
-                     + (f", ZFS cache {size(arc)}" if arc else ""))
+        physmem = int(values["hw.physmem"])
+        # as the dashboard's Memory widget: the ZFS cache apart from what is used, in its MB
+        used = (pages - idle) * physmem // max(pages, 1) - arc
+        lines.append(f"Memory {max(used, 0) * 100 // max(physmem, 1)}% used of {physmem // 1048576:,} MB"
+                     + (f", ZFS cache {arc // 1048576:,} MB" if arc else ""))
     except (KeyError, ValueError):
         pass
-    try:
-        disk = os.statvfs("/")
-        used = disk.f_blocks - disk.f_bfree
-        # as df
-        percent = -(-used * 100 // max(used + disk.f_bavail, 1))
-        lines.append(f"Disk {percent}% used of {size(disk.f_blocks * disk.f_frsize)}")
-    except OSError:
-        pass
+    disk = root_disk()
+    if disk is not None:
+        lines.append(f"Disk {disk[0]}% used of {disk[1]}")
     return lines
+
+
+def root_disk():
+    """(percent used, size) of / as the dashboard shows them, e.g. (12, "10G"), from core's
+    `system diag disk`, or None: df's own JSON up to 26.7, disk_info.py's devices after."""
+    disks = configctl_json("system", "diag", "disk")
+    if not isinstance(disks, dict):
+        return None
+    try:
+        for device in disks.get("devices") or []:
+            if device.get("mountpoint") == "/":
+                return int(device["used_pct"]), str(device["total"])
+        for found in (disks.get("storage-system-information") or {}).get("filesystem") or []:
+            if found.get("mounted-on") == "/":
+                return int(found["used-percent"]), str(found["blocks"])
+    except (AttributeError, TypeError, KeyError, ValueError):
+        pass
+    return None
 
 
 def current_status(config, now):
@@ -458,12 +472,8 @@ def current_status(config, now):
     down = [f"{names[d]} {s}" for d, s in links.items() if s not in LINK_UP]
     if links:
         lines.append(f"Links down: {', '.join(down)}" if down else f"{len(links)} of {len(links)} interface links up")
-    services = configctl_json("service", "list")
-    # as the Services widget; those core does not check always read as running
-    checked = [s for s in services if isinstance(s, dict) and not s.get("nocheck")] \
-        if isinstance(services, list) else []
-    stopped = [str(s.get("description") or s.get("name", "?")) for s in checked
-               if "is running" not in str(s.get("status", ""))]
+    checked = service_states() or []
+    stopped = [label for _, label, running in checked if not running]
     if stopped:
         listed = ", ".join(f"{n} ({stopped.count(n)})" if stopped.count(n) > 1 else n for n in sorted(set(stopped)))
         lines.append(f"Services: {len(checked) - len(stopped)} of {len(checked)} running; stopped: {listed}")
@@ -473,14 +483,11 @@ def current_status(config, now):
     if carp:
         lines.append(f"CARP: {', '.join(f'{carp.count(s)} {s}' for s in sorted(set(carp)))}")
     firmware = read_firmware()
-    try:
-        checked = clock(os.stat(FIRMWARE).st_mtime)
-    except OSError:
-        firmware = None
+    checked = str((firmware or {}).get("last_check") or "unknown")
     if firmware is not None and firmware.get("connection") != "ok":
         lines.append(f"Firmware: The last update check failed (checked {checked})")
     elif firmware is not None:
-        pending = len(firmware.get("upgrade_packages") or []) + len(firmware.get("new_packages") or [])
+        pending = len(firmware_changes(firmware))  # as the Firmware page counts them
         major = firmware.get("upgrade_major_version") or ""
         found = ", ".join(filter(None, [f"{pending} update(s) pending" if pending else "",
                                          f"{major} available" if major else ""])) or "Up to date"
@@ -682,7 +689,7 @@ def build_summary(config, channel, period, now, shared=None):
     if "health" in sections:
         part = section("System")
         health = list(once("health", system_health))
-        load = os.getloadavg()[0]
+        load = load_average()
         health.append(f"Load {load:.2f}, peak {max(peaks.get('load', 0), load):.2f}")
         if peaks.get("states") is not None:
             limit = peaks.get("statesLimit") or 0
@@ -716,6 +723,8 @@ def report_page(report, drawn, embed=True):
 def archive_report(report, uuid, schedule, when, manual=False):
     """Archive a summary; the oldest beyond the limit go. Its name, for the link to it."""
     name = f"{uuid}-{schedule}{'-now' if manual else ''}-{time.strftime('%Y%m%d-%H%M%S', time.localtime(when))}.html"
+    if not REPORT_NAME.fullmatch(name):
+        raise ValueError(f"not a report name: {name}")
     write_private(os.path.join(REPORTS_DIR, name), report_page(report, report_graphs(report)))
     kept, limit = 0, REPORTS_MANUAL if manual else REPORTS_KEEP.get(schedule, 0)
     for found in sorted(archived_reports(), key=lambda r: r["when"], reverse=True):
@@ -803,13 +812,14 @@ def draw_graph(spec, directory):
 
 
 def draw_series(spec, directory):
-    """A graph of core's health data, read with rrdtool fetch: {path, legend}, or None."""
+    """A graph of core's health data, read as Reporting: Health does: {path, legend}, or None."""
     filename, unit, series = GRAPH_KINDS[spec["kind"]]
-    rrd = os.path.join(RRD_DIR, filename.format(key=spec["key"]))
-    if not os.path.isfile(rrd):
-        log(syslog.LOG_WARNING, f"no {spec['title']} graph: {rrd} is missing; is health reporting on?")
+    rrd = filename.format(key=spec["key"])
+    data = configctl_json("health", "fetch", rrd)
+    if not isinstance(data, dict) or not data.get("sets"):
+        log(syslog.LOG_WARNING, f"no {spec['title']} graph: no {rrd} health data; is health reporting on?")
         return None
-    rows = rrd_fetch(rrd, int(spec["start"]), int(spec["end"]))
+    rows = health_rows(data, int(spec["start"]), int(spec["end"]))
     if rows is None:
         log(syslog.LOG_WARNING, f"no {spec['title']} graph: {rrd} could not be read")
         return None
@@ -836,26 +846,29 @@ def draw_series(spec, directory):
     return {"path": path, "legend": graph_legend(unit, lines)}
 
 
-def rrd_fetch(rrd, start, end):
-    """[(time, {source: value or None})] from an RRD, or None."""
-    output = command_output([RRDTOOL, "fetch", rrd, "AVERAGE", "-s", str(start), "-e", str(end)], timeout=60)
-    lines = [line for line in (output or "").splitlines() if line.strip()]
-    if len(lines) < 2:
+def health_rows(data, start, end):
+    """[(time, {source: value or None})] for start to end from core's `health fetch`, or None; as
+    rrdtool fetch, from the finest average that reaches back to start, else the longest."""
+    sets = [s for s in data.get("sets", []) if isinstance(s, dict) and s.get("step_size")]
+    if not sets:
         return None
-    names = lines[0].split()
-    rows = []
-    for line in lines[1:]:
-        stamp, sep, values = line.partition(":")
-        if not sep or not stamp.strip().isdigit():
-            continue
-        row = {}
-        for name, value in zip(names, values.split()):
-            try:
-                number = float(value)
-            except ValueError:
-                number = math.nan
-            row[name] = number if math.isfinite(number) else None  # nan, or inf from a counter wrap
-        rows.append((int(stamp), row))
+    last = int(data.get("lastupdate") or 0)
+
+    def first(entry):
+        return last // entry["step_size"] * entry["step_size"] - int(entry.get("recorded_time") or 0)
+
+    reaching = [s for s in sets if first(s) <= start]
+    chosen = min(reaching, key=lambda s: s["step_size"]) if reaching else min(sets, key=first)
+    step = chosen["step_size"]
+    columns = {}
+    for source in chosen.get("ds", []):
+        values = {}
+        for stamp, value in source.get("values", []):
+            number = value if isinstance(value, (int, float)) else math.nan
+            values[int(stamp) // 1000] = number if math.isfinite(number) else None  # a gap, or a counter wrap
+        columns[str(source.get("key", ""))] = values
+    stamps = range(max(start // step * step, first(chosen)), min(end, last) + 1, step)
+    rows = [(stamp, {name: values.get(stamp) for name, values in columns.items()}) for stamp in stamps]
     return rows if len(rows) > 1 else None
 
 

@@ -13,7 +13,7 @@
         <id>notify.general.interval</id>
         <label>Check interval</label>
         <type>dropdown</type>
-        <help>How often to look for events. Gateway alarms, CARP changes and startup arrive straight away whatever this is set to, as do Monit alerts when a test runs the check itself (see Monit services on a channel); everything else waits for the next check, so a longer interval delays it by that much. System Status is checked at most every 5 minutes and certificates hourly, either way.</help>
+        <help>How often to look for events. Gateway alarms, CARP changes and startup arrive straight away whatever this is set to, as do Monit alerts when a test runs the check itself (see Monit services on a channel); everything else waits for the next check, so a longer interval delays it by that much. System Status and firmware updates are checked at most every 5 minutes and certificates hourly, either way.</help>
     </field>
     <field>
         <id>notify.general.carpMasterOnly</id>

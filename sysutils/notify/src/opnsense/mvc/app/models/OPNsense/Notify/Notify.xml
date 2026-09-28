@@ -186,6 +186,7 @@
                     <firmware>Firmware updates</firmware>
                     <certificate>Certificate expiry</certificate>
                     <monit>Monit alerts</monit>
+                    <service>Service stopped</service>
                     <status>System Status</status>
                     <carp>CARP state</carp>
                     <wanip>WAN address changes</wanip>
@@ -218,6 +219,7 @@
                     <firmware>Firmware updates</firmware>
                     <certificate>Certificate expiry</certificate>
                     <monit>Monit alerts</monit>
+                    <service>Service stopped</service>
                     <status>System Status</status>
                     <carp>CARP state</carp>
                     <wanip>WAN address changes</wanip>

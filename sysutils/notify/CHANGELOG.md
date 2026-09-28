@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.5 - 2026-09-29
+
+- Service stopped event: a service down for 5 minutes, and back, as the Services widget shows it; not while booting or updating firmware, nor on a CARP standby.
+- A UPS status that cannot be read for a moment no longer hides its return to online.
+- A log message at a higher severity is sent even when the same text was sent within the hour.
+- Archived summaries of a deleted channel are removed within two checks, not only when a summary is due.
+- System data is read through core's own actions, as the dashboard reads it; memory and disk use in summaries match the dashboard.
+- UPS power reads the UPS the apcupsd or NUT plugin is set up for, and only while that plugin is enabled.
+- Firmware updates list reinstalls, downgrades and obsolete packages too, as the Firmware page does.
+
 ## 1.4_6 - 2026-09-28
 
 - Processor and state table graphs are drawn in a single color, like the interface graphs.

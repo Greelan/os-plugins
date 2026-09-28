@@ -137,6 +137,19 @@ foreach ($config->interfaces->children() ?? [] as $name => $interface) {
 
 $monit = new Monit();
 
+/* a UPS as its plugin's own status page asks for it: apcupsd when enabled, NUT by name@host */
+$ups = ['apcupsd' => false, 'nut' => ''];
+if (class_exists('\\OPNsense\\Apcupsd\\Apcupsd')) {
+    $ups['apcupsd'] = (string)(new \OPNsense\Apcupsd\Apcupsd())->general->Enabled === '1';
+}
+if (class_exists('\\OPNsense\\Nut\\Nut')) {
+    $nut = new \OPNsense\Nut\Nut();
+    if ((string)$nut->general->enable === '1') {
+        $ups['nut'] = ((string)$nut->general->name ?: 'UPSName') . '@' .
+            ((string)$nut->netclient->address ?: '127.0.0.1');
+    }
+}
+
 echo json_encode([
     'revision' => [
         'time' => (string)($config->revision->time ?? ''),
@@ -167,6 +180,7 @@ echo json_encode([
     'keepCounters' => !empty((string)($config->system->keepcounters ?? '')),
     /* Reporting: Health, which the summary graphs draw on; as core decides whether to collect */
     'healthReporting' => !(new SystemHealth())->enabled->isEmpty(),
+    'ups' => $ups,
     'monit' => [
         'username' => trim((string)$monit->general->httpdUsername),
         'password' => trim((string)$monit->general->httpdPassword),

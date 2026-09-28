@@ -66,9 +66,10 @@ import xml.etree.ElementTree as ET
 # works with whichever Python the OPNsense series ships
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
 
-from common import (LINK_UP, addresses, carp_states, clock, command_output, configctl_json, duration,  # noqa: E402
-                    ifconfig, link_states, log, message, pf_states, quiet, read_firmware, setting,
-                    stale_tmp, write_private)
+from common import (FIRMWARE_CHANGES, LINK_UP, addresses, carp_states, carp_vhids, clock,  # noqa: E402
+                    command_output, configctl, configctl_json, duration, firmware_changes,
+                    firmware_product, interfaces, link_states, log, message, pf_states, quiet,
+                    read_firmware, service_states, setting, stale_tmp, system_status, write_private)
 from summary import (REPORT_NAME, REPORTS_DIR, SAMPLE_SECONDS, SUMMARY_TRIES, add_events,  # noqa: E402
                      archive_report, archived_reports, build_summary, prune_archive, monit_allowed, remove_report,
                      report_graphs, report_page, standby_periods, subscribed, summary_channels, update_summaries)
@@ -77,12 +78,13 @@ CONFIG = "/conf/config.xml"
 STATE = "/var/db/notify/state.json"
 SETTINGS_CACHE = "/var/db/notify/settings.json"
 SETTINGS_SCRIPT = "/usr/local/opnsense/scripts/OPNsense/Notify/settings.php"
-SETTINGS_FORMAT = 4
+SETTINGS_FORMAT = 5
+# everything else comes through configd; these have no action to ask. Monit's status is read from
+# its socket as core's Monit status page does, and logs are followed on from where the last check
+# stopped, which core's log query cannot do
 MONIT_SOCKET = "/var/run/monit.sock"
 AUDIT_LOG = "/var/log/audit"
 IDS_LOG = "/var/log/suricata/eve.json"
-APCACCESS = "/usr/local/sbin/apcaccess"
-UPSC = "/usr/local/bin/upsc"
 # battery faults, as NUT's flags are spelled out below and as apcupsd reports them
 UPS_FAULTS = ("low battery", "replace", "lowbatt")
 # NUT's flags, spelled out (apcupsd already reports words)
@@ -126,6 +128,8 @@ FILE_LABELS = {
 }
 KEY_MARKER = "stored"
 KEY_DIR = "/var/db/notify/keys"
+# a model UUID, as it names the channel's files
+CHANNEL_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 KEY_MAX = 64 * 1024
 # recorded state older than this predates a pause (disabled, or the firewall was off),
 # so it is dropped rather than compared against
@@ -192,6 +196,14 @@ MONIT_EVENTS = (
 MONIT_MONITOR_YES = 0x1
 MONIT_MONITOR_INIT = 0x2
 
+# a service is reported once it has been stopped this long, over two checks at least; restarts,
+# e.g. on Apply, take seconds
+SERVICE_HOLD = 300
+# checks run on a whole interval but not to the second, so a hold that should end on one does
+SERVICE_SLACK = 30
+# a stop first seen this soon after boot, and not seen running since, is one after boot
+SERVICE_BOOT = 1800
+
 # System Status codes (OPNsense\System\SystemStatusCode)
 STATUS_LEVELS = {"error": -1, "warning": 0, "notice": 1}
 STATUS_TYPES = {-1: "failure", 0: "warning", 1: "info"}
@@ -248,12 +260,12 @@ def load_state():
 
 
 def fresh_state():
-    """The recorded state, keeping only the queue and summary data once it is too old to compare
-    against."""
+    """The recorded state, keeping only the queue, summary and service data once it is too old to
+    compare against; stopped services then still get their end."""
     state = load_state()
     if int(time.time()) - state.get("stamp", 0) > STALE_SECONDS:
         # queued items expire on their own
-        state = {key: state[key] for key in ("queue", "summary") if key in state}
+        state = {key: state[key] for key in ("queue", "summary", "service") if key in state}
     return state
 
 
@@ -469,27 +481,30 @@ def check_config(config, previous):
 
 
 def check_firmware(config, previous):
+    """Firmware changes a check found; read at most every STATUS_INTERVAL, as core's product script
+    runs several commands. {"key": what was found, "checked": when}."""
+    previous = previous if isinstance(previous, dict) else {"key": previous or ""}  # a key alone before
+    now = int(time.time())
+    if now - previous.get("checked", 0) < STATUS_INTERVAL:
+        return previous, []
     data = read_firmware()
-    if data is None:
-        return previous, []
-    if data.get("connection") != "ok":
-        return previous, []
-    upgrades = data.get("upgrade_packages") or []
-    new = data.get("new_packages") or []
+    if data is None or data.get("connection") != "ok":
+        return dict(previous, checked=now), []
+    changes = firmware_changes(data)
     major = data.get("upgrade_major_version") or ""
-    key = json.dumps([sorted(f"{p.get('name')}-{p.get('new_version', p.get('version'))}" for p in upgrades + new),
-                      major]) if upgrades or new or major else ""
-    if not key or key == previous:
-        return key, []
-    packages = [f"{p.get('name')} {p.get('current_version')} -> {p.get('new_version')}" for p in upgrades]
-    packages += [f"{p.get('name')} {p.get('version')} (new)" for p in new]
-    lines = packages if len(packages) <= FIRMWARE_PACKAGES else \
-        [f"{len(upgrades)} package upgrade(s), {len(new)} new package(s)."]
+    key = json.dumps([sorted(k for k, _, _ in changes), major]) if changes or major else ""
+    state = {"key": key, "checked": now}
+    if not key or key == previous.get("key"):
+        return state, []
+    reasons = [reason for _, _, reason in changes]
+    lines = [line for _, line, _ in changes] if len(changes) <= FIRMWARE_PACKAGES else \
+        [f"{len(changes)} package changes: " + ", ".join(f"{reasons.count(r)} {r}" for _, r in FIRMWARE_CHANGES
+                                                       if r in reasons) + "."]
     if major:
         lines.append(f"Major upgrade to {major} is available.")
     if data.get("upgrade_needs_reboot") == "1" or data.get("needs_reboot") == "1":
         lines.append("The update requires a reboot.")
-    return key, [message("firmware", "info", "Firmware updates are available", "\n".join(lines))]
+    return state, [message("firmware", "info", "Firmware updates are available", "\n".join(lines))]
 
 
 def check_auth(config, previous):
@@ -548,8 +563,8 @@ def check_status(config, previous):
     now = int(time.time())
     if now - previous.get("checked", 0) < STATUS_INTERVAL:
         return previous, []
-    data = configctl_json("system", "status")
-    if not isinstance(data, dict):
+    data = system_status()
+    if data is None:
         return previous, []
     seen = previous.get("items")
     threshold = STATUS_LEVELS.get(config["general"].get("statusLevel", "warning"), 0)
@@ -634,12 +649,112 @@ def check_monit(config, previous):
     return current, messages
 
 
+def booting_or_updating():
+    """Booting, as System Status reports it, or a firmware action running, as the Firmware page asks."""
+    return "systembooting" in (system_status() or {}) or \
+        (configctl("firmware", "running") or "").strip() == "busy"
+
+
+def check_service(config, previous):
+    """Services stopped for SERVICE_HOLD, as the Services widget shows them; not while booting or
+    running a firmware action, on a CARP standby or just after a role change. The hold runs on
+    uptime, which a clock step does not move."""
+    services = service_states()
+    if not services:
+        return previous, []  # unread, or empty for a moment: a firewall always has services
+    now, uptime = int(time.time()), time.monotonic()
+    previous = previous or {}
+    # timing carries on from a recent check only; after a reboot, a pause or a lost state, a stop
+    # not yet reported is timed again
+    continuous = "uptime" in previous and 0 <= uptime - previous["uptime"] <= STALE_SECONDS
+    carp = carp_states()
+    role = "master" if "MASTER" in carp else ("standby" if "BACKUP" in carp else "")
+    hold_until = previous.get("hold", 0.0) if continuous else 0.0
+    if continuous and previous.get("role", "") != role:
+        hold_until = uptime + SERVICE_HOLD
+    # with CARP master only, what this node finds is not sent, so nothing is marked either; and a
+    # standby may stop services with its role, e.g. OpenVPN instances bound to CARP, so reports none
+    unsent = is_carp_backup(config)
+    silent = role == "standby" or unsent
+    known = previous.get("services", {})
+    if not continuous:
+        # uptime may have started over, so a reported stop is timed by the clock from here
+        known = {k: dict(v, carried=True) if v.get("reported") else v for k, v in known.items()}
+    # ends of reported stops that came while nothing was sent: {key: (label, seconds stopped)}
+    ended = dict(previous.get("ended", {}))
+    probed = None
+
+    def busy():
+        """Asked only while a stop is being timed, and once."""
+        nonlocal probed
+        if probed is None:
+            probed = booting_or_updating()
+        return probed
+
+    def stopped_for(entry):
+        return now - entry["at"] if entry.get("carried") else uptime - entry["down"]
+
+    current: dict = {}
+    messages: list = []
+    for key, label, running in services:
+        last = known.get(key) or {}
+        if last.get("reported") and running:
+            ended[key] = (label, stopped_for(last))
+            last = {}
+        if running:
+            current[key] = {"running": True}
+            continue
+        if last.get("reported") or (continuous and last and not last.get("running")):
+            entry = dict(last)
+        else:
+            # not seen running since boot: it may not have started, or stopped before a check
+            boot = uptime < SERVICE_BOOT and not (continuous and last.get("running"))
+            entry = {"down": uptime, "since": uptime, "at": now, "seen": 0, "boot": boot, "late": not continuous,
+                     "label": label}
+        entry["seen"] += 1
+        entry.pop("missing", None)
+        if entry.get("reported"):
+            current[key] = entry
+            continue
+        if busy():
+            entry["since"] = uptime  # the hold starts over once done; the stop keeps its time
+        elif not silent and entry["seen"] >= 2 and uptime >= hold_until - SERVICE_SLACK \
+                and uptime - entry["since"] >= SERVICE_HOLD - SERVICE_SLACK:
+            entry["reported"] = True
+            if entry["boot"]:
+                title = f"{label} is not running after boot"
+                body = f"Not seen running since the boot at {clock(now - uptime)}."
+            else:
+                title = f"{label} has stopped"
+                body = f"Stopped since {clock(now - stopped_for(entry))}{' or earlier' if entry['late'] else ''}."
+            messages.append(message("service", "failure", title, body, {"service": label}))
+        current[key] = entry
+    for key, entry in known.items():
+        if key in current or key in ended or not entry.get("reported"):
+            continue
+        if unsent:
+            current[key] = entry
+        elif not entry.get("missing"):
+            current[key] = dict(entry, missing=True)  # one read without it may be a list half made
+        else:
+            # disabled, removed, or an instance renamed: say so, rather than leave it open
+            messages.append(dict(message("service", "info", f"{entry.get('label', key)} is no longer listed",
+                                         f"Stopped for {duration(stopped_for(entry))}, then removed from the "
+                                         "services."), note=True))
+    if not unsent:
+        # sent, not counted again in summaries; an earlier stop's end before any new stop
+        messages[:0] = [dict(message("service", "success", f"{label} is running again",
+                                     f"Stopped for {duration(stopped)}."), note=True) for label, stopped in ended.values()]
+        ended = {}
+    return {"role": role, "hold": hold_until, "services": current, "ended": ended, "uptime": uptime}, messages
+
+
 def is_carp_backup(config, unknown=True):
     """True when this firewall has CARP virtual IPs and none of them is master; unknown when
-    ifconfig could not be read."""
+    the interfaces could not be read."""
     if config["general"].get("carpMasterOnly", "0") != "1":
         return False
-    if ifconfig() is None:
+    if interfaces() is None:
         return unknown
     states = carp_states()
     return bool(states) and "MASTER" not in states
@@ -739,24 +854,28 @@ def check_syslog(config, previous):
                 found[key] = found.get(key, 0) + 1
     # repeats within the hold are counted, not sent
     seen = {k: t for k, t in previous.get("seen", {}).items() if now - t < SYSLOG_HOLD}
+    # the most severe sent of each; 0 for one seen before this was kept, so it is held as then
+    levels = {k: v for k, v in previous.get("levels", {}).items() if k in seen}
     messages: list = []
     extra: list = []
     sent = 0
     for (name, program, text, severity), count in sorted(found.items(), key=lambda kv: kv[0][3]):
         repeat = f"{program}\t{text}"[:300]
+        held = repeat in seen and severity >= levels.get(repeat, 0)
         body = f"{SEVERITIES[severity].capitalize()} in the {name} log: {text}"
         if count > 1:
             body += f"\n(Logged {count} times.)"
         found_now = dict(message("syslog", "failure" if severity <= 2 else "warning", f"{program}: {text[:100]}",
                                  body, {"program": program}), count=count)
-        if repeat in seen or sent >= LOG_MESSAGES:
-            if repeat not in seen:
+        if held or sent >= LOG_MESSAGES:
+            if not held:
                 extra.append(f"{program}: {text[:100]}")
             messages.append(dict(found_now, quiet=True))
         else:
             messages.append(found_now)
             sent += 1
-        seen.setdefault(repeat, now)
+        if not held:
+            seen[repeat], levels[repeat] = now, severity
     if extra:
         messages.append(dict(message("syslog", "warning", f"{len(extra)} more log messages", "\n".join(extra)),
                              note=True))
@@ -768,7 +887,7 @@ def check_syslog(config, previous):
     # bounded against floods of differing lines
     if len(seen) > SEEN_MAX:
         seen = dict(sorted(seen.items(), key=lambda kv: kv[1])[-SEEN_MAX:])
-    return {"files": files, "seen": seen}, messages
+    return {"files": files, "seen": seen, "levels": {k: v for k, v in levels.items() if k in seen}}, messages
 
 
 def check_device(config, previous):
@@ -821,22 +940,15 @@ def check_ids(config, previous):
 
 def check_carp(config, previous):
     names = config.get("interfaces", {})
-    current, messages, device = {}, [], None
-    for line in (ifconfig() or "").splitlines():
-        match = re.match(r"^(\S+): flags=", line)
-        if match:
-            device = match.group(1)
-            continue
-        match = re.match(r"^\s+carp: (\S+) vhid (\d+)", line)
-        if not match or device is None:
-            continue
-        key = f"{match.group(2)}@{device}"
-        current[key] = match.group(1)
+    current, messages = {}, []
+    for device, vhid, state in carp_vhids():
+        key = f"{vhid}@{device}"
+        current[key] = state
         last = (previous or {}).get(key)
         if previous is None or last is None or last == current[key]:
             continue
         ntype = "info" if current[key] == "MASTER" else "warning"
-        title = f"CARP vhid {match.group(2)} on {names.get(device, device)} is now {current[key]}"
+        title = f"CARP vhid {vhid} on {names.get(device, device)} is now {current[key]}"
         messages.append(message("carp", ntype, title, f"Changed from {last}."))
     return current, messages
 
@@ -887,11 +999,12 @@ def check_states(config, previous):
     return current, [message("states", "success", "Firewall state table is back to normal", detail)]
 
 
-def ups_status():
-    """(name, state, detail) per UPS, from apcupsd or NUT, whichever is installed."""
+def ups_status(config):
+    """(name, state, detail) per UPS, from the apcupsd or NUT plugin, as its own status page asks."""
     found = []
-    if os.access(APCACCESS, os.X_OK):
-        output = command_output([APCACCESS, "status"]) or ""
+    ups = config.get("ups") or {}
+    if ups.get("apcupsd"):
+        output = configctl("apcupsd", "upsstatus") or ""
         values = dict(line.split(":", 1) for line in output.splitlines() if ":" in line)
         values = {k.strip().upper(): v.strip() for k, v in values.items()}
         if values.get("STATUS"):
@@ -901,31 +1014,27 @@ def ups_status():
                 f"input {values['LINEV']}" if values.get("LINEV") else "",
             ]))
             found.append((values.get("UPSNAME") or "UPS", values["STATUS"].lower(), detail))
-    if os.access(UPSC, os.X_OK):
-        try:
-            listed = command_output([UPSC, "-l"]) or ""
-            for name in [n.strip() for n in listed.splitlines() if n.strip()]:
-                output = command_output([UPSC, name]) or ""
-                values = dict(line.split(":", 1) for line in output.splitlines() if ":" in line)
-                values = {k.strip(): v.strip() for k, v in values.items()}
-                flags = [UPS_FLAGS.get(f, f) for f in values.get("ups.status", "").split()]
-                if not flags:
-                    continue
-                detail = ", ".join(filter(None, [
-                    f"battery {values['battery.charge']}%" if values.get("battery.charge") else "",
-                    f"{int(values['battery.runtime']) // 60} min left"
-                    if values.get("battery.runtime", "").isdigit() else "",
-                ]))
-                found.append((name, " ".join(flags), detail))
-        except ValueError:
-            pass
+    if ups.get("nut"):
+        # name@host, as NUT's own status page asks
+        output = configctl("nut", "upsstatus", str(ups["nut"])) or ""
+        values = dict(line.split(":", 1) for line in output.splitlines() if ":" in line)
+        values = {k.strip(): v.strip() for k, v in values.items()}
+        flags = [UPS_FLAGS.get(f, f) for f in values.get("ups.status", "").split()]
+        if flags:
+            detail = ", ".join(filter(None, [
+                f"battery {values['battery.charge']}%" if values.get("battery.charge") else "",
+                f"{int(values['battery.runtime']) // 60} min left"
+                if values.get("battery.runtime", "").isdigit() else "",
+            ]))
+            found.append((str(ups["nut"]).partition("@")[0], " ".join(flags), detail))
     return found
 
 
 def check_ups(config, previous):
     """Power state from apcupsd or NUT, when either is installed."""
-    current, messages = {}, []
-    for name, state, detail in ups_status():
+    # one not read, e.g. its daemon restarting, keeps its state, so its change still shows
+    current, messages = dict(previous or {}), []
+    for name, state, detail in ups_status(config):
         current[name] = state
         last = (previous or {}).get(name)
         if previous is None or last is None or last == state:
@@ -949,6 +1058,7 @@ COLLECTORS = (
     ("firmware", check_firmware),
     ("certificate", check_certificate),
     ("monit", check_monit),
+    ("service", check_service),
     ("status", check_status),
     ("carp", check_carp),
     ("wanip", check_wanip),
@@ -1015,10 +1125,13 @@ def with_key_files(channel):
     parts = []
     for part in query.split("&") if sep else []:
         key, eq, value = part.partition("=")
-        if eq and key.lower() in args and value == KEY_MARKER:
+        key = urllib.parse.unquote_plus(key)
+        if eq and key.lower() in args and urllib.parse.unquote_plus(value) == KEY_MARKER:
             content = files.get(key.lower())
             if not isinstance(content, str) or content == "":
                 raise ValueError(f"The file for {key} is not stored with this channel; paste it again.")
+            if not CHANNEL_ID.fullmatch(channel["uuid"]):
+                raise ValueError("The channel's ID is not valid.")
             path = os.path.join(KEY_DIR, f"{channel['uuid']}-{key.lower()}")
             write_private(path, content, only_changed=True)
             part = f"{key}={urllib.parse.quote(path, safe='')}"
@@ -1034,7 +1147,7 @@ def prune_key_files(channels):
         return
     if not names:
         return  # most checks: no need to load Apprise's services
-    wanted = {f"{c['uuid']}-{key}" for c in channels if f"={KEY_MARKER}" in c.get("url", "")
+    wanted = {f"{c['uuid']}-{key}" for c in channels if f"={KEY_MARKER}" in urllib.parse.unquote_plus(c.get("url", ""))
               for key in stored_file_args(c.get("url", ""))}
     for name in names:
         if name not in wanted and not (name.endswith(".tmp") and not stale_tmp(os.path.join(KEY_DIR, name))):
@@ -1218,15 +1331,18 @@ def run_check():
             os.remove(STATE)
         return
     config, general, channels, hostname = prepared
-    if ifconfig() is None:
+    if interfaces() is None:
         # links, addresses and CARP would read as gone
-        log(syslog.LOG_ERR, "ifconfig could not be read; check skipped")
+        log(syslog.LOG_ERR, "interfaces could not be read; check skipped")
         return
     prune_key_files(config["channels"])
     events = subscribed(channels)
     state = fresh_state()
     now = int(time.time())
-    new_state: dict = {"stamp": now}
+    new_state: dict = {"stamp": now, "channel_ids": sorted(c["uuid"] for c in config["channels"])}
+    if "channel_ids" in state:
+        # gone from two reads in a row, so not a list read half made
+        prune_archive(set(new_state["channel_ids"]) | set(state["channel_ids"]))
     messages: list = []
     for event, collector in COLLECTORS:
         if event not in events:
@@ -1234,7 +1350,7 @@ def run_check():
         try:
             new_state[event], found = collector(config, state.get(event))
         except Exception as exc:
-            log(syslog.LOG_ERR, f"{event} check failed: {exc}")
+            log(syslog.LOG_ERR, f"{event} check failed: {exc!r}")
             new_state[event], found = state.get(event), []
         messages.extend(found)
     if is_carp_backup(config):
@@ -1272,8 +1388,6 @@ def run_check():
                 continue
             log(syslog.LOG_ERR, f"summary for {name} failed, trying again next check: {exc}")
             summary["channels"][channel["uuid"]] = dict(period, tries=tries)
-    if due:
-        prune_archive({c["uuid"] for c in config["channels"]})
     new_state["summary"] = summary
     new_state["queue"] = send(channels, title_prefix(general, hostname), messages,
                               state.get("queue", []) + summaries, threshold)
@@ -1288,7 +1402,7 @@ def run_boot():
     if is_carp_backup(config, unknown=False):  # a startup notice twice beats none
         return
     state = fresh_state()
-    version = (command_output(["/usr/local/sbin/opnsense-version", "-v"]) or "").strip()
+    version = str(firmware_product().get("product_version") or "").strip()
     body = f"Running OPNsense {version}." if version else ""
     found = [message("boot", "info", "Firewall has started", body)]
     periods = (state.get("summary") or {}).get("channels") or {}
@@ -1395,7 +1509,7 @@ def run_summary(uuid):
         return {"status": "failed", "message": "This channel has no summary."}
     if config["general"].get("enabled", "0") != "1" or channel.get("enabled", "0") != "1":
         return {"status": "failed", "message": "Enable Notify and this channel first."}
-    if ifconfig() is None:
+    if interfaces() is None:
         return {"status": "failed", "message": "The interfaces could not be read; try again."}
     if is_carp_backup(config):
         return {"status": "failed", "message": "This firewall is the CARP standby; the master sends summaries."}
@@ -1674,9 +1788,12 @@ def run_parse(path):
     """Fields for a URL the user pasted, so the dialog can fill itself in."""
     try:
         with open(path) as handle:
-            url = str(json.load(handle).get("url") or "").strip()
+            request = json.load(handle)
     except (OSError, ValueError):
         return {"error": "The request could not be read."}
+    if not isinstance(request, dict):
+        return {"error": "The request could not be read."}
+    url = str(request.get("url") or "").strip()
     if not url:
         return {"error": "Enter an Apprise URL to import."}
     plugin, error = check_url(url)
@@ -1840,6 +1957,8 @@ def run_build(path):
         with open(path) as handle:
             request = json.load(handle)
     except (OSError, ValueError):
+        return {"error": "The request could not be read.", "field": "channel.url"}
+    if not isinstance(request, dict) or not isinstance(request.get("fields") or {}, dict):
         return {"error": "The request could not be read.", "field": "channel.url"}
     uuid = str(request.get("uuid") or "")
     channel = saved_channel(uuid)
