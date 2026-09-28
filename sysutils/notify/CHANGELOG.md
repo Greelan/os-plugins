@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4_6 - 2026-09-28
+
+- Processor and state table graphs are drawn in a single color, like the interface graphs.
+
 ## 1.4_5 - 2026-09-28
 
 - Summary graphs setting: none, the busiest interface, the 3 busiest (the default, now for blocks as well as traffic) or all.

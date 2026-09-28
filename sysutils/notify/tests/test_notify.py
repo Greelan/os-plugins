@@ -685,7 +685,7 @@ class SummaryTiming(unittest.TestCase):
         self.assertEqual(calls[0][1:4], ["fetch", os.path.join(rrd, "wan-packets.rrd"), "AVERAGE"])
         self.assertEqual(image[:8], b"\x89PNG\r\n\x1a\n")
         self.assertEqual(chart.struct.unpack(">II", image[16:24]), chart.GRAPH_SIZE)
-        self.assertEqual(graph["legend"], [("In", "#e15759", "peak 30 packets/s, average 22 packets/s", "fill"),
+        self.assertEqual(graph["legend"], [("In", "#e15759", "peak 30 packets/s, average 22 packets/s", "area"),
                                            ("Out", "#76b7b2", "peak 5 packets/s, average 4 packets/s", "line")],
                          "IPv4 and IPv6 added")
 
@@ -838,14 +838,14 @@ class SummaryEmail(unittest.TestCase):
         self.assertIn("<em>(Delayed: this happened at 07:00.)</em>", body)
 
     def test_escaped_with_graphs_in_their_section(self):
-        body = summary.summary_html(self.REPORT, {"cpu-system.png": {"path": "/tmp/x", "legend": [("", "#4e79a7", "<peak>", "fill")]}})
+        body = summary.summary_html(self.REPORT, {"cpu-system.png": {"path": "/tmp/x", "legend": [("", "#4e79a7", "<peak>", "area")]}})
         self.assertIn("Failed login for &lt;b&gt;x&lt;/b&gt;", body)
         self.assertIn('<img src="cid:cpu-system.png"', body)
         self.assertIn("&#9632;</span>&nbsp;&lt;peak&gt;</small>", body)
-        legend = {"path": "/tmp/x", "legend": [("In", "#4e79a7", "peak 2 bit/s, average 1 bit/s", "fill"),
+        legend = {"path": "/tmp/x", "legend": [("In", "#4e79a7", "peak 2 bit/s, average 1 bit/s", "area"),
                                                                ("Out", "#e15759", "peak <1>, average 0", "line")]}
         body = summary.summary_html(self.REPORT, {"cpu-system.png": legend})
-        self.assertIn('<span style="color:#4e79a7">&#9632;</span>&nbsp;In peak 2 bit/s', body)
+        self.assertIn(f'<span style="color:#4e79a7;opacity:{chart.AREA_SHADE}">&#9632;</span>&nbsp;In peak 2 bit/s', body)
         self.assertIn('<span style="color:#e15759">&#9473;</span>&nbsp;Out peak &lt;1&gt;', body,
                       "a line's swatch is a bar, kept with its label")
         self.assertNotIn("cid:", summary.summary_html(self.REPORT, {}), "a graph not drawn is left out")

@@ -830,10 +830,10 @@ def draw_series(spec, directory):
     os.makedirs(directory, exist_ok=True)
     path = os.path.join(directory, spec["name"])
     with open(path, "wb") as handle:
-        handle.write(chart_png([(values, color, filled, "color" not in spec)
-                                for _, values, color, filled in lines],
+        # areas without an outline, so each series is one color
+        handle.write(chart_png([(values, color, filled, False) for _, values, color, filled in lines],
                                day_marks(stamps[0], stamps[-1])))
-    return {"path": path, "legend": graph_legend(unit, lines, "color" in spec)}
+    return {"path": path, "legend": graph_legend(unit, lines)}
 
 
 def rrd_fetch(rrd, start, end):
@@ -872,14 +872,13 @@ def rate(value, unit):
     return ""
 
 
-def graph_legend(unit, lines, areas=False):
-    """[(label, color, figures, look)] per series with data; look is "line", "fill", or "area" for a
-    fill without its outline."""
+def graph_legend(unit, lines):
+    """[(label, color, figures, look)] per series with data; look is "area" or "line"."""
     legend = []
     for label, values, color, filled in lines:
         known = [v for v in values if v is not None]
         if known:
-            look = ("area" if areas else "fill") if filled else "line"
+            look = "area" if filled else "line"
             legend.append((label if len(lines) > 1 else "", color,
                            f"peak {rate(max(known), unit)}, average {rate(sum(known) / len(known), unit)}", look))
     return legend
@@ -890,10 +889,9 @@ MAIL_CLASS = ' class="mail"'
 
 
 def graph_caption_html(title, graph):
-    """Each series' figures after a swatch of it: a bar for a line, a square for an area, shaded as
-    drawn when it has no outline."""
+    """Each series' figures after a swatch of it: a bar for a line, a square shaded as its area."""
     legend = graph.get("legend") or []
-    marks = {"line": ("&#9473;", ""), "fill": ("&#9632;", ""), "area": ("&#9632;", f";opacity:{AREA_SHADE}")}
+    marks = {"line": ("&#9473;", ""), "area": ("&#9632;", f";opacity:{AREA_SHADE}")}
     # a no-break space keeps each swatch with its label
     parts = [f'<span style="color:{html.escape(color)}{marks[look][1]}">{marks[look][0]}</span>&nbsp;'
              + html.escape(f"{label} {figures}" if label else figures) for label, color, figures, look in legend]
