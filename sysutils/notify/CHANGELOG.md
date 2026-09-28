@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4_4 - 2026-09-28
+
+- Summary reports follow dark mode, charts included, where the browser or mail app supports it.
+- On a phone, summary reports fit the screen and keep their text sizes: long values wrap and pie charts sit above their tables.
+
 ## 1.4_3 - 2026-09-27
 
 - The summary's current status lists stopped services, as the Services widget shows them.

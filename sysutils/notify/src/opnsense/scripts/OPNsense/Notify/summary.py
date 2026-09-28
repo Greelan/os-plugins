@@ -44,7 +44,7 @@ import syslog
 import tempfile
 import time
 
-from chart import PIE_COLORS, PIE_OTHER, PIE_SIZE, chart_png, day_marks, donut_png
+from chart import GRAPH_SIZE, PIE_COLORS, PIE_OTHER, PIE_SIZE, chart_png, day_marks, donut_png
 from common import (FIRMWARE, LINK_UP, PFCTL, SYSCTL, addresses, carp_states, clock, command_output,
                     configctl_json, duration, link_states, log, message, pf_states, read_firmware, setting,
                     size, stale_tmp, write_private)
@@ -81,6 +81,25 @@ REPORTS_MANUAL = 10  # sent by hand, per channel
 REPORT_NAME = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-(daily|weekly|monthly)(-now)?"
                          r"-(\d{8}-\d{6})\.html")
 GRAPHS: dict = {}  # drawn once per run, by spec
+# on top of the inline styles, for readers that take a style sheet: no text boosting (a phone
+# otherwise enlarges some blocks and not others, even captions), a narrow screen stacks a pie
+# over its table, and dark mode
+TEXT_AS_IS = "-webkit-text-size-adjust:100%;text-size-adjust:100%"
+REPORT_STYLE = f""":root{{color-scheme:light dark;supported-color-schemes:light dark}}
+html,body,.nr{{{TEXT_AS_IS}}}
+@media (max-width:540px){{
+.nr .pie,.nr .rows{{display:block!important;width:auto!important}}
+.nr .pie{{padding:0 0 8px!important}}
+.nr .label{{padding-right:12px!important}}
+.mail{{margin:0!important}}
+}}
+@media (prefers-color-scheme:dark){{
+.nr,.nr h2,.nr h3{{color:#e8e8e8!important}}
+.nr h3{{border-color:#444!important}}
+.nr h4,.nr th,.nr .muted{{color:#b0b0b0!important}}
+.nr th{{border-color:#555!important}}
+.nr .late{{color:#e0a040!important}}
+}}"""
 # kind: (RRD file, unit, [(label, sources, factor, color, filled)]); bytes shown as bits
 GRAPH_KINDS: dict = {
     "traffic": ("{key}-traffic.rrd", "bits", [("In", ("inpass", "inpass6"), 8, "#4e79a7", True),
@@ -661,12 +680,15 @@ def build_summary(config, channel, period, now, shared=None):
                 report={"title": title, "host": host, "span": span, "sections": report, "note": note})
 
 
-def report_page(report, drawn):
-    """The report as a page, graphs included."""
+def report_page(report, drawn, embed=True):
+    """The report as a page: graphs in it, or with embed off, by reference for email."""
     title = html.escape(" · ".join(filter(None, [report["title"], report.get("host")])))
     return (f'<!doctype html>\n<html><head><meta charset="utf-8"><title>{title}</title>'
-            f'<meta name="viewport" content="width=device-width, initial-scale=1"></head>'
-            f'<body style="margin:16px">{summary_html(report, drawn, embed=True)}</body></html>\n')
+            f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+            f'<meta name="color-scheme" content="light dark"><style>{REPORT_STYLE}</style></head>'
+            # a phone's mail app pads the message itself
+            f'<body{"" if embed else MAIL_CLASS} style="margin:16px;{TEXT_AS_IS}">'
+            f'{summary_html(report, drawn, embed)}</body></html>\n')
 
 
 def archive_report(report, uuid, schedule, when, manual=False):
@@ -835,10 +857,15 @@ def graph_legend(unit, lines):
     return legend
 
 
+LABEL_CLASS = ' class="label"'
+MAIL_CLASS = ' class="mail"'
+
+
 def graph_caption_html(title, graph):
     """Each series' figures after a swatch of its color."""
     legend = graph.get("legend") or []
-    parts = [f'<span style="color:{html.escape(color)}">&#9632;</span> '
+    # a no-break space keeps each swatch with its label
+    parts = [f'<span style="color:{html.escape(color)}">&#9632;</span>&nbsp;'
              + html.escape(f"{label} {figures}" if label else figures) for label, color, figures in legend]
     return f"{html.escape(title)}: " + "; ".join(parts)
 
@@ -855,14 +882,16 @@ def summary_html(report, drawn, embed=False):
     heading = "font-size:16px;margin:28px 0 8px;padding-bottom:4px;border-bottom:1px solid #d0d0d0;color:#222"
     subheading = "font-size:14px;margin:18px 0 6px;color:#444"
     th = "padding:4px 12px 4px 0;border-bottom:1px solid #c8c8c8;color:#555;font-weight:600;text-align:{}"
-    td = "padding:3px 12px 3px 0;vertical-align:top;text-align:{}"
-    out = [f'<div style="{font};font-size:14px;color:#222;max-width:720px">',
+    # long values, e.g. IPv6 addresses, wrap rather than widen the page
+    td = "padding:3px 12px 3px 0;vertical-align:top;overflow-wrap:anywhere;word-break:break-word;text-align:{}"
+    out = [f'<div class="nr" style="{font};font-size:14px;color:#222;max-width:{GRAPH_SIZE[0]}px;{TEXT_AS_IS}">',
            f'<h2 style="font-size:20px;margin:0 0 2px">{html.escape(report["title"])}</h2>',
-           f'<div style="color:#666">{html.escape(" · ".join(filter(None, [report.get("host"), report["span"]])))}</div>']
+           f'<div class="muted" style="color:#666">'
+           f'{html.escape(" · ".join(filter(None, [report.get("host"), report["span"]])))}</div>']
     if report.get("delayed"):
-        out.append(f'<p style="color:#a15c00"><em>{html.escape(report["delayed"])}</em></p>')
+        out.append(f'<p class="late" style="color:#a15c00"><em>{html.escape(report["delayed"])}</em></p>')
     if report.get("note"):
-        out.append(f'<p style="color:#666"><em>{html.escape(report["note"])}</em></p>')
+        out.append(f'<p class="muted" style="color:#666"><em>{html.escape(report["note"])}</em></p>')
     for part in report["sections"]:
         style = subheading if part.get("sub") else heading
         tag = "h4" if part.get("sub") else "h3"
@@ -870,34 +899,41 @@ def summary_html(report, drawn, embed=False):
         width = max([len(r) for r in part["rows"]] + [1])
         numeric = [i > 0 and all(i >= len(r) or re.fullmatch(r"[\d,]+(\.\d+)?( \S+)?", str(r[i])) for r in part["rows"])
                    for i in range(width)]
-        # a label and value table, e.g. Current status: labels kept on one line
+        # a label and value table, e.g. Current status: labels kept on one line, but not a
+        # line on its own, which would run off a narrow screen
         label = ";white-space:nowrap;padding-right:24px" if not part.get("head") else ""
         pie = part.get("pie")
         swatches = part.get("swatches", []) if pie and pie["name"] in drawn else []
         if swatches:
             out.append('<table style="border-collapse:collapse;width:100%"><tr>'
-                       f'<td style="width:{PIE_SIZE + 16}px;vertical-align:top;padding:0">'
+                       f'<td class="pie" style="width:{PIE_SIZE}px;vertical-align:top;padding:0 16px 0 0">'
                        f'<img src="{source(pie["name"])}" alt="{html.escape(pie["title"])}" '
-                       f'width="{PIE_SIZE}" height="{PIE_SIZE}"></td><td style="vertical-align:top;padding:0">')
+                       f'width="{PIE_SIZE}" height="{PIE_SIZE}"></td><td class="rows" style="vertical-align:top;padding:0">')
         out.append('<table style="border-collapse:collapse;width:100%">')
         if part.get("head") and any(len(r) > 1 for r in part["rows"]):
             out.append("<tr>" + "".join(f'<th style="{th.format("right" if numeric[i] else "left")}">{html.escape(h)}</th>'
                                         for i, h in enumerate(part["head"])) + "</tr>")
         for number, cells in enumerate(part["rows"]):
             span = f' colspan="{width}"' if len(cells) == 1 and width > 1 else ""
-            mark = (f'<span style="color:{html.escape(swatches[number])}">&#9632;</span> '
+            mark = (f'<span style="color:{html.escape(swatches[number])}">&#9632;</span>&nbsp;'
                     if number < len(swatches) else "")
-            out.append("<tr>" + "".join(f'<td style="{td.format("right" if numeric[i] else "left")}{label if i == 0 else ""}"'
-                                        f'{span}>{mark if i == 0 else ""}{html.escape(str(c))}</td>'
-                                        for i, c in enumerate(cells)) + "</tr>")
+            cells_html = []
+            for i, c in enumerate(cells):
+                labelled = bool(label) and i == 0 and len(cells) > 1
+                cell_style = td.format("right" if numeric[i] else "left") + (label if labelled else "")
+                cells_html.append(f'<td{LABEL_CLASS if labelled else ""} style="{cell_style}"{span}>'
+                                  f'{mark if i == 0 else ""}{html.escape(str(c))}</td>')
+            out.append("<tr>" + "".join(cells_html) + "</tr>")
         out.append("</table>")
         if swatches:
             out.append("</td></tr></table>")
         for spec in part.get("graphs", []):
             if spec["name"] in drawn:
+                # its size given, so a phone lays it out right before the image loads
                 out.append(f'<p style="margin:12px 0 0"><img src="{source(spec["name"])}" '
-                           f'alt="{html.escape(spec["title"])}" style="max-width:100%;height:auto">'
-                           + (f'<br><small style="color:#555">{graph_caption_html(spec["title"], drawn[spec["name"]])}</small>'
+                           f'alt="{html.escape(spec["title"])}" width="{GRAPH_SIZE[0]}" height="{GRAPH_SIZE[1]}" '
+                           f'style="display:block;width:100%;max-width:{GRAPH_SIZE[0]}px;height:auto">'
+                           + (f'<small class="muted" style="display:block;margin-top:4px;color:#555;font-size:12px">{graph_caption_html(spec["title"], drawn[spec["name"]])}</small>'
                               if drawn[spec["name"]].get("legend") else "") + '</p>')
     out.append("</div>")
     return "\n".join(out)

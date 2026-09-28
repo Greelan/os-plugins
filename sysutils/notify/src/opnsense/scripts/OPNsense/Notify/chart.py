@@ -26,7 +26,8 @@ POSSIBILITY OF SUCH DAMAGE.
 --
 
 Plain charts as PNG for summaries sent by email, in pure Python: OPNsense's rrdtool
-is built without graphics, and the plugin carries no compiled imaging library.
+is built without graphics, and the plugin carries no compiled imaging library. The
+background is transparent, so a chart suits a light or a dark page.
 """
 
 import bisect
@@ -38,10 +39,13 @@ import struct
 import zlib
 
 
-GRAPH_SIZE = (640, 160)
+GRAPH_SIZE = (720, 180)  # the report's column
 PIE_SIZE = 150
 PIE_COLORS = ("#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f", "#edc948", "#b07aa1", "#9c755f")
 PIE_OTHER = "#bab0ac"
+# gray at part opacity, visible on light and dark: (premultiplied gray, alpha)
+GRID = (38, 77)
+MARK = (58, 115)
 
 
 def day_marks(first, last):
@@ -64,34 +68,35 @@ def chart_png(series, marks, scale=2):
     averaged down to smooth edges."""
     width, height = GRAPH_SIZE
     w, h = width * scale, height * scale
-    # a plane per color, column after column, so a column is one slice
-    planes = [bytearray(b"\xff" * (w * h)) for _ in range(3)]
+    # a plane per channel, column after column, so a column is one slice; colors are
+    # premultiplied by alpha, so averaging down stays right at the edges
+    planes = [bytearray(w * h) for _ in range(4)]
 
-    def dot(x, y, rgb):
+    def dot(x, y, rgba):
         if 0 <= x < w and 0 <= y < h:
-            for k in range(3):
-                planes[k][x * h + y] = rgb[k]
+            for k in range(4):
+                planes[k][x * h + y] = rgba[k]
 
     top = max([v for values, _, _ in series for v in values if v is not None] + [0]) * 1.1 or 1
     for step in range(1, 4):
         y = h - 1 - round(step / 4 * (h - 1))
         for x in range(0, w, 2 * scale):
             for dx in range(scale):
-                dot(x + dx, y, (0xdd, 0xdd, 0xdd))
+                dot(x + dx, y, (GRID[0],) * 3 + (GRID[1],))
     for mark in marks:
         x = round(mark * (w - 1))
         if 0 <= x < w:
-            for k in range(3):
-                planes[k][x * h:(x + 1) * h] = b"\xcc" * h
+            for k in range(4):
+                planes[k][x * h:(x + 1) * h] = bytes([MARK[k == 3]]) * h
     for values, color, filled in series:
-        rgb = tuple(int(color[i:i + 2], 16) for i in (1, 3, 5))
+        rgb = tuple(int(color[i:i + 2], 16) for i in (1, 3, 5)) + (255,)
         count = len(values)
         ys = [None if v is None else h - 1 - round(v / top * (h - 1)) for v in values]
         if count < 2:
             continue
         if filled:
             # a fixed blend maps each byte to one other
-            tables = [bytes(round(v * 0.65 + rgb[k] * 0.35) for v in range(256)) for k in range(3)]
+            tables = [bytes(round(v * 0.65 + rgb[k] * 0.35) for v in range(256)) for k in range(4)]
             for x in range(w):
                 at = x / (w - 1) * (count - 1)
                 i = min(int(at), count - 2)
@@ -100,7 +105,7 @@ def chart_png(series, marks, scale=2):
                     continue
                 start = x * h + min(max(round(here + (after - here) * (at - i)), 0), h)
                 end = (x + 1) * h
-                for k in range(3):
+                for k in range(4):
                     planes[k][start:end] = planes[k][start:end].translate(tables[k])
         for i in range(count - 1):
             y0, y1 = ys[i], ys[i + 1]
@@ -113,9 +118,9 @@ def chart_png(series, marks, scale=2):
                 for dx in range(scale):
                     for dy in range(scale):
                         dot(x + dx, y + dy, rgb)
-    out = bytearray(width * height * 3)
+    out = [bytearray(width * height) for _ in range(4)]
     blocks = itertools.repeat(scale * scale)
-    for k in range(3):
+    for k in range(4):
         plane = planes[k]
         tall: list = list(plane[0::scale])
         for dy in range(1, scale):
@@ -126,17 +131,31 @@ def chart_png(series, marks, scale=2):
             for dx in range(1, scale):
                 at += height
                 column = list(map(operator.add, column, tall[at:at + height]))
-            out[k + x * 3::width * 3] = bytes(map(operator.floordiv, column, blocks))
-    return png(width, height, out)
+            out[k][x::width] = bytes(map(operator.floordiv, column, blocks))
+    return png(width, height, rgba(out))
 
 
-def png(width, height, rgb):
-    """RGB pixels, row after row, as a PNG file."""
-    raw = b"".join(b"\x00" + bytes(rgb[y * width * 3:(y + 1) * width * 3]) for y in range(height))
+def straight(color, alpha):
+    return (color * 255 + alpha // 2) // alpha if alpha else 0
+
+
+def rgba(planes):
+    """Premultiplied color planes and alpha, row after row, as straight RGBA pixels."""
+    alpha = planes[3]
+    out = bytearray(len(alpha) * 4)
+    for k in range(3):
+        out[k::4] = bytes(map(straight, planes[k], alpha))
+    out[3::4] = alpha
+    return out
+
+
+def png(width, height, pixels):
+    """RGBA pixels, row after row, as a PNG file."""
+    raw = b"".join(b"\x00" + bytes(pixels[y * width * 4:(y + 1) * width * 4]) for y in range(height))
 
     def chunk(kind, data):
         return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
-    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
 
 
@@ -150,10 +169,10 @@ def donut_png(slices, size=PIE_SIZE, scale=2):
     for value, color in slices:
         turn += value / total * 2 * math.pi
         ends.append(turn)
-        colors.append(bytes(int(color[i:i + 2], 16) for i in (1, 3, 5)))
+        colors.append(bytes(int(color[i:i + 2], 16) for i in (1, 3, 5)) + b"\xff")
     rows = []
     for y in range(big):
-        row = bytearray(b"\xff" * (big * 3))
+        row = bytearray(big * 4)
         dy = y - middle
         if abs(dy) <= outer:
             reach = math.sqrt(outer * outer - dy * dy)
@@ -162,17 +181,18 @@ def donut_png(slices, size=PIE_SIZE, scale=2):
                 if dx * dx + dy * dy < inner * inner:
                     continue
                 angle = math.atan2(dx, -dy) % (2 * math.pi)
-                row[x * 3:x * 3 + 3] = colors[min(bisect.bisect_left(ends, angle), len(colors) - 1)]
+                row[x * 4:x * 4 + 4] = colors[min(bisect.bisect_left(ends, angle), len(colors) - 1)]
         rows.append(row)
-    out = bytearray(size * size * 3)
+    # opaque on transparent, so the colors are already premultiplied
+    out = [bytearray(size * size) for _ in range(4)]
     blocks = itertools.repeat(scale * scale)
     for y in range(size):
         summed = list(rows[y * scale])
         for dy in range(1, scale):
             summed = list(map(operator.add, summed, rows[y * scale + dy]))
-        for k in range(3):
-            column = list(summed[k::3 * scale])
+        for k in range(4):
+            column = list(summed[k::4 * scale])
             for dx in range(1, scale):
-                column = list(map(operator.add, column, summed[k + 3 * dx::3 * scale]))
-            out[y * size * 3 + k:(y + 1) * size * 3:3] = bytes(map(operator.floordiv, column, blocks))
-    return png(size, size, out)
+                column = list(map(operator.add, column, summed[k + 4 * dx::4 * scale]))
+            out[k][y * size:(y + 1) * size] = bytes(map(operator.floordiv, column, blocks))
+    return png(size, size, rgba(out))

@@ -595,7 +595,7 @@
             <tbody></tbody>
         </table>
         <div style="padding: 10px;">
-            {{ lang._('Summaries, newest first, including any still waiting to be delivered. Each channel keeps its last 60 daily, 52 weekly and 12 monthly summaries, and 10 sent by hand.') }}
+            {{ lang._('Summaries, including any still waiting to be delivered. Each channel keeps its last 60 daily, 52 weekly and 12 monthly summaries, and 10 sent by hand.') }}
         </div>
     </div>
 </div>

@@ -763,12 +763,12 @@ class SummaryEmail(unittest.TestCase):
         body = summary.summary_html(self.REPORT, {"cpu-system.png": {"path": "/tmp/x", "legend": [("", "#4e79a7", "<peak>")]}})
         self.assertIn("Failed login for &lt;b&gt;x&lt;/b&gt;", body)
         self.assertIn('<img src="cid:cpu-system.png"', body)
-        self.assertIn("&#9632;</span> &lt;peak&gt;</small>", body)
+        self.assertIn("&#9632;</span>&nbsp;&lt;peak&gt;</small>", body)
         legend = {"path": "/tmp/x", "legend": [("In", "#4e79a7", "peak 2 bit/s, average 1 bit/s"),
                                                                ("Out", "#e15759", "peak <1>, average 0")]}
         body = summary.summary_html(self.REPORT, {"cpu-system.png": legend})
-        self.assertIn('<span style="color:#4e79a7">&#9632;</span> In peak 2 bit/s', body)
-        self.assertIn('<span style="color:#e15759">&#9632;</span> Out peak &lt;1&gt;', body)
+        self.assertIn('<span style="color:#4e79a7">&#9632;</span>&nbsp;In peak 2 bit/s', body)
+        self.assertIn('<span style="color:#e15759">&#9632;</span>&nbsp;Out peak &lt;1&gt;', body, "kept with its swatch")
         self.assertNotIn("cid:", summary.summary_html(self.REPORT, {}), "a graph not drawn is left out")
 
     def test_html_only_for_email(self):
@@ -781,6 +781,21 @@ class SummaryEmail(unittest.TestCase):
         self.assertEqual([c["body_format"] for c in self.calls],
                          [self.apprise.NotifyFormat.HTML, self.apprise.NotifyFormat.TEXT, self.apprise.NotifyFormat.TEXT])
         self.assertEqual(self.calls[1]["body"], "text", "Telegram takes HTML, but only a few tags")
+        page = self.calls[0]["body"]
+        self.assertTrue(page.startswith("<!doctype html>"), "a whole document, so its style sheet is kept")
+        self.assertIn("prefers-color-scheme:dark", page)
+        self.assertIn('<body class="mail" style="margin:16px;', page)
+        self.assertIn(".mail{margin:0!important}", page, "on a phone, the mail app pads it")
+        self.assertNotIn("data:image", page, "graphs by reference in email")
+
+    def test_narrow_screens(self):
+        report = {"title": "Daily summary", "span": "a to b", "sections": [
+            {"title": "Current status", "head": None, "graphs": [],
+             "rows": [["WAN address", "2001:db8::1"], ["6 of 6 interface links up"]]}]}
+        body = summary.summary_html(report, {})
+        self.assertIn('<td class="label" style="', body)
+        self.assertEqual(body.count("white-space:nowrap"), 1, "a line on its own may wrap")
+        self.assertEqual(body.count("overflow-wrap:anywhere"), 3)
 
     def test_the_short_text_links_to_the_report(self):
         folder = tempfile.mkdtemp()
@@ -1056,7 +1071,7 @@ class SummaryFacts(unittest.TestCase):
         self.assertEqual(parts["Traffic"]["pie"]["slices"], [[300, chart.PIE_COLORS[0]], [100, chart.PIE_COLORS[1]]])
         body = summary.summary_html(item["report"], {"pie-traffic.png": {"path": "/x", "legend": []}})
         self.assertIn('<img src="cid:pie-traffic.png"', body)
-        self.assertIn(f'<span style="color:{chart.PIE_COLORS[1]}">&#9632;</span> LAN', body)
+        self.assertIn(f'<span style="color:{chart.PIE_COLORS[1]}">&#9632;</span>&nbsp;LAN', body)
         image = chart.donut_png([(3, "#4e79a7"), (1, "#bab0ac")])
         self.assertEqual(chart.struct.unpack(">II", image[16:24]), (chart.PIE_SIZE, chart.PIE_SIZE))
 

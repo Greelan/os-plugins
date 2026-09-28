@@ -71,8 +71,7 @@ from common import (LINK_UP, addresses, carp_states, clock, command_output, conf
                     stale_tmp, write_private)
 from summary import (REPORT_NAME, REPORTS_DIR, SAMPLE_SECONDS, SUMMARY_TRIES, add_events,  # noqa: E402
                      archive_report, archived_reports, build_summary, prune_archive, monit_allowed, remove_report,
-                     report_graphs,
-                     standby_periods, subscribed, summary_channels, summary_html, update_summaries)
+                     report_graphs, report_page, standby_periods, subscribed, summary_channels, update_summaries)
 
 CONFIG = "/conf/config.xml"
 STATE = "/var/db/notify/state.json"
@@ -1070,7 +1069,7 @@ def deliver(channel, title, body, ntype, report=None):
         if email:
             try:
                 drawn = report_graphs(report)
-                page = summary_html(report, drawn)
+                page = report_page(report, drawn, embed=False)  # a whole document, for its style sheet
             except Exception as exc:  # e.g. /tmp full: send the short text
                 log(syslog.LOG_ERR, f"summary report could not be prepared, sending the short text: {exc}")
         if page is not None and server is not None:
