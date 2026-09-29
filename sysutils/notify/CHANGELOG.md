@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5_1 - 2026-09-29
+
+- A channel's saved URL shows addresses as typed, e.g. @ rather than %40.
+
 ## 1.5 - 2026-09-29
 
 - Service stopped event: a service down for 5 minutes, and back, as the Services widget shows it; not while booting or updating firmware, nor on a CARP standby.

@@ -94,6 +94,10 @@ class StoredFiles(Case):
                             pgpprv="http://keys.example.com/private.asc")
         self.assertIn("a private key is not fetched", result["error"], "not asked for https first")
 
+    def test_the_saved_url_reads_as_typed(self):
+        result = self.build("mailtos", user="fw", password="pw", host="example.com", targets="admin@example.com")
+        self.assertTrue(result["target"].endswith("/admin@example.com"), result["target"])
+
     def test_the_browser_never_gets_them(self):
         self.build("discord", template='{"content": "x"}', **self.WEBHOOK)
         described = notify.describe_url(self.channel["url"])

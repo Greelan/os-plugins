@@ -1980,7 +1980,8 @@ def run_build(path):
     plugin, error = check_url(url)
     if plugin is None:
         return {"error": error, "field": target_field}
-    masked = plugin.url(privacy=True).split("?", 1)[0]
+    # shown, not used: as typed, e.g. an address's @ rather than %40
+    masked = urllib.parse.unquote(plugin.url(privacy=True).split("?", 1)[0])
     # keep the stored files the URL still points at, with anything newly pasted on top
     kept = {key: value for key, value in (channel.get("files") or {}).items() if key in stored_file_args(url)}
     kept.update(files)
