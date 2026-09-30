@@ -232,19 +232,31 @@ class StoredFiles(Case):
         url = "discord://123456789/abcdefghijklmnop"
         plugin, _ = notify.check_url(url)
         services, schemas = notify.apprise_services()
-        saved = notify.check_url
+        saved = notify.one_plugin
         # a rewrite Apprise would read differently is not taken
-        notify.check_url = lambda u: (None, "") if u != url else saved(u)
+        notify.one_plugin = lambda u: (None, "") if u != url else saved(u)
         try:
             self.assertEqual(notify.normalize(url + "?avatar=no", plugin, services, schemas), url + "?avatar=no")
         finally:
-            notify.check_url = saved
+            notify.one_plugin = saved
 
     def test_a_header_with_a_leading_space_stays_write_only(self):
         # Apprise reads a leading space as +, a header that can carry a credential
-        self.assertTrue(notify.custom_arg("%20Authorization=secret"))
-        self.assertTrue(notify.custom_arg("+Authorization=secret"))
-        self.assertFalse(notify.custom_arg("format=text"))
+        self.assertTrue(notify.custom_arg("%20Authorization=secret", ("+",)))
+        self.assertTrue(notify.custom_arg("+Authorization=secret", ("+",)))
+        self.assertFalse(notify.custom_arg("format=text", ("+", "-", ":")))
+        self.assertFalse(notify.custom_arg("-x=1", ("+",)), "only the prefixes the service takes")
+
+    def test_one_path_from_url_to_plugin(self):
+        # several URLs saved in one channel before are refused at delivery too, not sent to one mangled
+        ok, error = notify.deliver({"uuid": CHANNEL, "url": "json://a/b, json://c/d"}, "t", "b", "info")
+        self.assertFalse(ok)
+        self.assertIn("one URL per channel", error)
+        # a plugin tripping over the URL is an invalid URL, not a crash
+        self.assertIsNone(notify.check_url("dbus://[")[0])
+        # a saved channel's / # is read as Apprise reads it
+        self.assertEqual(notify.describe_url("slack://T1ABCDEFG/B1ABCDEFG/abcdefghijklmnopqrstuvwx/#general")
+                         .get("service"), "slack")
 
     def test_the_dialog_reads_options_as_apprise_does(self):
         service = {"options": {"format": {}, "avatar": {}}}
@@ -1160,37 +1172,6 @@ class Commands(unittest.TestCase):
             shutil.rmtree(folder)
         self.assertEqual(sent, [1, 0, 1, 1, 0, 0])
 
-    def test_a_rotated_log_gone_unread_is_said(self):
-        folder = tempfile.mkdtemp()
-        try:
-            path = os.path.join(folder, "eve.json")
-            with open(path, "w") as handle:
-                handle.write("a\n")
-            _, state, _ = notify.follow(path, {})
-            os.remove(path)  # rotated, and the old one removed, before the next pass
-            with open(path, "w") as handle:
-                handle.write("b\n")
-            self.assertNotEqual(os.stat(path).st_ino, state["inode"])
-            _, _, (_, _, lost) = notify.follow(path, state)
-        finally:
-            shutil.rmtree(folder)
-        self.assertEqual(lost, 1)
-        self.assertIn("rotated", notify.left_out("ids", "IDS alerts", 0, 0, lost)[0]["body"])
-
-    def test_a_followed_log_that_vanished_is_said_once(self):
-        folder = tempfile.mkdtemp()
-        try:
-            path = os.path.join(folder, "audit_20260929.log")
-            with open(path, "w") as handle:
-                handle.write("a\n")
-            _, state, _ = notify.follow(path, {})
-            os.remove(path)  # removed before its end was read
-            _, state, (_, _, lost) = notify.follow(path, state)
-            _, _, (_, _, again) = notify.follow(path, state)
-        finally:
-            shutil.rmtree(folder)
-        self.assertEqual((lost, again), (1, 0), "said once, not on every check while it is gone")
-
     def test_only_a_command_that_succeeded_counts(self):
         self.assertEqual(notify.command_output(["/bin/sh", "-c", "echo ok"]), "ok\n")
         self.assertIsNone(notify.command_output(["/bin/sh", "-c", "echo partial; exit 1"]))
@@ -1273,7 +1254,7 @@ class Commands(unittest.TestCase):
             os.rename(path, os.path.join(elsewhere, "eve.json.0.gz"))
             with open(path, "w") as handle:
                 handle.write('{"event_type":"alert"}\n')
-            lines, _, (missed, _, _) = notify.follow(path, state, b'"event_type":"alert"')
+            lines, _, (missed, _) = notify.follow(path, state, b'"event_type":"alert"')
         finally:
             shutil.rmtree(folder)
             shutil.rmtree(elsewhere)

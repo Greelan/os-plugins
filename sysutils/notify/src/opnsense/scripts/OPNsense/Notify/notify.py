@@ -59,6 +59,7 @@ import socket
 import sys
 import syslog
 import time
+import traceback
 import urllib.parse
 import xml.etree.ElementTree as ET
 
@@ -280,36 +281,31 @@ def save_state(state):
 
 def follow(path, previous, keep=None):
     """New lines since the last pass (only those with keep), the position to remember, and (lines
-    missed, bytes skipped, rotated logs gone before their end was read). A rotated log is finished
-    first, found by inode; inode 0 means from the start."""
+    missed, bytes skipped). A rotated log is finished first, found by inode; inode 0 means from
+    the start."""
     try:
         stat = os.stat(path)
     except OSError:
-        if previous.get("inode") and previous.get("path") == path:
-            # gone part-way through, e.g. removed by retention: its end is lost, and a new one is
-            # read from its start
-            return [], {"inode": 0, "offset": 0, "path": path}, (0, 0, 1)
-        return [], previous, (0, 0, 0)
+        return [], previous, (0, 0)
     state = {"inode": stat.st_ino, "offset": stat.st_size, "path": path}
     if previous.get("inode") is None:
-        return [], state, (0, 0, 0)  # first sight of this file, start from the end
+        return [], state, (0, 0)  # first sight of this file, start from the end
     lines: list = []
-    missed, skipped, lost = 0, 0, 0
+    missed, skipped = 0, 0
     if previous["inode"] and previous["inode"] != stat.st_ino:
         old = rotated(path, previous["inode"])
         read = read_new(old, previous.get("offset", 0), keep) if old is not None else None
         if read is not None:
             lines, missed, skipped = read[0], read[1], read[2]
-        else:
-            lost = 1  # removed or compressed first: what it held after the last pass is not known
+        # else compressed; either way the new file is read from its start
         previous = {"inode": stat.st_ino, "offset": 0, "path": path}
     read = read_new(path, previous.get("offset", 0), keep)
     if read is None:
-        return lines, previous, (missed, skipped, lost)
+        return lines, previous, (missed, skipped)
     lines += read[0]
     state["offset"] = read[3]
     missed += read[1] + max(len(lines) - LOG_LINES, 0)
-    return lines[-LOG_LINES:], state, (missed, skipped + read[2], lost)
+    return lines[-LOG_LINES:], state, (missed, skipped + read[2])
 
 
 def find_mark(data, keep, start, end):
@@ -385,22 +381,19 @@ def rotated(path, inode):
     return None
 
 
-def left_out(event, what, missed, skipped, lost=0):
+def left_out(event, what, missed, skipped):
     """A note that a log pass left lines out, or nothing."""
     parts = []
     if missed:
         parts.append(f"{missed} {what} before the latest {LOG_LINES}")
     if skipped:
         parts.append(f"{skipped // (1024 * 1024) or 1} MB of log")
-    body = "The log grew faster than it is read, so these were passed over: " + "; ".join(parts) + "." \
-        if parts else ""
-    if lost:
-        body = (body + " " if body else "") + \
-            "The log was rotated and the old one removed before its end was read, so what it held last is not known."
-    if not body:
+    if not parts:
         return []
     # sent, not counted
-    return [dict(message(event, "warning", f"Some {what} were not checked", body), note=True)]
+    return [dict(message(event, "warning", f"Some {what} were not checked",
+                         "The log grew faster than it is read, so these were passed over: " + "; ".join(parts) + "."),
+                 note=True)]
 
 
 def audit_log():
@@ -522,13 +515,13 @@ def check_firmware(config, previous):
 def check_auth(config, previous):
     logins = config["general"].get("authLogins", "0") == "1"
     previous, path, lines = previous or {}, audit_log(), []
-    missed, skipped, lost = 0, 0, 0
+    missed, skipped = 0, 0
     if previous.get("path") and previous["path"] != path:
-        lines, _, (missed, skipped, lost) = follow(previous["path"], previous)  # the rest of the day before
+        lines, _, (missed, skipped) = follow(previous["path"], previous)  # the rest of the day before
         previous = {"inode": 0}  # read the new day's file from its start
-    more, state, (more_missed, more_skipped, more_lost) = follow(path, previous)
+    more, state, (more_missed, more_skipped) = follow(path, previous)
     lines += more
-    messages = left_out("auth", "login events", missed + more_missed, skipped + more_skipped, lost + more_lost)
+    messages = left_out("auth", "login events", missed + more_missed, skipped + more_skipped)
     for line in lines:
         body = line.strip()
         lowered = body.lower()
@@ -846,7 +839,7 @@ def check_syslog(config, previous):
                                                   for s in range(threshold + 1)), re.M)
     files: dict = {}
     found: dict = {}
-    missed = skipped = lost = 0
+    missed = skipped = 0
     for name in names:
         path = os.path.join(SYSLOG_DIR, name, f"{name}_{day}.log")
         last = previous.get("files", {}).get(name, {})
@@ -854,11 +847,11 @@ def check_syslog(config, previous):
             continue
         lines = []
         if last.get("path") and last["path"] != path:
-            lines, _, (count, passed, gone) = follow(last["path"], last, wanted)  # the rest of the day before
-            missed, skipped, lost = missed + count, skipped + passed, lost + gone
+            lines, _, (count, passed) = follow(last["path"], last, wanted)  # the rest of the day before
+            missed, skipped = missed + count, skipped + passed
             last = {"inode": 0}  # read the new day's file from its start
-        more, files[name], (count, passed, gone) = follow(path, last, wanted)
-        missed, skipped, lost = missed + count, skipped + passed, lost + gone
+        more, files[name], (count, passed) = follow(path, last, wanted)
+        missed, skipped = missed + count, skipped + passed
         for line in lines + more:
             match = re.match(r"<(\d+)>\d* \S+ \S+ (\S+) \S+ \S+ (?:-|\[.*?\]) ?(.*)", line.strip())
             if match:
@@ -892,7 +885,7 @@ def check_syslog(config, previous):
         messages.append(dict(message("syslog", "warning", f"{len(extra)} more log messages", "\n".join(extra)),
                              note=True))
     if "\tnot checked" not in seen:
-        found_note = left_out("syslog", "log messages", missed, skipped, lost)
+        found_note = left_out("syslog", "log messages", missed, skipped)
         if found_note:
             seen["\tnot checked"] = now
         messages += found_note
@@ -930,8 +923,8 @@ def check_device(config, previous):
 
 def check_ids(config, previous):
     severity = setting(config["general"], "idsSeverity", 1)
-    lines, state, (missed, skipped, lost) = follow(IDS_LOG, previous or {}, keep=b'"event_type":"alert"')
-    messages = left_out("ids", "IDS alerts", missed, skipped, lost)
+    lines, state, (missed, skipped) = follow(IDS_LOG, previous or {}, keep=b'"event_type":"alert"')
+    messages = left_out("ids", "IDS alerts", missed, skipped)
     for line in lines:
         try:
             event = json.loads(line)
@@ -1102,13 +1095,20 @@ def apprise_view(url):
     its own url_to_dict, as Apprise.instantiate runs it, so the service is the one it resolves,
     a native https:// webhook included, and the values are the ones the plugin reads. The checks
     look at this, never at a reading of their own. ({}, {}) when Apprise cannot read the URL."""
-    from apprise.plugins import N_MGR, url_to_dict
-    results = url_to_dict(url or "") if isinstance(url, str) else None
-    if not isinstance(results, dict) or results.get("schema") not in N_MGR:
+    results = apprise_results(url)
+    if results is None:
         return set(), {}
-    names = {c.__name__ for c in N_MGR[results["schema"]].__mro__}
-    args = {arg for name, found in FILE_ARGS.items() if name in names for arg in found}
-    return args, dict(results.get("qsd") or {})
+    return file_args(results["schema"]), dict(results.get("qsd") or {})
+
+
+def apprise_results(url):
+    """What Apprise's url_to_dict makes of a URL, or None; a plugin tripping over it is None too."""
+    from apprise.plugins import N_MGR, url_to_dict
+    try:
+        results = url_to_dict(url) if isinstance(url, str) and url else None
+    except Exception:
+        return None
+    return results if isinstance(results, dict) and results.get("schema") in N_MGR else None
 
 
 def local_file_args(url):
@@ -1198,7 +1198,10 @@ def deliver(channel, title, body, ntype, report=None):
     try:
         return deliver_once(channel, title, body, ntype, report)
     except Exception as exc:
-        # its type only: the text of an error in Apprise or requests can carry the URL's secrets
+        # its type and where, not its text, which in Apprise or requests can carry the URL's secrets
+        frame = traceback.extract_tb(exc.__traceback__)[-1] if exc.__traceback__ else None
+        where = f" at {os.path.basename(frame.filename)}:{frame.lineno}" if frame else ""
+        log(syslog.LOG_ERR, f"delivery tripped: {type(exc).__name__}{where}")
         return False, f"Delivery failed ({type(exc).__name__})."
 
 
@@ -1222,10 +1225,10 @@ def deliver_once(channel, title, body, ntype, report=None):
         return False, str(exc)
     with apprise.LogCapture(level=apprise.logging.WARNING, fmt="%(message)s") as captured:
         # the one plugin the checks looked at: add() given the string would split it at commas
-        plugin = apprise.Apprise.instantiate(url)
+        plugin, error = one_plugin(url)
         notifier = apprise.Apprise()
         if plugin is None or not notifier.add(plugin):
-            return False, "The URL is not a valid Apprise URL."
+            return False, error or "The URL is not a valid Apprise URL."
         server = next(iter(notifier), None)
         if server is not None and "NotifyDiscord" in {c.__name__ for c in type(server).__mro__}:
             title, body = quiet(title), quiet(body)
@@ -1709,13 +1712,14 @@ def url_query(url):
     return url_parts(url)[1]
 
 
-def custom_arg(text):
-    """Whether a query part is a free-form argument (+header, -param, :field), as Apprise's own
-    patterns tell them apart; a leading space counts as +."""
+def custom_arg(text, prefixes):
+    """Whether a query part is a free-form argument of one of the prefixes a service declares
+    (+header, -param, :field), as Apprise's own patterns tell them apart; a leading space is +."""
     from apprise.utils.parse import (NOTIFY_CUSTOM_ADD_TOKENS, NOTIFY_CUSTOM_COLON_TOKENS,
                                      NOTIFY_CUSTOM_DEL_TOKENS)
     key = urllib.parse.unquote(text.partition("=")[0])
-    return any(p.match(key) for p in (NOTIFY_CUSTOM_ADD_TOKENS, NOTIFY_CUSTOM_DEL_TOKENS, NOTIFY_CUSTOM_COLON_TOKENS))
+    patterns = {"+": NOTIFY_CUSTOM_ADD_TOKENS, "-": NOTIFY_CUSTOM_DEL_TOKENS, ":": NOTIFY_CUSTOM_COLON_TOKENS}
+    return any(patterns[p].match(key) for p in prefixes if p in patterns)
 
 
 def query_pairs(query):
@@ -1740,12 +1744,10 @@ def url_args(url):
 
 def parse_saved(url, services, schemas):
     """(service id, {map_to: value}, query) for a saved URL, or (None, {}, "")."""
-    from apprise.plugins import N_MGR
     service_id = schemas.get(url_schema(url))
     if service_id is None:
         return None, {}, ""
-    plugin = N_MGR[url_schema(url)] if url_schema(url) in N_MGR else None
-    results = plugin.parse_url(url) if plugin is not None else None
+    results = apprise_results(url)
     query = url_query(url)
     return (service_id, results, query) if isinstance(results, dict) else (None, {}, "")
 
@@ -1860,7 +1862,7 @@ def normalize(url, plugin, services, schemas):
     base, _, query = native.partition("?")
     args = services[service_id]["args"]
     # what the same URL renders with nothing set is the service's own defaults
-    plain, _ = check_url(base)
+    plain, _ = one_plugin(base)
     defaults = url_args(plain.url(privacy=False)) if plain is not None else {}
     options = services[service_id]["options"]
     keep = []
@@ -1872,7 +1874,7 @@ def normalize(url, plugin, services, schemas):
         keep.append(part)  # only what differs from the service's own defaults
 
     def rendered(parts):
-        again, _ = check_url(base + ("?" + "&".join(parts) if parts else ""))
+        again, _ = one_plugin(base + ("?" + "&".join(parts) if parts else ""))
         return again.url(privacy=False) if again is not None else None
 
     # Apprise renders some choices by name, e.g. Gotify's priority 8 as high: the field offers the
@@ -1931,7 +1933,7 @@ def describe_url(url, keep_secrets=False):
     fields["schema"] = url_schema(url)
     secrets = saved_values(service, results, [k for k in shown if tokens[k]["private"]])
     options, rest = split_query(service, url_query(url))
-    if service["prefixes"] and any(custom_arg(text) for text, _, _ in query_pairs(rest)):
+    if any(custom_arg(text, service["prefixes"]) for text, _, _ in query_pairs(rest)):
         return {"service": "", "custom": True}  # no field masks these, so keep the URL write-only
     for key, value in options.items():
         (secrets if service["options"][key]["private"] else fields)[key] = value
@@ -1996,27 +1998,36 @@ def split_list(value):
     return [item for item in re.split(r"[\s,]+", value) if item]
 
 
-def check_url(url):
-    """(apprise plugin, error text) for a URL."""
+def one_plugin(url):
+    """(the one plugin Apprise builds from a URL, error text): what is checked and what is sent
+    through. A string Apprise's add() would split into several services is refused, and a plugin
+    tripping over the URL still means a bad URL."""
     import apprise
     from apprise.utils.parse import parse_urls
-    if len(parse_urls(url)) > 1:
-        # Apprise's add() would split it and build a service from each, unchecked
+    if len(parse_urls(url or "")) > 1:
         return None, "Give one URL per channel; add a channel for each further service."
-    local = local_file_args(url)
-    plain = plain_http_args(url, local)
-    if plain:
-        return None, f"Give an https:// address for {', '.join(plain)}, or paste its contents in the channel."
-    if local:
-        return None, (f"The URL names a file in {', '.join(local)}; choose the service and paste the "
-                      f"file's contents instead.")
     with apprise.LogCapture(level=apprise.logging.WARNING, fmt="%(message)s") as captured:
         try:
             plugin = apprise.Apprise.instantiate(url)
         except Exception:
-            plugin = None  # a plugin tripping over the URL still means a bad URL
+            plugin = None
     if plugin is None:
         return None, last_warning(captured, "This is not a valid Apprise URL.")
+    return plugin, ""
+
+
+def check_url(url):
+    """(apprise plugin, error text) for a URL."""
+    plugin, error = one_plugin(url)
+    if plugin is None:
+        return None, error
+    local = local_file_args(url)
+    if local:
+        plain = plain_http_args(url, local)
+        if plain:
+            return None, f"Give an https:// address for {', '.join(plain)}, or paste its contents in the channel."
+        return None, (f"The URL names a file in {', '.join(local)}; choose the service and paste the "
+                      f"file's contents instead.")
     return plugin, ""
 
 
