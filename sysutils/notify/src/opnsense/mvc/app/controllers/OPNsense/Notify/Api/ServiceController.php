@@ -95,7 +95,8 @@ class ServiceController extends ApiControllerBase
         }
         $result = json_decode((new Backend())->configdpRun('notify test', [$uuid]), true);
         if (!is_array($result)) {
-            return ['status' => 'failed', 'message' => gettext('The test could not be run.')];
+            /* no answer when a running check kept the lock for too long */
+            return ['status' => 'failed', 'message' => gettext('The test could not be run; a check may still be running, so try again in a minute.')];
         }
         return $result;
     }

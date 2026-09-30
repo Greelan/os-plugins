@@ -166,9 +166,9 @@ class StoredFiles(Case):
         base = self.channel["url"].split("?", 1)[0]
         for query in ("x=1;template=stored", "template=%20stored%20", "template=/x&template=stored"):
             self.assertIn(f"template={path}", notify.with_key_files(dict(self.channel, url=f"{base}?{query}")), query)
-        # the last is what Apprise takes: an https template after a stored one is sent as it is
+        # the last is what Apprise takes: an https template after a stored one is fetched, not stored
         url = notify.with_key_files(dict(self.channel, url=f"{base}?template=stored&template=https://example.com/t"))
-        self.assertTrue(url.endswith("?template=https://example.com/t"), url)
+        self.assertEqual(notify.url_args(url)["template"], "https://example.com/t?verify=yes&redirect=no")
         # to Apprise this is the file "stored#frag", so it is refused rather than put in place
         self.assertEqual(notify.local_file_args(f"{base}?template=stored#frag"), ["template"])
 
@@ -239,6 +239,17 @@ class StoredFiles(Case):
             self.assertEqual(notify.normalize(url + "?avatar=no", plugin, services, schemas), url + "?avatar=no")
         finally:
             notify.one_plugin = saved
+
+    def test_a_remote_file_only_over_verified_https(self):
+        # Apprise follows a redirect, which can lead to plain http, and takes verify=no from the file's URL
+        import apprise
+        base = "discord://123456789/abcdefghijklmnop?template="
+        for nested in ("https://example.com/t.json", "https://example.com/t.json?verify=no&redirect=yes"):
+            url = notify.with_key_files({"uuid": CHANNEL, "url": base + notify.urllib.parse.quote(nested, safe=""),
+                                         "files": {}})
+            plugin = apprise.Apprise.instantiate(url)
+            fetched = [a for att in vars(plugin).values() if isinstance(att, apprise.AppriseAttachment) for a in att]
+            self.assertEqual([(a.redirects, a.verify_certificate) for a in fetched], [(False, True)], nested)
 
     def test_a_header_with_a_leading_space_stays_write_only(self):
         # Apprise reads a leading space as +, a header that can carry a credential

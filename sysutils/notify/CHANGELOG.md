@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5_3 - 2026-09-30
+
+- A template or PGP key given as an https:// address is fetched only over verified https, never through a redirect.
+- A test notification waits for a running check rather than sending alongside it.
+
 ## 1.5_2 - 2026-09-30
 
 - A channel URL is checked as Apprise builds its service, so no local file can be named after a # or a ;, in a native webhook URL or in a second URL; a channel takes one URL.

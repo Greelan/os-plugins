@@ -1142,7 +1142,8 @@ def stored_file_args(url):
 
 
 def with_key_files(channel):
-    """The channel URL with each stored file written out and its marker replaced by the path."""
+    """The channel URL with each stored file written out and its marker replaced by the path, and
+    each remote file set to be fetched over verified https only."""
     url, files = channel.get("url", ""), channel.get("files") or {}
     args, _ = apprise_view(url)
     base, sep, query = url.partition("?")
@@ -1151,10 +1152,14 @@ def with_key_files(channel):
     last = {name: i for i, (_, name, _) in enumerate(pairs) if name in args}
     parts = []
     written = {}
+    fetched = {}
     for i, (text, name, value) in enumerate(pairs):
         if name in args and last[name] != i:
             continue
-        if name in args and value == KEY_MARKER:
+        if name in args and name in REMOTE_FILE_ARGS and re.match(r"https://", value, re.I):
+            fetched[name] = fetch_as_allowed(value)
+            text = f"{name}={urllib.parse.quote(fetched[name], safe='')}"
+        elif name in args and value == KEY_MARKER:
             content = files.get(name)
             if not isinstance(content, str) or content == "":
                 raise ValueError(f"The file for {name} is not stored with this channel; paste it again.")
@@ -1168,10 +1173,19 @@ def with_key_files(channel):
     # what Apprise builds from it: each stored file's argument names the file written for it, and
     # no marker is left that this reading missed
     _, found = apprise_view(result)
-    if any(found.get(name) != path for name, path in written.items()) \
+    if any(found.get(name) != path for name, path in {**written, **fetched}.items()) \
             or any(found.get(name) == KEY_MARKER for name in args):
         raise ValueError("The URL's stored files could not be put in place; save the channel again.")
     return result
+
+
+def fetch_as_allowed(url):
+    """A remote file's own URL, set to be fetched only over verified https: Apprise would otherwise
+    follow a redirect, which can lead to plain http, or skip the check with verify=no. What the URL
+    says of either is replaced."""
+    base, _, query = url.partition("?")
+    kept = [text for text, key, _ in query_pairs(query) if key not in ("redirect", "verify")]
+    return base + "?" + "&".join(kept + ["verify=yes", "redirect=no"])
 
 
 def prune_key_files(channels):
