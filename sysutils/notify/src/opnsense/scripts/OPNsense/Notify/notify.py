@@ -109,7 +109,11 @@ QUERY_FIELD = "__query"
 # elsewhere, e.g. MSG91 or SendGrid, a template is only an ID. The dialog takes the file's
 # contents, which are stored with the channel and written under KEY_DIR at send time; the URL
 # then carries KEY_MARKER. Any other local path is refused, so a channel cannot make root read a
-# file of its choosing.
+# file of its choosing. Checked against this Apprise; the tests fail on another until it is again.
+# Before raising it, also confirm the Apprise internals the URL checks call still exist and behave
+# the same: plugins.url_to_dict and N_MGR, utils.parse's parse_qsd, parse_urls, VALID_URL_RE and
+# NOTIFY_CUSTOM_*_TOKENS (see apprise_view, check_url, query_pairs, custom_arg).
+FILE_ARGS_APPRISE = "1.13.1"
 FILE_ARGS = {
     "NotifyDiscord": ("template",), "NotifyTelegram": ("template",), "NotifySlack": ("template",),
     "NotifyWorkflows": ("template",), "NotifyFCM": ("keyfile",), "NotifyVapid": ("keyfile", "subfile"),
@@ -276,31 +280,36 @@ def save_state(state):
 
 def follow(path, previous, keep=None):
     """New lines since the last pass (only those with keep), the position to remember, and (lines
-    missed, bytes skipped). A rotated log is finished first, found by inode; inode 0 means from
-    the start."""
+    missed, bytes skipped, rotated logs gone before their end was read). A rotated log is finished
+    first, found by inode; inode 0 means from the start."""
     try:
         stat = os.stat(path)
     except OSError:
-        return [], previous, (0, 0)
+        if previous.get("inode") and previous.get("path") == path:
+            # gone part-way through, e.g. removed by retention: its end is lost, and a new one is
+            # read from its start
+            return [], {"inode": 0, "offset": 0, "path": path}, (0, 0, 1)
+        return [], previous, (0, 0, 0)
     state = {"inode": stat.st_ino, "offset": stat.st_size, "path": path}
     if previous.get("inode") is None:
-        return [], state, (0, 0)  # first sight of this file, start from the end
+        return [], state, (0, 0, 0)  # first sight of this file, start from the end
     lines: list = []
-    missed, skipped = 0, 0
+    missed, skipped, lost = 0, 0, 0
     if previous["inode"] and previous["inode"] != stat.st_ino:
         old = rotated(path, previous["inode"])
         read = read_new(old, previous.get("offset", 0), keep) if old is not None else None
         if read is not None:
             lines, missed, skipped = read[0], read[1], read[2]
-        # else compressed; either way the new file is read from its start
+        else:
+            lost = 1  # removed or compressed first: what it held after the last pass is not known
         previous = {"inode": stat.st_ino, "offset": 0, "path": path}
     read = read_new(path, previous.get("offset", 0), keep)
     if read is None:
-        return lines, previous, (missed, skipped)
+        return lines, previous, (missed, skipped, lost)
     lines += read[0]
     state["offset"] = read[3]
     missed += read[1] + max(len(lines) - LOG_LINES, 0)
-    return lines[-LOG_LINES:], state, (missed, skipped + read[2])
+    return lines[-LOG_LINES:], state, (missed, skipped + read[2], lost)
 
 
 def find_mark(data, keep, start, end):
@@ -376,19 +385,22 @@ def rotated(path, inode):
     return None
 
 
-def left_out(event, what, missed, skipped):
+def left_out(event, what, missed, skipped, lost=0):
     """A note that a log pass left lines out, or nothing."""
     parts = []
     if missed:
         parts.append(f"{missed} {what} before the latest {LOG_LINES}")
     if skipped:
         parts.append(f"{skipped // (1024 * 1024) or 1} MB of log")
-    if not parts:
+    body = "The log grew faster than it is read, so these were passed over: " + "; ".join(parts) + "." \
+        if parts else ""
+    if lost:
+        body = (body + " " if body else "") + \
+            "The log was rotated and the old one removed before its end was read, so what it held last is not known."
+    if not body:
         return []
     # sent, not counted
-    return [dict(message(event, "warning", f"Some {what} were not checked",
-                         "The log grew faster than it is read, so these were passed over: " + "; ".join(parts) + "."),
-                 note=True)]
+    return [dict(message(event, "warning", f"Some {what} were not checked", body), note=True)]
 
 
 def audit_log():
@@ -510,13 +522,13 @@ def check_firmware(config, previous):
 def check_auth(config, previous):
     logins = config["general"].get("authLogins", "0") == "1"
     previous, path, lines = previous or {}, audit_log(), []
-    missed, skipped = 0, 0
+    missed, skipped, lost = 0, 0, 0
     if previous.get("path") and previous["path"] != path:
-        lines, _, (missed, skipped) = follow(previous["path"], previous)  # the rest of the day before
+        lines, _, (missed, skipped, lost) = follow(previous["path"], previous)  # the rest of the day before
         previous = {"inode": 0}  # read the new day's file from its start
-    more, state, (more_missed, more_skipped) = follow(path, previous)
+    more, state, (more_missed, more_skipped, more_lost) = follow(path, previous)
     lines += more
-    messages = left_out("auth", "login events", missed + more_missed, skipped + more_skipped)
+    messages = left_out("auth", "login events", missed + more_missed, skipped + more_skipped, lost + more_lost)
     for line in lines:
         body = line.strip()
         lowered = body.lower()
@@ -834,7 +846,7 @@ def check_syslog(config, previous):
                                                   for s in range(threshold + 1)), re.M)
     files: dict = {}
     found: dict = {}
-    missed = skipped = 0
+    missed = skipped = lost = 0
     for name in names:
         path = os.path.join(SYSLOG_DIR, name, f"{name}_{day}.log")
         last = previous.get("files", {}).get(name, {})
@@ -842,11 +854,11 @@ def check_syslog(config, previous):
             continue
         lines = []
         if last.get("path") and last["path"] != path:
-            lines, _, (count, passed) = follow(last["path"], last, wanted)  # the rest of the day before
-            missed, skipped = missed + count, skipped + passed
+            lines, _, (count, passed, gone) = follow(last["path"], last, wanted)  # the rest of the day before
+            missed, skipped, lost = missed + count, skipped + passed, lost + gone
             last = {"inode": 0}  # read the new day's file from its start
-        more, files[name], (count, passed) = follow(path, last, wanted)
-        missed, skipped = missed + count, skipped + passed
+        more, files[name], (count, passed, gone) = follow(path, last, wanted)
+        missed, skipped, lost = missed + count, skipped + passed, lost + gone
         for line in lines + more:
             match = re.match(r"<(\d+)>\d* \S+ \S+ (\S+) \S+ \S+ (?:-|\[.*?\]) ?(.*)", line.strip())
             if match:
@@ -880,7 +892,7 @@ def check_syslog(config, previous):
         messages.append(dict(message("syslog", "warning", f"{len(extra)} more log messages", "\n".join(extra)),
                              note=True))
     if "\tnot checked" not in seen:
-        found_note = left_out("syslog", "log messages", missed, skipped)
+        found_note = left_out("syslog", "log messages", missed, skipped, lost)
         if found_note:
             seen["\tnot checked"] = now
         messages += found_note
@@ -918,8 +930,8 @@ def check_device(config, previous):
 
 def check_ids(config, previous):
     severity = setting(config["general"], "idsSeverity", 1)
-    lines, state, (missed, skipped) = follow(IDS_LOG, previous or {}, keep=b'"event_type":"alert"')
-    messages = left_out("ids", "IDS alerts", missed, skipped)
+    lines, state, (missed, skipped, lost) = follow(IDS_LOG, previous or {}, keep=b'"event_type":"alert"')
+    messages = left_out("ids", "IDS alerts", missed, skipped, lost)
     for line in lines:
         try:
             event = json.loads(line)
@@ -1085,18 +1097,31 @@ def file_args(schema):
     return {arg for name, args in FILE_ARGS.items() if name in names for arg in args}
 
 
+def apprise_view(url):
+    """(file arguments of its service, {argument: value}) of what Apprise builds a plugin from:
+    its own url_to_dict, as Apprise.instantiate runs it, so the service is the one it resolves,
+    a native https:// webhook included, and the values are the ones the plugin reads. The checks
+    look at this, never at a reading of their own. ({}, {}) when Apprise cannot read the URL."""
+    from apprise.plugins import N_MGR, url_to_dict
+    results = url_to_dict(url or "") if isinstance(url, str) else None
+    if not isinstance(results, dict) or results.get("schema") not in N_MGR:
+        return set(), {}
+    names = {c.__name__ for c in N_MGR[results["schema"]].__mro__}
+    args = {arg for name, found in FILE_ARGS.items() if name in names for arg in found}
+    return args, dict(results.get("qsd") or {})
+
+
 def local_file_args(url):
     """The arguments of a URL that would make Apprise read a file this plugin did not write, or
     fetch a private key from elsewhere."""
-    args = file_args(url_schema(url))
-    return [key for key, value in urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query)
-            if key.lower() in args and value != KEY_MARKER
-            and not (key.lower() in REMOTE_FILE_ARGS and re.match(r"https://", value, re.I))]
+    args, values = apprise_view(url)
+    return [key for key, value in values.items() if key in args and value != KEY_MARKER
+            and not (key in REMOTE_FILE_ARGS and re.match(r"https://", value, re.I))]
 
 
 def plain_http_args(url, names):
     """Those of names that are fetched but given as http://; only https is fetched."""
-    values = {k.lower(): v for k, v in urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query)}
+    _, values = apprise_view(url)
     return [key for key in names if key.lower() in REMOTE_FILE_ARGS
             and values.get(key.lower(), "").lower().startswith("http://")]
 
@@ -1112,31 +1137,41 @@ def file_label(schema, arg):
 
 def stored_file_args(url):
     """The arguments of a URL whose file the channel stores."""
-    args = file_args(url_schema(url))
-    return [key.lower() for key, value in urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query)
-            if key.lower() in args and value == KEY_MARKER]
+    args, values = apprise_view(url)
+    return [key for key, value in values.items() if key in args and value == KEY_MARKER]
 
 
 def with_key_files(channel):
     """The channel URL with each stored file written out and its marker replaced by the path."""
     url, files = channel.get("url", ""), channel.get("files") or {}
-    args = file_args(url_schema(url))
+    args, _ = apprise_view(url)
     base, sep, query = url.partition("?")
+    pairs = query_pairs(query) if sep else []
+    # a repeated file argument counts only where Apprise takes it, its last, so the others go
+    last = {name: i for i, (_, name, _) in enumerate(pairs) if name in args}
     parts = []
-    for part in query.split("&") if sep else []:
-        key, eq, value = part.partition("=")
-        key = urllib.parse.unquote_plus(key)
-        if eq and key.lower() in args and urllib.parse.unquote_plus(value) == KEY_MARKER:
-            content = files.get(key.lower())
+    written = {}
+    for i, (text, name, value) in enumerate(pairs):
+        if name in args and last[name] != i:
+            continue
+        if name in args and value == KEY_MARKER:
+            content = files.get(name)
             if not isinstance(content, str) or content == "":
-                raise ValueError(f"The file for {key} is not stored with this channel; paste it again.")
+                raise ValueError(f"The file for {name} is not stored with this channel; paste it again.")
             if not CHANNEL_ID.fullmatch(channel["uuid"]):
                 raise ValueError("The channel's ID is not valid.")
-            path = os.path.join(KEY_DIR, f"{channel['uuid']}-{key.lower()}")
-            write_private(path, content, only_changed=True)
-            part = f"{key}={urllib.parse.quote(path, safe='')}"
-        parts.append(part)
-    return base + (sep + "&".join(parts) if sep else "")
+            written[name] = os.path.join(KEY_DIR, f"{channel['uuid']}-{name}")
+            write_private(written[name], content, only_changed=True)
+            text = f"{name}={urllib.parse.quote(written[name], safe='')}"
+        parts.append(text)
+    result = base + (sep + "&".join(parts) if sep else "")
+    # what Apprise builds from it: each stored file's argument names the file written for it, and
+    # no marker is left that this reading missed
+    _, found = apprise_view(result)
+    if any(found.get(name) != path for name, path in written.items()) \
+            or any(found.get(name) == KEY_MARKER for name in args):
+        raise ValueError("The URL's stored files could not be put in place; save the channel again.")
+    return result
 
 
 def prune_key_files(channels):
@@ -1147,7 +1182,7 @@ def prune_key_files(channels):
         return
     if not names:
         return  # most checks: no need to load Apprise's services
-    wanted = {f"{c['uuid']}-{key}" for c in channels if f"={KEY_MARKER}" in urllib.parse.unquote_plus(c.get("url", ""))
+    wanted = {f"{c['uuid']}-{key}" for c in channels if KEY_MARKER in urllib.parse.unquote(c.get("url", ""))
               for key in stored_file_args(c.get("url", ""))}
     for name in names:
         if name not in wanted and not (name.endswith(".tmp") and not stale_tmp(os.path.join(KEY_DIR, name))):
@@ -1158,8 +1193,18 @@ def prune_key_files(channels):
 
 
 def deliver(channel, title, body, ntype, report=None):
-    """Send one notification: (ok, error). A summary goes to email as HTML with inline graphs,
-    elsewhere as its short text with a link to the report."""
+    """Send one notification: (ok, error). It never raises: an odd URL or a fault in Apprise
+    fails this delivery alone, which is retried, rather than the whole check."""
+    try:
+        return deliver_once(channel, title, body, ntype, report)
+    except Exception as exc:
+        # its type only: the text of an error in Apprise or requests can carry the URL's secrets
+        return False, f"Delivery failed ({type(exc).__name__})."
+
+
+def deliver_once(channel, title, body, ntype, report=None):
+    """A summary goes to email as HTML with inline graphs, elsewhere as its short text with a
+    link to the report."""
     try:
         import apprise
     except ImportError as exc:
@@ -1176,8 +1221,10 @@ def deliver(channel, title, body, ntype, report=None):
     except (ValueError, OSError) as exc:
         return False, str(exc)
     with apprise.LogCapture(level=apprise.logging.WARNING, fmt="%(message)s") as captured:
+        # the one plugin the checks looked at: add() given the string would split it at commas
+        plugin = apprise.Apprise.instantiate(url)
         notifier = apprise.Apprise()
-        if not notifier.add(url):
+        if plugin is None or not notifier.add(plugin):
             return False, "The URL is not a valid Apprise URL."
         server = next(iter(notifier), None)
         if server is not None and "NotifyDiscord" in {c.__name__ for c in type(server).__mro__}:
@@ -1197,7 +1244,7 @@ def deliver(channel, title, body, ntype, report=None):
                                       body_format=apprise.NotifyFormat.HTML,
                                       attach=[graph["path"] for graph in drawn.values()] or None))
         else:
-            if "overflow" not in {k.lower() for k, _ in urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query)}:
+            if "overflow" not in url_args(url):
                 # over a service's limit it is refused: split a summary, cut the rest
                 for each in notifier:
                     each.overflow_mode = apprise.OverflowMode.SPLIT if report else apprise.OverflowMode.TRUNCATE
@@ -1389,6 +1436,7 @@ def run_check():
             log(syslog.LOG_ERR, f"summary for {name} failed, trying again next check: {exc}")
             summary["channels"][channel["uuid"]] = dict(period, tries=tries)
     new_state["summary"] = summary
+    # sent before the state is saved: a run that dies in between sends again rather than loses
     new_state["queue"] = send(channels, title_prefix(general, hostname), messages,
                               state.get("queue", []) + summaries, threshold)
     save_state(new_state)
@@ -1642,8 +1690,52 @@ def default_text(value):
     return ("yes" if value else "no") if isinstance(value, bool) else str(value)
 
 
+def url_parts(url):
+    """(schema, query) as Apprise reads a URL (its VALID_URL_RE): leading space and backslashes
+    allowed, the query everything after the first ?, a # included. Every check reads a URL this
+    way, so it sees what Apprise will act on."""
+    from apprise.utils.parse import VALID_URL_RE
+    match = VALID_URL_RE.search(url or "")
+    if match is None:
+        return "", ""
+    return (match.group("schema") or "").lower().strip(), (match.group("kwargs") or "").strip()
+
+
 def url_schema(url):
-    return url.split("://", 1)[0].lower() if "://" in url else ""
+    return url_parts(url)[0]
+
+
+def url_query(url):
+    return url_parts(url)[1]
+
+
+def custom_arg(text):
+    """Whether a query part is a free-form argument (+header, -param, :field), as Apprise's own
+    patterns tell them apart; a leading space counts as +."""
+    from apprise.utils.parse import (NOTIFY_CUSTOM_ADD_TOKENS, NOTIFY_CUSTOM_COLON_TOKENS,
+                                     NOTIFY_CUSTOM_DEL_TOKENS)
+    key = urllib.parse.unquote(text.partition("=")[0])
+    return any(p.match(key) for p in (NOTIFY_CUSTOM_ADD_TOKENS, NOTIFY_CUSTOM_DEL_TOKENS, NOTIFY_CUSTOM_COLON_TOKENS))
+
+
+def query_pairs(query):
+    """[(text, key, value)] for each part of a query, split and read as Apprise's parse_qsd does:
+    at & and ;, a + in a key after its first letter a space, decoded and trimmed, the key in
+    lowercase. For rewriting a query; apprise_view says what it means."""
+    from apprise.utils.parse import parse_qsd
+    found = []
+    for text in re.split(r"[&;]", query or ""):
+        # each part read by parse_qsd itself, split where it splits
+        for key, value in parse_qsd(text, simple=True)["qsd"].items() if text else []:
+            found.append((text, key, value))
+    return found
+
+
+def url_args(url):
+    """{argument: value} as Apprise reads a URL's query: split at & and ;, decoded and trimmed,
+    keys in lowercase, the last of a repeated one kept."""
+    from apprise.utils.parse import parse_qsd
+    return parse_qsd(url_query(url))["qsd"]
 
 
 def parse_saved(url, services, schemas):
@@ -1654,7 +1746,7 @@ def parse_saved(url, services, schemas):
         return None, {}, ""
     plugin = N_MGR[url_schema(url)] if url_schema(url) in N_MGR else None
     results = plugin.parse_url(url) if plugin is not None else None
-    query = urllib.parse.urlsplit(url).query
+    query = url_query(url)
     return (service_id, results, query) if isinstance(results, dict) else (None, {}, "")
 
 
@@ -1719,14 +1811,13 @@ def same_value(value, default):
 
 
 def split_query(service, query):
-    """A URL's query as (option field values, whatever no field covers)."""
+    """A URL's query as (option field values, whatever no field covers), read as Apprise reads it."""
     values, rest = {}, []
-    for part in (query or "").split("&"):
-        key, _, value = part.partition("=")
+    for text, key, value in query_pairs(query):
         if key in service["options"]:
-            values[key] = urllib.parse.unquote_plus(value)
-        elif part:
-            rest.append(part)
+            values[key] = value
+        else:
+            rest.append(text)
     return values, "&".join(rest)
 
 
@@ -1770,12 +1861,9 @@ def normalize(url, plugin, services, schemas):
     args = services[service_id]["args"]
     # what the same URL renders with nothing set is the service's own defaults
     plain, _ = check_url(base)
-    defaults = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(plain.url(privacy=False)).query)) \
-        if plain is not None else {}
+    defaults = url_args(plain.url(privacy=False)) if plain is not None else {}
     keep = []
-    for part in query.split("&"):
-        key, _, value = part.partition("=")
-        value = urllib.parse.unquote(value)
+    for part, key, value in query_pairs(query):
         if key in defaults and value == defaults[key]:
             continue
         if key in args and same_value(value, args[key]):
@@ -1822,8 +1910,8 @@ def describe_url(url, keep_secrets=False):
     fields = saved_values(service, results, [k for k in shown if not tokens[k]["private"]])
     fields["schema"] = url_schema(url)
     secrets = saved_values(service, results, [k for k in shown if tokens[k]["private"]])
-    options, rest = split_query(service, urllib.parse.urlsplit(url).query)
-    if any(urllib.parse.unquote(part).startswith(service["prefixes"]) for part in rest.split("&")):
+    options, rest = split_query(service, url_query(url))
+    if service["prefixes"] and any(custom_arg(text) for text, _, _ in query_pairs(rest)):
         return {"service": "", "custom": True}  # no field masks these, so keep the URL write-only
     for key, value in options.items():
         (secrets if service["options"][key]["private"] else fields)[key] = value
@@ -1891,6 +1979,10 @@ def split_list(value):
 def check_url(url):
     """(apprise plugin, error text) for a URL."""
     import apprise
+    from apprise.utils.parse import parse_urls
+    if len(parse_urls(url)) > 1:
+        # Apprise's add() would split it and build a service from each, unchecked
+        return None, "Give one URL per channel; add a channel for each further service."
     local = local_file_args(url)
     plain = plain_http_args(url, local)
     if plain:
@@ -1924,7 +2016,7 @@ def from_service(service_id, fields, stored):
         private = [k for k, t in service["tokens"].items() if t["private"] and k not in values]
         values.update(saved_values(service, results, private))
         # secret options are masked too, so keep what was stored
-        stored_options, _ = split_query(service, urllib.parse.urlsplit(stored).query)
+        stored_options, _ = split_query(service, url_query(stored))
         for key, value in stored_options.items():
             if service["options"][key]["private"] and key not in values and key not in cleared:
                 values[key] = value

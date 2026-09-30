@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5_2 - 2026-09-30
+
+- A channel URL is checked as Apprise builds its service, so no local file can be named after a # or a ;, in a native webhook URL or in a second URL; a channel takes one URL.
+- A header written with a leading space stays write-only, like one with a +.
+- A delivery that trips up Apprise fails alone and is retried, rather than stopping the check.
+- A log removed, or rotated and removed, before it is read is reported as not checked.
+
 ## 1.5_1 - 2026-09-29
 
 - A channel's saved URL shows addresses as typed, e.g. @ rather than %40.

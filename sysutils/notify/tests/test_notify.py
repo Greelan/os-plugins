@@ -137,6 +137,61 @@ class StoredFiles(Case):
             finally:
                 os.unlink(handle.name)
 
+    def test_file_args_checked_for_this_apprise(self):
+        import apprise
+        self.assertEqual(apprise.__version__, notify.FILE_ARGS_APPRISE,
+                         "a new Apprise: check which arguments it opens as files and the internals the URL "
+                         "checks call (see FILE_ARGS_APPRISE), then update it")
+
+    def test_urls_read_as_apprise_reads_them(self):
+        # a # does not end the query for Apprise, and ; splits it as & does
+        for url in ("slack://T1/B2/C3/#general?template=/etc/master.passwd",
+                    "discord://1/abc?x=1;template=/etc/master.passwd", " discord://1/abc?template=/etc/master.passwd",
+                    # a native webhook, which Apprise turns into discord://
+                    "https://discord.com/api/webhooks/123456/abcdef?template=/etc/master.passwd"):
+            self.assertEqual(notify.local_file_args(url), ["template"], url)
+        self.assertIsNone(notify.check_url("discord:\\\\1/abc?template=/etc/master.passwd")[0],
+                          "no service Apprise can build")
+        plugin, error = notify.check_url("discord://1/abc?x=1,discord://1/abc?template=/etc/master.passwd")
+        self.assertIsNone(plugin, "Apprise's add() would split it into two, the second unchecked")
+        self.assertIn("one URL per channel", error)
+        self.assertEqual(notify.local_file_args("discord://1/abc?template=/etc/master.passwd&template=stored"), [],
+                         "the last one is what Apprise uses")
+
+    def test_a_stored_file_found_as_apprise_finds_it(self):
+        self.build("discord", template='{"content": "x"}', **self.WEBHOOK)
+        path = notify.urllib.parse.quote(os.path.join(notify.KEY_DIR, f"{CHANNEL}-template"), safe="")
+        base = self.channel["url"].split("?", 1)[0]
+        for query in ("x=1;template=stored", "template=%20stored%20", "template=/x&template=stored"):
+            self.assertIn(f"template={path}", notify.with_key_files(dict(self.channel, url=f"{base}?{query}")), query)
+        # the last is what Apprise takes: an https template after a stored one is sent as it is
+        url = notify.with_key_files(dict(self.channel, url=f"{base}?template=stored&template=https://example.com/t"))
+        self.assertTrue(url.endswith("?template=https://example.com/t"), url)
+        # to Apprise this is the file "stored#frag", so it is refused rather than put in place
+        self.assertEqual(notify.local_file_args(f"{base}?template=stored#frag"), ["template"])
+
+    def test_a_header_with_a_leading_space_stays_write_only(self):
+        # Apprise reads a leading space as +, a header that can carry a credential
+        self.assertTrue(notify.custom_arg("%20Authorization=secret"))
+        self.assertTrue(notify.custom_arg("+Authorization=secret"))
+        self.assertFalse(notify.custom_arg("format=text"))
+
+    def test_the_dialog_reads_options_as_apprise_does(self):
+        service = {"options": {"format": {}, "avatar": {}}}
+        self.assertEqual(notify.split_query(service, "format=markdown;avatar=no&x=a+b"),
+                         ({"format": "markdown", "avatar": "no"}, "x=a+b"), "; splits, and + stays a +")
+        self.assertEqual(notify.split_query(service, "FORMAT=%20text%20"), ({"format": "text"}, ""))
+
+    def test_a_delivery_that_trips_fails_alone(self):
+        saved = notify.deliver_once
+        notify.deliver_once = lambda *args: 1 / 0
+        try:
+            ok, error = notify.deliver({"uuid": CHANNEL, "url": "discord://1/abc"}, "t", "b", "info")
+        finally:
+            notify.deliver_once = saved
+        self.assertFalse(ok)
+        self.assertIn("ZeroDivisionError", error)
+
     def test_import_asks_for_https(self):
         self.assertIn("Give an https:// address for template",
                       notify.check_url("discord://1/a?template=http://example.com/t.json")[1])
@@ -1035,6 +1090,37 @@ class Commands(unittest.TestCase):
             shutil.rmtree(folder)
         self.assertEqual(sent, [1, 0, 1, 1, 0, 0])
 
+    def test_a_rotated_log_gone_unread_is_said(self):
+        folder = tempfile.mkdtemp()
+        try:
+            path = os.path.join(folder, "eve.json")
+            with open(path, "w") as handle:
+                handle.write("a\n")
+            _, state, _ = notify.follow(path, {})
+            os.remove(path)  # rotated, and the old one removed, before the next pass
+            with open(path, "w") as handle:
+                handle.write("b\n")
+            self.assertNotEqual(os.stat(path).st_ino, state["inode"])
+            _, _, (_, _, lost) = notify.follow(path, state)
+        finally:
+            shutil.rmtree(folder)
+        self.assertEqual(lost, 1)
+        self.assertIn("rotated", notify.left_out("ids", "IDS alerts", 0, 0, lost)[0]["body"])
+
+    def test_a_followed_log_that_vanished_is_said_once(self):
+        folder = tempfile.mkdtemp()
+        try:
+            path = os.path.join(folder, "audit_20260929.log")
+            with open(path, "w") as handle:
+                handle.write("a\n")
+            _, state, _ = notify.follow(path, {})
+            os.remove(path)  # removed before its end was read
+            _, state, (_, _, lost) = notify.follow(path, state)
+            _, _, (_, _, again) = notify.follow(path, state)
+        finally:
+            shutil.rmtree(folder)
+        self.assertEqual((lost, again), (1, 0), "said once, not on every check while it is gone")
+
     def test_only_a_command_that_succeeded_counts(self):
         self.assertEqual(notify.command_output(["/bin/sh", "-c", "echo ok"]), "ok\n")
         self.assertIsNone(notify.command_output(["/bin/sh", "-c", "echo partial; exit 1"]))
@@ -1117,7 +1203,7 @@ class Commands(unittest.TestCase):
             os.rename(path, os.path.join(elsewhere, "eve.json.0.gz"))
             with open(path, "w") as handle:
                 handle.write('{"event_type":"alert"}\n')
-            lines, _, (missed, _) = notify.follow(path, state, b'"event_type":"alert"')
+            lines, _, (missed, _, _) = notify.follow(path, state, b'"event_type":"alert"')
         finally:
             shutil.rmtree(folder)
             shutil.rmtree(elsewhere)
