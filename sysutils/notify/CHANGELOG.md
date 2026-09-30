@@ -6,6 +6,7 @@
 - A header written with a leading space stays write-only, like one with a +.
 - A delivery that trips up Apprise fails alone and is retried, rather than stopping the check.
 - A log removed, or rotated and removed, before it is read is reported as not checked.
+- An imported URL fills the fields from Apprise's own form of it, so e.g. ntfy tags, email recipients and a Slack channel no longer leave it a custom URL.
 
 ## 1.5_1 - 2026-09-29
 

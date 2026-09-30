@@ -1850,9 +1850,9 @@ def query_from(service, values, base=None):
 
 
 def normalize(url, plugin, services, schemas):
-    """A URL in a scheme the fields do not know, rewritten in Apprise's own form."""
-    if url_schema(url) in schemas:
-        return url
+    """A pasted URL in Apprise's own form, so each setting sits under the name the fields use,
+    e.g. ntfy's tags= as xtags=, Email's to= as its recipients, or a scheme the fields do not
+    know; kept as given unless Apprise reads the rewritten one exactly as the pasted one."""
     native = plugin.url(privacy=False)
     service_id = schemas.get(url_schema(native))
     if service_id is None:
@@ -1862,6 +1862,7 @@ def normalize(url, plugin, services, schemas):
     # what the same URL renders with nothing set is the service's own defaults
     plain, _ = check_url(base)
     defaults = url_args(plain.url(privacy=False)) if plain is not None else {}
+    options = services[service_id]["options"]
     keep = []
     for part, key, value in query_pairs(query):
         if key in defaults and value == defaults[key]:
@@ -1869,7 +1870,26 @@ def normalize(url, plugin, services, schemas):
         if key in args and same_value(value, args[key]):
             continue
         keep.append(part)  # only what differs from the service's own defaults
-    return base + ("?" + "&".join(keep) if keep else "")
+
+    def rendered(parts):
+        again, _ = check_url(base + ("?" + "&".join(parts) if parts else ""))
+        return again.url(privacy=False) if again is not None else None
+
+    # Apprise renders some choices by name, e.g. Gotify's priority 8 as high: the field offers the
+    # choice Apprise reads the same
+    for i, (_, key, value) in enumerate(query_pairs("&".join(keep))):
+        field = options.get(key) or {}
+        if field.get("type") == "choice" and value not in field.get("values", []):
+            for choice in field["values"]:
+                tried = keep[:i] + [f"{key}={urllib.parse.quote(choice, safe='')}"] + keep[i + 1:]
+                if rendered(tried) == native:
+                    keep = tried
+                    break
+    unmatched = any(options.get(key, {}).get("type") == "choice" and value not in options[key]["values"]
+                    for _, key, value in query_pairs("&".join(keep)))
+    rewritten = base + ("?" + "&".join(keep) if keep else "")
+    # a choice Apprise names in a way no field choice matches: the URL as given, as before
+    return rewritten if not unmatched and rendered(keep) == native else url
 
 
 def run_parse(path):

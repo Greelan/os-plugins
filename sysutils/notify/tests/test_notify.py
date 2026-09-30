@@ -14,7 +14,9 @@ SCRIPTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", 
                        "OPNsense", "Notify")
 sys.path.insert(0, os.path.join(SCRIPTS, "lib"))
 sys.path.insert(0, SCRIPTS)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import apprise_urls  # noqa: E402
 import chart  # noqa: E402
 import common  # noqa: E402
 import notify  # noqa: E402
@@ -169,6 +171,74 @@ class StoredFiles(Case):
         self.assertTrue(url.endswith("?template=https://example.com/t"), url)
         # to Apprise this is the file "stored#frag", so it is refused rather than put in place
         self.assertEqual(notify.local_file_args(f"{base}?template=stored#frag"), ["template"])
+
+    def imported(self, url):
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+            json.dump({"url": url}, handle)
+        try:
+            return notify.run_parse(handle.name)
+        finally:
+            os.unlink(handle.name)
+
+    def test_an_import_in_apprise_own_form(self):
+        # what Apprise takes under another name lands in the field for it
+        found = self.imported("ntfys://ntfy.sh/topic?priority=high;tags=warning")
+        self.assertEqual(found["fields"].get("xtags"), "warning")
+        self.assertFalse(found["fields"].get("__query"), "nothing left over to carry along")
+        found = self.imported("mailtos://u:p@example.com?from=fw@example.com&to=a@example.com,b@example.com")
+        self.assertEqual(found["service"], "mailtos")
+        self.assertEqual(found["fields"]["targets"], "a@example.com, b@example.com")
+        # Apprise renders a choice by name where the field offers its value: the field's choice
+        self.assertEqual(self.imported("gotify://example.com/token1234?priority=8")["fields"]["priority"], "8")
+        self.assertEqual(self.imported("pover://" + "u" * 30 + "@" + "a" * 30 + "?priority=high")["fields"]["priority"],
+                         "1")
+
+    def test_every_service_imports_its_choices_into_their_fields(self):
+        # each service Apprise has, from a URL built out of its own rules: a choice Apprise writes
+        # another way than it declares, e.g. Gotify's priority 8 as high, still fills the field
+        import apprise
+        services, schemas = notify.apprise_services()
+        unbuilt, wrong, reached = [], [], 0
+        for entry in apprise.Apprise().details()["schemas"]:
+            protocols = list(entry.get("secure_protocols") or []) + list(entry.get("protocols") or [])
+            service_id = next((schemas[p] for p in protocols if p in schemas), None)
+            choices = {k: f for k, f in services[service_id]["options"].items() if f["type"] == "choice"} \
+                if service_id else {}
+            if not choices or not entry.get("enabled", True):
+                continue
+            base = apprise_urls.build(entry, apprise.Apprise.instantiate)
+            if base is None:
+                unbuilt.append(str(entry["service_name"]))
+                continue
+            reached += 1
+            join = "&" if "?" in base else "?"
+            for key, field in choices.items():
+                tried = [field["values"][0]]
+                for value in field["values"]:
+                    plugin = apprise.Apprise.instantiate(f"{base}{join}{key}={value}")
+                    written = notify.url_args(plugin.url(privacy=False)).get(key) if plugin else None
+                    if written and written not in field["values"]:
+                        tried.append(written)
+                for value in tried:
+                    found = self.imported(f"{base}{join}{key}={notify.urllib.parse.quote(value)}")
+                    got = (found.get("fields") or {}).get(key)
+                    if found.get("service") and got not in ("", None) and got not in field["values"]:
+                        wrong.append(f"{entry['service_name']} {key}={value}: {got}")
+        self.assertGreater(reached, 100, "Apprise's services were reached")
+        self.assertEqual(unbuilt, [], "a service no URL could be built for")
+        self.assertEqual(wrong, [])
+
+    def test_an_import_kept_as_given_unless_apprise_reads_it_the_same(self):
+        url = "discord://123456789/abcdefghijklmnop"
+        plugin, _ = notify.check_url(url)
+        services, schemas = notify.apprise_services()
+        saved = notify.check_url
+        # a rewrite Apprise would read differently is not taken
+        notify.check_url = lambda u: (None, "") if u != url else saved(u)
+        try:
+            self.assertEqual(notify.normalize(url + "?avatar=no", plugin, services, schemas), url + "?avatar=no")
+        finally:
+            notify.check_url = saved
 
     def test_a_header_with_a_leading_space_stays_write_only(self):
         # Apprise reads a leading space as +, a header that can carry a credential
