@@ -62,6 +62,7 @@ class FileArguments(Case):
             self.assertTrue(notify.local_file_args(url), url)
             self.assertIsNone(notify.check_url(url)[0], url)
         self.assertEqual(notify.local_file_args("msg91://a/s/p?template=abc123"), [])
+        self.assertEqual(notify.local_file_args("discord://1/a?template="), [], "empty: Apprise ignores it")
 
     def test_only_public_files_are_fetched(self):
         self.assertEqual(notify.local_file_args("discord://1/a?template=https://example.com/t.json"), [])
@@ -213,6 +214,17 @@ class StoredFiles(Case):
         found = self.imported("dingtalk://abcdefghij/?optional=yes&rto=3")
         self.assertEqual((found["fields"].get("optional"), found["fields"].get("rto")), ("yes", "3"))
 
+    def test_a_bool_spelled_as_apprise_reads_it(self):
+        # t, y or on are yes to Apprise (parse_bool), so they are yes in the field's box too
+        self.assertEqual(self.imported("dingtalk://abcdefghij/?optional=t")["fields"].get("optional"), "yes")
+        self.assertEqual(self.imported("apprises://example.com/token?emojis=on")["fields"].get("emojis"), "yes")
+        self.assertTrue(notify.same_value("t", True))
+        self.assertIn("tts=yes", notify.query_from(notify.apprise_services()[0]["discord"], {"tts": "y"}))
+
+    def test_text_without_a_scheme_is_not_several_urls(self):
+        self.assertFalse(notify.several_urls("my webhook token"))
+        self.assertIn("Unsupported URL", notify.check_url("my webhook token")[1])
+
     def test_every_service_imports_its_options_as_apprise_reads_them(self):
         # each option of each service Apprise has, read off the plugin it builds from the pasted URL
         # and from the import, which must not differ
@@ -320,7 +332,7 @@ class StoredFiles(Case):
         # several URLs saved in one channel before are refused at delivery too, not sent to one mangled
         ok, error = notify.deliver({"uuid": CHANNEL, "url": "json://a/b, json://c/d"}, "t", "b", "info")
         self.assertFalse(ok)
-        self.assertIn("holds several URLs", error)
+        self.assertIn("one URL per channel", error)
         # a plugin tripping over the URL is an invalid URL, not a crash
         self.assertIsNone(notify.check_url("dbus://[")[0])
         # a saved channel's / # is read as Apprise reads it
@@ -353,13 +365,16 @@ class StoredFiles(Case):
         self.assertFalse(ok)
         self.assertIn("Give an https:// address for template", error)
 
-    def test_pruning_without_key_files_skips_apprise(self):
+    def test_pruning_never_loads_apprise(self):
         saved = notify.stored_file_args
         notify.stored_file_args = lambda url: self.fail("Apprise's services loaded for nothing")
         try:
             notify.prune_key_files([{"uuid": CHANNEL, "url": "discord://1/a"}])  # no key directory yet
             os.makedirs(notify.KEY_DIR)
             notify.prune_key_files([{"uuid": CHANNEL, "url": "discord://1/a"}])  # empty
+            open(os.path.join(notify.KEY_DIR, f"{CHANNEL}-template"), "w").close()
+            notify.prune_key_files([{"uuid": CHANNEL, "url": "discord://1/a?template=stored", "files": {"template": "x"}}])
+            self.assertEqual(os.listdir(notify.KEY_DIR), [f"{CHANNEL}-template"], "listed with the channel: kept")
         finally:
             notify.stored_file_args = saved
 
@@ -673,7 +688,7 @@ class Summaries(unittest.TestCase):
         self.assertIn("Services: 1 of 4 running; stopped: Cron, OpenVPN client (2)", lines, "unchecked left out")
         self.assertTrue([line for line in lines if line.startswith("Firmware: 1 update(s) pending, 27.1 available")])
         self.assertEqual([line for line in lines if line.startswith(("Certificate", "Authority"))],
-                         ["Authority old expired", "Certificate web expires in 3 day(s)"], "soonest first")
+                         ["Authority: old expired", "Certificate: web expires in 3 day(s)"], "soonest first")
         self.assertIn("Firmware: The last update check failed (checked Mon Sep 28)", failed)
         self.assertIn("Firmware: No update check result", missing)
 
@@ -874,6 +889,7 @@ class Summaries(unittest.TestCase):
 class SummaryTiming(unittest.TestCase):
     def setUp(self):
         self.tz = os.environ.get("TZ")
+        summary.GRAPHS.clear()
 
     def tearDown(self):
         if self.tz is None:
@@ -881,6 +897,7 @@ class SummaryTiming(unittest.TestCase):
         else:
             os.environ["TZ"] = self.tz
         notify.time.tzset()
+        summary.GRAPHS.clear()
 
     def test_the_repeated_hour_when_clocks_go_back_is_due_once(self):
         os.environ["TZ"] = "America/New_York"
@@ -921,6 +938,18 @@ class SummaryTiming(unittest.TestCase):
             summary.draw_graph = saved
             summary.GRAPHS.clear()
         self.assertEqual(drawn, ["cpu-system.png", "cpu-system.png"], "once per period, not per channel")
+
+    def test_health_data_is_read_once_per_file(self):
+        reads, saved, folder = [], summary.configctl_json, tempfile.mkdtemp()
+        summary.configctl_json = lambda *a: reads.append(a[2]) or self.health(self.FETCH)
+        try:
+            for end in (1727000700, 1727000800):
+                summary.draw_series({"kind": "blocks", "key": "wan", "title": "WAN", "name": "blocks-wan.png",
+                                     "start": 1727000100, "end": end}, os.path.join(folder, str(end)))
+        finally:
+            summary.configctl_json = saved
+            shutil.rmtree(folder)
+        self.assertEqual(reads, ["wan-packets.rrd"], "two periods, one reading")
 
     @staticmethod
     def health(rows, step=300):
@@ -1064,10 +1093,10 @@ class SummaryTiming(unittest.TestCase):
     def test_brief_status(self):
         lines = ["WAN address: 203.0.113.7, 2001:db8::7, fd00::7", "Gateway WAN: Online, RTT 1.1 ms, loss 0.0 %",
                  "Gateway WAN6: Online", "Gateway VPN: Latency, Packetloss, RTT 900 ms, loss 30.0 %",
-                 "6 of 6 interface links up"] + [f"Certificate c{i} expires in {i} day(s)" for i in range(5)]
+                 "6 of 6 interface links up"] + [f"Certificate: c{i} expires in {i} day(s)" for i in range(5)]
         self.assertEqual(summary.brief_status(lines), [
             "WAN address: 203.0.113.7 (+2)", "Gateways: 2 online; VPN Latency, Packetloss", "6 of 6 interface links up",
-            "Certificate c0 expires in 0 day(s)", "Certificate c1 expires in 1 day(s)", "Certificate c2 expires in 2 day(s)",
+            "Certificate: c0 expires in 0 day(s)", "Certificate: c1 expires in 1 day(s)", "Certificate: c2 expires in 2 day(s)",
             "and 2 more certificates"])
         self.assertIn("Gateways: WAN down", summary.brief_status(["Gateway WAN: down"]), "none online")
 
@@ -1308,20 +1337,27 @@ class Commands(unittest.TestCase):
         found = {"vtnet0": {"status": "active", "ipv4": [{"ipaddr": "192.0.2.1", "vhid": "1"}],
                             "ipv6": [{"ipaddr": "2001:db8::1", "deprecated": False, "link-local": False},
                                      {"ipaddr": "2001:db8::2", "deprecated": True, "link-local": False},
+                                     {"ipaddr": "2001:db8::3", "deprecated": False, "link-local": False},
                                      {"ipaddr": "fe80::1", "link-local": True}],
                             "carp": {"1": {"status": "MASTER", "vhid": "1", "advbase": "1", "advskew": "0"}}},
                  "lo0": {"ipv4": [{"ipaddr": "127.0.0.1"}], "ipv6": []}}
-        saved = common.configctl_json
+        saved = common.configctl_json, common.command_output
         common.configctl_json = lambda *args: found if args == ("interface", "list", "ifconfig") else None
+        # the listing has no flag for a privacy address, so ifconfig is read for that
+        common.command_output = lambda command, timeout=30, partial=False: (
+            "vtnet0: flags=8863<UP> metric 0 mtu 1500\n\tinet6 2001:db8::1 prefixlen 64 autoconf\n"
+            "\tinet6 2001:db8::3 prefixlen 64 autoconf temporary pltime 86400 vltime 604800\n")
         notify.interfaces.cache_clear()
+        common.temporary_addresses.cache_clear()
         try:
-            self.assertEqual(notify.addresses(), {"vtnet0": ["192.0.2.1", "2001:db8::1"]})
+            self.assertEqual(notify.addresses(), {"vtnet0": ["192.0.2.1", "2001:db8::1"]}, "a temporary one left out")
             self.assertEqual(notify.link_states({"vtnet0": "WAN", "lo0": "lo"}), {"vtnet0": "active"})
             self.assertEqual(notify.carp_vhids(), [("vtnet0", "1", "MASTER")])
             _, messages = notify.check_carp({"interfaces": {"vtnet0": "WAN"}}, {"1@vtnet0": "BACKUP"})
             self.assertEqual([m["title"] for m in messages], ["CARP vhid 1 on WAN is now MASTER"])
         finally:
-            common.configctl_json = saved
+            common.configctl_json, common.command_output = saved
+            common.temporary_addresses.cache_clear()
 
     def test_no_interfaces_reading_is_not_no_interfaces(self):
         saved = common.command_output
@@ -1553,6 +1589,21 @@ class SummaryFacts(unittest.TestCase):
         self.assertEqual(sorted(state.values()), ["offline", "online", "stale"])
         self.assertEqual([m["title"] for m in messages], [f"WireGuard wg0 {'a' * 12} is online"],
                          "down as recorded before 1.4 covered both stale and never connected")
+
+    def test_a_peer_first_seen_down_is_a_baseline(self):
+        now = int(notify.time.time())
+        saved = notify.configctl_json
+        records = [{"type": "peer", "if": "wg0", "public-key": "a" * 44, "latest-handshake": now - 30},
+                   {"type": "peer", "if": "wg0", "public-key": "b" * 44, "latest-handshake": 0}]
+        notify.configctl_json = lambda *a: {"records": records} if a[0] == "wireguard" else {}
+        try:
+            state, messages = notify.check_vpn({}, {f"WireGuard wg0 {'c' * 12}": "online"})
+        finally:
+            notify.configctl_json = saved
+        self.assertEqual([m["title"] for m in messages],
+                         [f"WireGuard wg0 {'a' * 12} is online", f"WireGuard wg0 {'c' * 12} is offline"],
+                         "one first seen up has just connected; one first seen down is only recorded")
+        self.assertEqual(state[f"WireGuard wg0 {'b' * 12}"], "offline")
 
     def test_an_unread_vpn_status_is_not_everyone_gone(self):
         saved = notify.configctl_json
@@ -1924,6 +1975,33 @@ class Hardening(unittest.TestCase):
         self.assertEqual(notify.load_state(), {"stamp": 1, "ids": {"inode": 5, "offset": 99}},
                          "stamp stays the last good check, so a long outage still goes stale")
 
+    def test_levels_survive_a_pause(self):
+        notify.save_state({"stamp": 1, "gateway": {}, "status": {}, "certificate": {"items": {"cert:1": "9:expiring"}},
+                           "firmware": {"key": "k"}})
+        self.assertEqual(notify.fresh_state(), {"certificate": {"items": {"cert:1": "9:expiring"}}, "firmware": {"key": "k"}},
+                         "transitions start afresh, but what was already told is not told again")
+
+    def test_a_boot_is_not_continuous_with_the_check_before(self):
+        notify.save_state({"stamp": int(notify.time.time()), "service": {"uptime": 100.0, "services": {}}})
+        saved = notify.firmware_product, notify.send
+        notify.firmware_product, notify.send = lambda: {}, lambda *a: []
+        notify.is_carp_backup = lambda config, unknown=True: False
+        try:
+            notify.run_boot()
+        finally:
+            notify.firmware_product, notify.send = saved
+        self.assertEqual(notify.load_state()["service"], {"services": {}}, "stops are timed afresh")
+
+    def test_stale_state_files_go(self):
+        stale = notify.STATE + ".123.tmp"
+        open(stale, "w").close()
+        os.utime(stale, (notify.time.time() - 7200,) * 2)
+        notify.interfaces = lambda: {}
+        notify.is_carp_backup = lambda config, unknown=True: True
+        notify.update_summaries = lambda *a: ({}, [])
+        notify.run_check()
+        self.assertEqual(sorted(os.listdir(self.folder)), ["state.json"], "an interrupted write's leftover goes")
+
     def test_non_text_titles(self):
         self.assertEqual(notify.message("ids", "warning", None, "")["title"], "ids")
         self.assertEqual(notify.message("ids", "warning", 2019, "")["title"], "2019")
@@ -2077,6 +2155,20 @@ class Archive(unittest.TestCase):
         finally:
             notify.deliver = saved
         self.assertEqual(summary.archived_reports(), [], "given up on: never sent")
+
+    def test_switching_off_takes_unsent_pages(self):
+        name = summary.archive_report(self.REPORT, self.UUID, "daily", 0)
+        saved = notify.STATE
+        try:
+            notify.STATE = os.path.join(self.folder, "state.json")
+            notify.save_state({"stamp": 1, "queue": [dict(notify.message("summary", "info", "Daily summary", "s"),
+                                                            uuid=self.UUID, archive=name)]})
+            notify.load_config = lambda: {"general": {"enabled": "0"}, "channels": [], "hostname": ""}
+            notify.run_check()
+            self.assertFalse(os.path.exists(notify.STATE), "switched off: start afresh")
+        finally:
+            notify.STATE = saved
+        self.assertEqual(summary.archived_reports(), [], "never sent")
 
 
 if __name__ == "__main__":

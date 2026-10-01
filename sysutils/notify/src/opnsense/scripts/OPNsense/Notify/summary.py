@@ -46,7 +46,7 @@ import time
 
 from chart import AREA_SHADE, GRAPH_SIZE, PIE_COLORS, PIE_OTHER, PIE_SIZE, chart_png, day_marks, donut_png
 from common import (LINK_UP, addresses, carp_states, clock, configctl_json, duration, firmware_changes, link_states,
-                    log, message, pf_states, read_firmware, service_states, setting, size, stale_tmp, write_private)
+                    log, message, pf_states, prune_stale, read_firmware, service_states, setting, size, write_private)
 
 
 # ------------------------------------------------------------------ summaries
@@ -77,7 +77,7 @@ REPORTS_KEEP = {"daily": 60, "weekly": 52, "monthly": 12}
 REPORTS_MANUAL = 10  # sent by hand, per channel
 REPORT_NAME = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-(daily|weekly|monthly)(-now)?"
                          r"-(\d{8}-\d{6})\.html")
-GRAPHS: dict = {}  # drawn once per run, by spec
+GRAPHS: dict = {}  # drawn once per run, by spec; health data read once per file
 # on top of the inline styles, for readers that take a style sheet: no text boosting (a phone
 # otherwise enlarges some blocks and not others, even captions), a narrow screen stacks a pie
 # over its table, and dark mode
@@ -500,7 +500,7 @@ def current_status(config, now):
         left = item["expires"] - now
         if -days * 86400 < left <= days * 86400:
             state = "expired" if left <= 0 else f"expires in {left // 86400} day(s)"
-            lines.append(f"{item['label']} {item['description']} {state}")
+            lines.append(f"{item['label']}: {item['description']} {state}")
     return lines
 
 
@@ -523,7 +523,7 @@ def brief_status(lines):
         if label.endswith(" address") and ", " in value:
             first, *rest = value.split(", ")
             line = f"{label}: {first} (+{len(rest)})"
-        if line.startswith(("Certificate ", "Authority ")):
+        if line.startswith(("Certificate: ", "Authority: ")):
             certificates.append(line)
             continue
         shown.append(line)
@@ -689,7 +689,7 @@ def build_summary(config, channel, period, now, shared=None):
     if "health" in sections:
         part = section("System")
         health = list(once("health", system_health))
-        load = load_average()
+        load = once("load", load_average)
         health.append(f"Load {load:.2f}, peak {max(peaks.get('load', 0), load):.2f}")
         if peaks.get("states") is not None:
             limit = peaks.get("statesLimit") or 0
@@ -740,13 +740,7 @@ def prune_archive(channels):
     for found in archived_reports():
         if found["channel"] not in channels:
             remove_report(found["name"])
-    try:
-        names = os.listdir(REPORTS_DIR)
-    except OSError:
-        return
-    for name in names:
-        if name.endswith(".tmp") and stale_tmp(os.path.join(REPORTS_DIR, name)):
-            remove_report(name)
+    prune_stale(REPORTS_DIR)
 
 
 def remove_report(name):
@@ -815,7 +809,9 @@ def draw_series(spec, directory):
     """A graph of core's health data, read as Reporting: Health does: {path, legend}, or None."""
     filename, unit, series = GRAPH_KINDS[spec["kind"]]
     rrd = filename.format(key=spec["key"])
-    data = configctl_json("health", "fetch", rrd)
+    if ("fetch", rrd) not in GRAPHS:
+        GRAPHS["fetch", rrd] = configctl_json("health", "fetch", rrd)  # every period's graph reads the same file
+    data = GRAPHS["fetch", rrd]
     if not isinstance(data, dict) or not data.get("sets"):
         log(syslog.LOG_WARNING, f"no {spec['title']} graph: no {rrd} health data; is health reporting on?")
         return None

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5_5 - 2026-10-01
+
+- No repeated certificate or firmware notices after a pause.
+- IPv6 temporary addresses are left out again.
+- An imported bool is read as Apprise reads it, e.g. emojis=t.
+- An empty file argument, e.g. template=, is accepted.
+- A VPN peer first seen down is recorded, not reported.
+- Switching Notify off drops the pages of unsent summaries.
+
 ## 1.5_4 - 2026-10-01
 
 - An imported URL with a template given as an https:// address fills its fields again.

@@ -150,6 +150,20 @@ def stale_tmp(path):
         return False
 
 
+def prune_stale(folder):
+    """Remove the temporary files interrupted writes left in a folder."""
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return
+    for name in names:
+        if name.endswith(".tmp") and stale_tmp(os.path.join(folder, name)):
+            try:
+                os.unlink(os.path.join(folder, name))
+            except OSError:
+                pass
+
+
 def clip(text, limit):
     return text if len(text) <= limit else text[:limit - 1] + "…"
 
@@ -249,14 +263,28 @@ def carp_states():
     return [state for _, _, state in carp_vhids()]
 
 
+@functools.lru_cache(maxsize=1)
+def temporary_addresses():
+    """IPv6 privacy addresses, which rotate. Core's listing carries no flag for them, so ifconfig is
+    read for that one, as core's own scripts read it where the listing falls short
+    (filter/lib/alias/interface.py, dnsmasq/get_dnsmasq_leases.py)."""
+    found = set()
+    for line in (command_output(["/sbin/ifconfig"]) or "").splitlines():
+        parts = line.split()
+        if parts[:1] == ["inet6"] and "temporary" in parts:
+            found.add(parts[1].partition("%")[0])
+    return found
+
+
 def addresses():
-    """Device -> the addresses it holds, link-local, loopback and deprecated aside."""
+    """Device -> the addresses it holds, link-local, loopback, deprecated and temporary aside."""
     found: dict = {}
+    temporary = temporary_addresses()
     for device, details in (interfaces() or {}).items():
         for entry in (details.get("ipv4") or []) + (details.get("ipv6") or []):
             address = str(entry.get("ipaddr", ""))
             if address and not entry.get("link-local") and not entry.get("deprecated") \
-                    and not address.startswith(("127.", "::1")):
+                    and not address.startswith(("127.", "::1")) and address not in temporary:
                 found.setdefault(device, []).append(address)
     return found
 

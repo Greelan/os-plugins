@@ -70,7 +70,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib
 
 from common import (FIRMWARE_CHANGES, LINK_UP, addresses, carp_states, carp_vhids, clock,  # noqa: E402
                     command_output, configctl, configctl_json, duration, firmware_changes,
-                    firmware_product, interfaces, link_states, log, message, pf_states, quiet,
+                    firmware_product, interfaces, link_states, log, message, pf_states, prune_stale, quiet,
                     read_firmware, service_states, setting, stale_tmp, system_status, write_private)
 from summary import (REPORT_NAME, REPORTS_DIR, SAMPLE_SECONDS, SUMMARY_TRIES, add_events,  # noqa: E402
                      archive_report, archived_reports, build_summary, prune_archive, monit_allowed, remove_report,
@@ -268,11 +268,13 @@ def load_state():
 
 def fresh_state():
     """The recorded state, keeping only the queue, summary and service data once it is too old to
-    compare against; stopped services then still get their end."""
+    compare against, and the certificate and firmware levels, which would otherwise be told again;
+    stopped services then still get their end."""
     state = load_state()
     if int(time.time()) - state.get("stamp", 0) > STALE_SECONDS:
         # queued items expire on their own
-        state = {key: state[key] for key in ("queue", "summary", "service") if key in state}
+        state = {key: state[key] for key in ("queue", "summary", "service", "certificate", "firmware")
+                 if key in state}
     return state
 
 
@@ -809,8 +811,8 @@ def check_vpn(config, previous):
         # before 1.4, down meant stale or never connected
         if name.startswith("WireGuard") and (last, level) in (("up", "online"), ("down", "stale"), ("down", "offline")):
             continue
-        if previous is None or last == level:
-            continue
+        if previous is None or last == level or (last is None and level not in ("up", "online")):
+            continue  # one first seen down is a baseline, as elsewhere; one first seen up has just connected
         word = VPN_WORDS[level]
         body = f"No handshake for {duration(idle[name])}." if name in idle else ""
         messages.append(message("vpn", "success" if level in ("up", "online") else "warning",
@@ -1115,9 +1117,9 @@ def apprise_results(url):
 
 def local_file_args(url):
     """The arguments of a URL that would make Apprise read a file this plugin did not write, or
-    fetch a private key from elsewhere."""
+    fetch a private key from elsewhere; an empty one names nothing, and Apprise ignores it."""
     args, values = apprise_view(url)
-    return [key for key, value in values.items() if key in args and value != KEY_MARKER
+    return [key for key, value in values.items() if key in args and value not in ("", KEY_MARKER)
             and not (key in REMOTE_FILE_ARGS and re.match(r"https://", value, re.I))]
 
 
@@ -1191,15 +1193,14 @@ def fetch_as_allowed(url):
 
 
 def prune_key_files(channels):
-    """Remove the key files of channels, or arguments, that no longer use them."""
+    """Remove the key files of channels, or arguments, that no longer use them. A channel lists the
+    files its URL names, so Apprise's services are not loaded for this."""
     try:
         names = os.listdir(KEY_DIR)
     except OSError:
         return
-    if not names:
-        return  # most checks: no need to load Apprise's services
     wanted = {f"{c['uuid']}-{key}" for c in channels if KEY_MARKER in urllib.parse.unquote(c.get("url", ""))
-              for key in stored_file_args(c.get("url", ""))}
+              for key in (c.get("files") or {})}
     for name in names:
         if name not in wanted and not (name.endswith(".tmp") and not stale_tmp(os.path.join(KEY_DIR, name))):
             try:
@@ -1228,16 +1229,9 @@ def deliver_once(channel, title, body, ntype, report=None):
         import apprise
     except ImportError as exc:
         return False, f"The bundled Apprise could not be loaded: {exc}"
-    if several_urls(channel.get("url", "")):
-        # saved before a channel took one URL
-        return False, "The channel holds several URLs; edit it and add a channel for each further service."
-    local = local_file_args(channel.get("url", ""))
-    if local:
-        # channels saved before this was refused
-        plain = plain_http_args(channel.get("url", ""), local)
-        if plain:
-            return False, f"Give an https:// address for {', '.join(plain)}, or paste its contents in the channel."
-        return False, f"The URL names a file in {', '.join(local)}; paste its contents in the channel instead."
+    error = refused(channel.get("url", ""))  # a channel saved before its URL was refused is not sent to
+    if error:
+        return False, error
     try:
         url = with_key_files(channel)
     except (ValueError, OSError) as exc:
@@ -1395,7 +1389,9 @@ def run_check():
         return  # unreadable, which says nothing about whether Notify is on: keep the state
     prepared = prepare(config)
     if prepared is None:
-        # disabled: start from a fresh baseline when enabled again
+        # disabled: start from a fresh baseline when enabled again; what was queued is never sent
+        for item in load_state().get("queue", []):
+            discard(item)
         if os.path.exists(STATE):
             os.remove(STATE)
         return
@@ -1405,6 +1401,7 @@ def run_check():
         log(syslog.LOG_ERR, "interfaces could not be read; check skipped")
         return
     prune_key_files(config["channels"])
+    prune_stale(os.path.dirname(STATE))
     events = subscribed(channels)
     state = fresh_state()
     now = int(time.time())
@@ -1472,6 +1469,7 @@ def run_boot():
     if is_carp_backup(config, unknown=False):  # a startup notice twice beats none
         return
     state = fresh_state()
+    state.get("service", {}).pop("uptime", None)  # a boot is never continuous with the check before it
     version = str(firmware_product().get("product_version") or "").strip()
     body = f"Running OPNsense {version}." if version else ""
     found = [message("boot", "info", "Firewall has started", body)]
@@ -1808,7 +1806,8 @@ def saved_values(service, results, keys):
 
 
 def same_url(first, second):
-    plugins = [check_url(url)[0] for url in (first, second)]
+    """Whether Apprise sets up two URLs the same; both were checked before, or composed here."""
+    plugins = [one_plugin(url)[0] for url in (first, second)]
     return None not in plugins and plugins[0].url(privacy=False) == plugins[1].url(privacy=False)
 
 
@@ -1831,10 +1830,12 @@ def run_describe(uuid):
 
 
 def same_value(value, default):
-    """Does a URL parameter say the same as its default? Apprise renders bools as yes/no."""
+    """Does a URL parameter say the same as its default? A bool is read as Apprise reads it, e.g. t
+    or on as yes, and anything else as the default."""
+    from apprise.utils.parse import parse_bool
     value = str(value).strip().lower()
     if isinstance(default, bool):
-        return value in (("yes", "true", "1") if default else ("no", "false", "0", ""))
+        return parse_bool(value, default) == default
     return value == default_text(default).strip().lower()
 
 
@@ -1853,6 +1854,7 @@ def query_from(service, values, base=None):
     """The query for a service's option fields, leaving out anything at its default. Given the
     URL it goes on, a default is only left out when Apprise reads the URL the same without it:
     some hold for part of a service only, e.g. Email's STARTTLS for mailtos:// but not mailto://."""
+    from apprise.utils.parse import parse_bool
     parts: list = []
     defaults: list = []
     for key, field in service["options"].items():
@@ -1861,7 +1863,7 @@ def query_from(service, values, base=None):
         if field["type"] == "bool":
             if value == "":
                 continue
-            value = "yes" if value.lower() in ("1", "yes", "true", "on") else "no"
+            value = "yes" if parse_bool(value, bool(default)) else "no"
             if default is None and value == "no":
                 continue  # an unticked box Apprise has no default for says nothing
         if value == "":
@@ -1996,6 +1998,7 @@ def run_parse(path):
 
 
 def describe_url(url, keep_secrets=False):
+    from apprise.utils.parse import parse_bool
     if not url:
         return {"service": ""}
     services, schemas = apprise_services()
@@ -2013,7 +2016,10 @@ def describe_url(url, keep_secrets=False):
     if any(custom_arg(text, service["prefixes"]) for text, _, _ in query_pairs(rest)):
         return {"service": "", "custom": True}  # no field masks these, so keep the URL write-only
     for key, value in options.items():
-        (secrets if service["options"][key]["private"] else fields)[key] = value
+        field = service["options"][key]
+        if field["type"] == "bool":
+            value = "yes" if parse_bool(value, bool(service["args"].get(key))) else "no"  # as Apprise reads e.g. t
+        (secrets if field["private"] else fields)[key] = value
     # a choice the URL leaves out shows what Apprise will use, where that is not its default
     plugin = check_url(url)[0]
     for key, field in service["options"].items():
@@ -2076,18 +2082,16 @@ def split_list(value):
 
 
 def several_urls(url):
-    """Whether Apprise's add() would split a URL string into several services."""
+    """Whether Apprise's add() would split a URL string into several services; without a scheme it
+    splits at spaces, which is no URL at all rather than several."""
     from apprise.utils.parse import parse_urls
-    return len(parse_urls(url or "")) > 1
+    return "://" in (url or "") and len(parse_urls(url)) > 1
 
 
 def one_plugin(url):
     """(the one plugin Apprise builds from a URL, error text): what is checked and what is sent
-    through. A string Apprise's add() would split into several services is refused, and a plugin
-    tripping over the URL still means a bad URL."""
+    through; a plugin tripping over the URL still means a bad URL."""
     import apprise
-    if several_urls(url):
-        return None, "Give one URL per channel; add a channel for each further service."
     with apprise.LogCapture(level=apprise.logging.WARNING, fmt="%(message)s") as captured:
         try:
             plugin = apprise.Apprise.instantiate(url)
@@ -2098,19 +2102,26 @@ def one_plugin(url):
     return plugin, ""
 
 
-def check_url(url):
-    """(apprise plugin, error text) for a URL; one naming a file is refused before Apprise builds
-    a plugin from it."""
+def refused(url):
+    """Why a URL is not given to Apprise at all, or "": a string its add() would split into several
+    services, the later ones unchecked, or one naming a file."""
     if several_urls(url):
-        return one_plugin(url)
+        return "Give one URL per channel; add a channel for each further service."
     local = local_file_args(url)
     if local:
         plain = plain_http_args(url, local)
         if plain:
-            return None, f"Give an https:// address for {', '.join(plain)}, or paste its contents in the channel."
-        return None, (f"The URL names a file in {', '.join(local)}; choose the service and paste the "
-                      f"file's contents instead.")
-    return one_plugin(url)
+            return f"Give an https:// address for {', '.join(plain)}, or paste its contents in the channel."
+        return (f"The URL names a file in {', '.join(local)}; choose its service in the channel and paste its "
+                "contents instead.")
+    return ""
+
+
+def check_url(url):
+    """(apprise plugin, error text) for a URL; one naming a file is refused before Apprise builds
+    a plugin from it."""
+    error = refused(url)
+    return (None, error) if error else one_plugin(url)
 
 
 def from_service(service_id, fields, stored):
