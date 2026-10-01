@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.5_4 - 2026-10-01
+
+- An imported URL with a template given as an https:// address fills its fields again.
+- An imported URL keeps every setting Apprise reads, e.g. emojis, an email sender or a timeout.
+- A URL naming a local file is refused, with the reason, before Apprise reads it.
+- The Status page lists channels saved with several URLs, which are not sent to.
+- A test that fails unexpectedly says why, rather than to wait for a check.
+
 ## 1.5_3 - 2026-09-30
 
 - A template or PGP key given as an https:// address is fetched only over verified https, never through a redirect.

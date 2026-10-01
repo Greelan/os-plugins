@@ -450,6 +450,9 @@
                     (data.events || []).join(', ')
                 ];
                 $('#status_summary').text(bits.filter(Boolean).join(' - '));
+                const split = data.split || [];
+                $('#status_split').text("{{ lang._('These channels hold several URLs and are not sent to until each service has a channel of its own: %s') }}"
+                    .replace('%s', split.join(', '))).toggle(split.length > 0);
             });
         }
 
@@ -565,6 +568,7 @@
     <div id="status" class="tab-pane fade in">
         <div style="padding: 10px;">
             <p id="status_summary">&nbsp;</p>
+            <div id="status_split" class="alert alert-warning" role="alert" style="display: none;"></div>
         </div>
         <table id="queue_grid" class="table table-condensed table-hover table-striped">
             <thead>

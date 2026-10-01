@@ -50,6 +50,7 @@ only reported once a previous state exists; the first poll records a baseline.
 
 import base64
 import collections
+import enum
 import functools
 import http.client
 import json
@@ -113,7 +114,8 @@ QUERY_FIELD = "__query"
 # file of its choosing. Checked against this Apprise; the tests fail on another until it is again.
 # Before raising it, also confirm the Apprise internals the URL checks call still exist and behave
 # the same: plugins.url_to_dict and N_MGR, utils.parse's parse_qsd, parse_urls, VALID_URL_RE and
-# NOTIFY_CUSTOM_*_TOKENS (see apprise_view, check_url, query_pairs, custom_arg).
+# NOTIFY_CUSTOM_*_TOKENS (see apprise_view, check_url, query_pairs, custom_arg); and that plugins
+# still hold their settings as attributes, which an import compares (see same_settings).
 FILE_ARGS_APPRISE = "1.13.1"
 FILE_ARGS = {
     "NotifyDiscord": ("template",), "NotifyTelegram": ("template",), "NotifySlack": ("template",),
@@ -1226,6 +1228,9 @@ def deliver_once(channel, title, body, ntype, report=None):
         import apprise
     except ImportError as exc:
         return False, f"The bundled Apprise could not be loaded: {exc}"
+    if several_urls(channel.get("url", "")):
+        # saved before a channel took one URL
+        return False, "The channel holds several URLs; edit it and add a channel for each further service."
     local = local_file_args(channel.get("url", ""))
     if local:
         # channels saved before this was refused
@@ -1493,13 +1498,20 @@ def run_status():
         "tries": item.get("tries", 0),
         "retry_in": duration(item.get("retry", now) - now),
     } for item in state.get("queue", [])]
+    enabled = [c for c in channels if c.get("enabled", "0") == "1"]
+    try:
+        # saved before a channel took one URL, so not sent to
+        split = [c.get("description", c["uuid"]) for c in enabled if several_urls(c.get("url", ""))]
+    except ImportError:
+        split = []  # the status still reads without Apprise
     return {
         "enabled": general.get("enabled", "0") == "1",
         "checked": clock(state["stamp"]) if state.get("stamp") else "",
         "age": duration(now - state["stamp"]) if state.get("stamp") else "",
-        "channels": len([c for c in channels if c.get("enabled", "0") == "1"]),
-        "events": sorted(subscribed([c for c in channels if c.get("enabled", "0") == "1"])),
+        "channels": len(enabled),
+        "events": sorted(subscribed(enabled)),
         "queued": queued,
+        "split": split,
     }
 
 
@@ -1709,8 +1721,8 @@ def default_text(value):
 
 def url_parts(url):
     """(schema, query) as Apprise reads a URL (its VALID_URL_RE): leading space and backslashes
-    allowed, the query everything after the first ?, a # included. Every check reads a URL this
-    way, so it sees what Apprise will act on."""
+    allowed, the query everything after the first ?, a # included. For the dialog's fields, which
+    same_url holds to Apprise's reading; the checks read apprise_view."""
     from apprise.utils.parse import VALID_URL_RE
     match = VALID_URL_RE.search(url or "")
     if match is None:
@@ -1868,7 +1880,7 @@ def query_from(service, values, base=None):
 def normalize(url, plugin, services, schemas):
     """A pasted URL in Apprise's own form, so each setting sits under the name the fields use,
     e.g. ntfy's tags= as xtags=, Email's to= as its recipients, or a scheme the fields do not
-    know; kept as given unless Apprise reads the rewritten one exactly as the pasted one."""
+    know; kept as given unless Apprise sets up the rewritten one exactly as the pasted one."""
     native = plugin.url(privacy=False)
     service_id = schemas.get(url_schema(native))
     if service_id is None:
@@ -1879,17 +1891,29 @@ def normalize(url, plugin, services, schemas):
     plain, _ = one_plugin(base)
     defaults = url_args(plain.url(privacy=False)) if plain is not None else {}
     options = services[service_id]["options"]
+    # Apprise renders some files' addresses encoded twice, e.g. Discord's template: as pasted
+    files, given = apprise_view(url)
     keep = []
     for part, key, value in query_pairs(query):
+        if key in files and key in given:
+            keep.append(f"{key}={urllib.parse.quote(given[key], safe='')}")
+            continue
         if key in defaults and value == defaults[key]:
             continue
         if key in args and same_value(value, args[key]):
             continue
         keep.append(part)  # only what differs from the service's own defaults
 
-    def rendered(parts):
-        again, _ = one_plugin(base + ("?" + "&".join(parts) if parts else ""))
+    def joined(head, parts):
+        return head + ("?" + "&".join(parts) if parts else "")
+
+    def rendered(candidate):
+        again, _ = one_plugin(candidate)
         return again.url(privacy=False) if again is not None else None
+
+    def unmatched(parts):
+        return any(options.get(key, {}).get("type") == "choice" and value not in options[key]["values"]
+                   for _, key, value in query_pairs("&".join(parts)))
 
     # Apprise renders some choices by name, e.g. Gotify's priority 8 as high: the field offers the
     # choice Apprise reads the same
@@ -1898,14 +1922,53 @@ def normalize(url, plugin, services, schemas):
         if field.get("type") == "choice" and value not in field.get("values", []):
             for choice in field["values"]:
                 tried = keep[:i] + [f"{key}={urllib.parse.quote(choice, safe='')}"] + keep[i + 1:]
-                if rendered(tried) == native:
+                if rendered(joined(base, tried)) == native:
                     keep = tried
                     break
-    unmatched = any(options.get(key, {}).get("type") == "choice" and value not in options[key]["values"]
-                    for _, key, value in query_pairs("&".join(keep)))
-    rewritten = base + ("?" + "&".join(keep) if keep else "")
-    # a choice Apprise names in a way no field choice matches: the URL as given, as before
-    return rewritten if not unmatched and rendered(keep) == native else url
+    # url() leaves some settings out, e.g. Email's from= or emojis=, so next the pasted URL's own
+    # where a field takes them; and some of the URL ahead of its query, e.g. a user name a service
+    # ignores, so next the pasted URL's own. The first Apprise sets up as it sets up the pasted one
+    taken = {key for _, key, _ in query_pairs("&".join(keep))}
+    pasted = [text for text, key, _ in query_pairs(url_query(url)) if key in options and key not in taken]
+    candidates = [(head, parts) for head in (base, url.partition("?")[0]) for parts in (keep, keep + pasted)]
+    for candidate in dict.fromkeys(joined(head, parts) for head, parts in candidates if not unmatched(parts)):
+        if rendered(candidate) == native and same_settings(url, plugin, candidate):
+            return candidate
+    # else, e.g. a choice Apprise names in a way no field choice matches: the URL as given, as before
+    return url
+
+
+def plugin_settings(plugin, names):
+    """{name: value} of a plugin's attributes, class defaults included, objects read into a few
+    levels deep; a repr's memory address left out."""
+    def value(item, depth):
+        if isinstance(item, enum.Enum):
+            item = item.value
+        if isinstance(item, (str, bytes, int, float, bool, type(None))):
+            return item
+        if depth and isinstance(item, (list, tuple)):
+            return [value(i, depth - 1) for i in item]
+        if depth and isinstance(item, (set, frozenset)):
+            return sorted(repr(value(i, depth - 1)) for i in item)
+        if depth and isinstance(item, dict):
+            return {str(k): value(v, depth - 1) for k, v in item.items()}
+        if depth and hasattr(item, "__dict__"):
+            return [type(item).__name__, value(vars(item), depth - 1)]
+        return re.sub(r" at 0x[0-9a-fA-F]+", "", repr(item))
+    return {name: value(getattr(plugin, name, None), 8) for name in names}
+
+
+def same_settings(first, plugin, second):
+    """Whether Apprise builds from second a plugin set as the one built from first: url() leaves
+    some settings out, e.g. emojis. What differs between two builds of first, e.g. a token's
+    expiry, is not a setting; nor is fullpath, which each plugin that sends to it writes in url()."""
+    twin, _ = one_plugin(first)
+    other, _ = one_plugin(second)
+    if twin is None or other is None:
+        return False
+    names = (set(vars(plugin)) | set(vars(other))) - {"fullpath"}
+    mine, again, theirs = (plugin_settings(p, names) for p in (plugin, twin, other))
+    return all(theirs[name] == mine[name] for name in names if again[name] == mine[name])
 
 
 def run_parse(path):
@@ -2012,13 +2075,18 @@ def split_list(value):
     return [item for item in re.split(r"[\s,]+", value) if item]
 
 
+def several_urls(url):
+    """Whether Apprise's add() would split a URL string into several services."""
+    from apprise.utils.parse import parse_urls
+    return len(parse_urls(url or "")) > 1
+
+
 def one_plugin(url):
     """(the one plugin Apprise builds from a URL, error text): what is checked and what is sent
     through. A string Apprise's add() would split into several services is refused, and a plugin
     tripping over the URL still means a bad URL."""
     import apprise
-    from apprise.utils.parse import parse_urls
-    if len(parse_urls(url or "")) > 1:
+    if several_urls(url):
         return None, "Give one URL per channel; add a channel for each further service."
     with apprise.LogCapture(level=apprise.logging.WARNING, fmt="%(message)s") as captured:
         try:
@@ -2031,10 +2099,10 @@ def one_plugin(url):
 
 
 def check_url(url):
-    """(apprise plugin, error text) for a URL."""
-    plugin, error = one_plugin(url)
-    if plugin is None:
-        return None, error
+    """(apprise plugin, error text) for a URL; one naming a file is refused before Apprise builds
+    a plugin from it."""
+    if several_urls(url):
+        return one_plugin(url)
     local = local_file_args(url)
     if local:
         plain = plain_http_args(url, local)
@@ -2042,7 +2110,7 @@ def check_url(url):
             return None, f"Give an https:// address for {', '.join(plain)}, or paste its contents in the channel."
         return None, (f"The URL names a file in {', '.join(local)}; choose the service and paste the "
                       f"file's contents instead.")
-    return plugin, ""
+    return one_plugin(url)
 
 
 def from_service(service_id, fields, stored):
@@ -2120,9 +2188,10 @@ def run_build(path):
     # shown, not used: as typed, e.g. an address's @ rather than %40
     masked = urllib.parse.unquote(plugin.url(privacy=True).split("?", 1)[0])
     # keep the stored files the URL still points at, with anything newly pasted on top
-    kept = {key: value for key, value in (channel.get("files") or {}).items() if key in stored_file_args(url)}
+    stored_args = stored_file_args(url)
+    kept = {key: value for key, value in (channel.get("files") or {}).items() if key in stored_args}
     kept.update(files)
-    missing = [key for key in stored_file_args(url) if key not in kept]
+    missing = [key for key in stored_args if key not in kept]
     if missing:
         return {"error": f"Paste the file for {', '.join(missing)}.", "field": target_field}
     return {"url": url, "service": str(plugin.service_name), "target": masked, "files": kept}
@@ -2137,7 +2206,10 @@ if __name__ == "__main__":
     elif len(sys.argv) > 1 and sys.argv[1] == "status":
         print(json.dumps(run_status()))
     elif len(sys.argv) > 2 and sys.argv[1] == "test":
-        print(json.dumps(run_test(sys.argv[2])))
+        try:
+            print(json.dumps(run_test(sys.argv[2])))
+        except Exception as exc:  # else no answer reads as a held lock
+            print(json.dumps({"status": "failed", "message": f"The test could not be run: {exc}"}))
     elif len(sys.argv) > 2 and sys.argv[1] == "summary":
         try:
             print(json.dumps(run_summary(sys.argv[2])))

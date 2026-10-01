@@ -193,6 +193,64 @@ class StoredFiles(Case):
         self.assertEqual(self.imported("pover://" + "u" * 30 + "@" + "a" * 30 + "?priority=high")["fields"]["priority"],
                          "1")
 
+    def test_an_import_keeps_a_remote_file_as_pasted(self):
+        # Apprise renders e.g. Discord's template encoded twice, with cache=yes added
+        for url in ("discord://1/abc?template=https://h/t.json", "slack://T1/B2/C3?template=https://h/t.json",
+                    "tgram://123:abc/1?template=https://h/t.json"):
+            found = self.imported(url)
+            self.assertEqual((found.get("service"), found.get("fields", {}).get("template")),
+                             (url.split(":", 1)[0], "https://h/t.json"), url)
+        self.assertEqual(self.imported("mailtos://u:p@example.com?pgppub=https://h/k.asc")["fields"]["pgppub"],
+                         "https://h/k.asc")
+
+    def test_an_import_keeps_what_url_leaves_out(self):
+        # Apprise's url() drops e.g. emojis=, and Email's from= beside a to=
+        found = self.imported("apprises://example.com/token?emojis=yes")
+        self.assertEqual((found["service"], found["fields"].get("emojis")), ("apprises", "yes"))
+        found = self.imported("mailtos://u:p@example.com?from=fw@example.com&to=a@example.com,b@example.com")
+        self.assertEqual((found["fields"]["targets"], found["fields"].get("from")),
+                         ("a@example.com, b@example.com", "fw@example.com"))
+        found = self.imported("dingtalk://abcdefghij/?optional=yes&rto=3")
+        self.assertEqual((found["fields"].get("optional"), found["fields"].get("rto")), ("yes", "3"))
+
+    def test_every_service_imports_its_options_as_apprise_reads_them(self):
+        # each option of each service Apprise has, read off the plugin it builds from the pasted URL
+        # and from the import, which must not differ
+        import apprise
+        import syslog
+        self.addCleanup(syslog.closelog)  # Apprise's syslog with logperror=yes opens it onto stderr
+        services, schemas = notify.apprise_services()
+        missing, changed, reached = object(), [], 0
+        for entry in apprise.Apprise().details()["schemas"]:
+            protocols = list(entry.get("secure_protocols") or []) + list(entry.get("protocols") or [])
+            service_id = next((schemas[p] for p in protocols if p in schemas), None)
+            base = apprise_urls.build(entry, apprise.Apprise.instantiate) \
+                if service_id and entry.get("enabled", True) else None
+            if base is None:
+                continue
+            join = "&" if "?" in base else "?"
+            for key, field in services[service_id]["options"].items():
+                default = services[service_id]["args"].get(key)
+                values = {"choice": [v for v in field.get("values", []) if str(v) != str(default)][:3],
+                          "bool": ["no" if default else "yes"], "int": [str((field.get("min") or 0) + 3)],
+                          "float": [str((field.get("min") or 0) + 3)], "file": []}.get(field["type"], ["abc"])
+                for value in values:
+                    url = f"{base}{join}{key}={notify.urllib.parse.quote(value, safe='')}"
+                    pasted, _ = notify.check_url(url)
+                    if pasted is None:
+                        continue
+                    imported, _ = notify.one_plugin(notify.normalize(url, pasted, services, schemas))
+                    attr = field.get("map_to") or key
+                    before = getattr(pasted, attr, missing)
+                    after = getattr(imported, attr, missing) if imported is not None else missing
+                    if before is missing and after is missing:
+                        continue
+                    reached += 1
+                    if repr(getattr(before, "value", before)) != repr(getattr(after, "value", after)):
+                        changed.append(f"{entry['service_name']} {key}={value}")
+        self.assertGreater(reached, 500, "Apprise's options were reached")
+        self.assertEqual(changed, [])
+
     def test_every_service_imports_its_choices_into_their_fields(self):
         # each service Apprise has, from a URL built out of its own rules: a choice Apprise writes
         # another way than it declares, e.g. Gotify's priority 8 as high, still fills the field
@@ -262,7 +320,7 @@ class StoredFiles(Case):
         # several URLs saved in one channel before are refused at delivery too, not sent to one mangled
         ok, error = notify.deliver({"uuid": CHANNEL, "url": "json://a/b, json://c/d"}, "t", "b", "info")
         self.assertFalse(ok)
-        self.assertIn("one URL per channel", error)
+        self.assertIn("holds several URLs", error)
         # a plugin tripping over the URL is an invalid URL, not a crash
         self.assertIsNone(notify.check_url("dbus://[")[0])
         # a saved channel's / # is read as Apprise reads it
@@ -304,6 +362,30 @@ class StoredFiles(Case):
             notify.prune_key_files([{"uuid": CHANNEL, "url": "discord://1/a"}])  # empty
         finally:
             notify.stored_file_args = saved
+
+    def test_a_url_naming_a_file_is_refused_before_apprise_builds_it(self):
+        import apprise
+        saved = apprise.Apprise.instantiate
+        apprise.Apprise.instantiate = lambda *args, **kwargs: self.fail("built before it was refused")
+        try:
+            for url in ("discord://1/a?template=/etc/master.passwd", "discord://1/a?template=ftp://x/y",
+                        "mailtos://u:p@example.com?pgpkey=ftp://x/y"):
+                plugin, error = notify.check_url(url)
+                self.assertIsNone(plugin, url)
+                self.assertIn("names a file in", error, url)
+        finally:
+            apprise.Apprise.instantiate = saved
+
+    def test_old_channels_with_several_urls_are_listed(self):
+        saved = notify.load_config
+        notify.load_config = lambda: {"general": {}, "channels": [
+            {"uuid": CHANNEL, "enabled": "1", "description": "both", "events": [], "url": "json://a/b, json://c/d"},
+            {"uuid": "x", "enabled": "1", "description": "one", "events": [], "url": "json://a/b"},
+            {"uuid": "y", "enabled": "0", "description": "off", "events": [], "url": "json://a/b json://c/d"}]}
+        try:
+            self.assertEqual(notify.run_status()["split"], ["both"])
+        finally:
+            notify.load_config = saved
 
     def test_old_channels_with_a_path_do_not_send(self):
         ok, error = notify.deliver({"uuid": CHANNEL, "url": "discord://1/a?template=/etc/master.passwd"}, "t", "b", "info")
