@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.5_6 - 2026-10-02
+
+- A token given as token= in a custom URL, as Slack and ntfy allow, stays out of the browser.
+- The saved URL shown for a JSON, Form or XML channel leaves out its path, which is often its secret.
+- Building, importing and testing a channel need the page-all privilege, as saving does.
+- A choice spelled another way in a custom URL, e.g. priority=High, survives saving the channel again.
+- A test or summary that cannot run says why; a running check is waited for and reported.
+- A gateway alarm or CARP change waits for a running check instead of being dropped.
+- The Status tab names events and reports a denied request.
+- The notify log can be forwarded as an application under remote logging.
+- The daily update check steps aside for an enabled Firmware update check cron job.
+- Apply from another tab switches to a General setting that failed.
+- The report link address cannot carry credentials.
+
 ## 1.5_5 - 2026-10-01
 
 - No repeated certificate or firmware notices after a pause.

@@ -75,7 +75,7 @@
         <id>notify.general.firmwareCheck</id>
         <label>Daily update check</label>
         <type>checkbox</type>
-        <help><![CDATA[Check for firmware updates daily at around 04:00. Without it, updates are only reported once something else checks: the dashboard, the firmware page, another cron job, or <code>configctl firmware check</code> from a shell. Running an update, or <code>opnsense-update -c</code>, reports nothing.]]></help>
+        <help><![CDATA[Check for firmware updates daily at around 04:00, unless an enabled Firmware update check job under <a href="/ui/cron">System: Settings: Cron</a> already does. Without either, updates are only reported once something else checks: the dashboard, the firmware page, or <code>configctl firmware check</code> from a shell. Running an update, or <code>opnsense-update -c</code>, reports nothing.]]></help>
     </field>
     <field>
         <id>notify.general.certDays</id>

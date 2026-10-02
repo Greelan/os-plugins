@@ -101,6 +101,28 @@ class StoredFiles(Case):
         result = self.build("mailtos", user="fw", password="pw", host="example.com", targets="admin@example.com")
         self.assertTrue(result["target"].endswith("/admin@example.com"), result["target"])
 
+    def custom(self, url):
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+            json.dump({"uuid": CHANNEL, "service": "", "url": url, "fields": {}}, handle)
+        try:
+            return notify.run_build(handle.name)
+        finally:
+            os.unlink(handle.name)
+
+    def test_a_receivers_path_is_not_shown(self):
+        # a webhook receiver's secret is often its path, which Apprise does not mask
+        self.assertEqual(self.custom("json://hooks.example.com/api/webhook/abc123")["target"],
+                         "json://hooks.example.com/...")
+        self.assertEqual(self.custom("forms://u:p@hooks.example.com:8443/abc123")["target"],
+                         "forms://u:****@hooks.example.com:8443/...")
+        self.assertEqual(self.custom("xml://hooks.example.com")["target"], "xml://hooks.example.com/")
+        self.assertEqual(self.custom("tgram://123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11/12345")["target"],
+                         "tgram://1...1/12345/", "elsewhere Apprise masks the secret itself")
+
+    def test_a_choice_left_unselected_is_not_a_value(self):
+        result = self.build("ntfys", host="ntfy.sh", targets="topic", priority=None)
+        self.assertNotIn("priority", result["url"], result)
+
     def test_the_browser_never_gets_them(self):
         self.build("discord", template='{"content": "x"}', **self.WEBHOOK)
         described = notify.describe_url(self.channel["url"])
@@ -338,6 +360,17 @@ class StoredFiles(Case):
         # a saved channel's / # is read as Apprise reads it
         self.assertEqual(notify.describe_url("slack://T1ABCDEFG/B1ABCDEFG/abcdefghijklmnopqrstuvwx/#general")
                          .get("service"), "slack")
+
+    def test_a_secret_under_another_name_never_reaches_the_browser(self):
+        # a token given by its alias is no field, so it would ride along in the query field
+        for url in ("slack://#general?token=xoxb-123-456-ABCDEF", "ntfys://ntfy.sh/topic?token=tk_secret",
+                    "dingtalk://token/?secret=abcdef"):
+            described = notify.describe_url(url)
+            self.assertEqual(described.get("service"), "", url)
+            self.assertNotIn("fields", described, url)
+        described = notify.describe_url("ntfys://ntfy.sh/topic?foo=bar")
+        self.assertEqual((described["service"], described["fields"]["__query"]), ("ntfys", "foo=bar"),
+                         "what is no secret still rides along")
 
     def test_the_dialog_reads_options_as_apprise_does(self):
         service = {"options": {"format": {}, "avatar": {}}}
@@ -1936,6 +1969,24 @@ class Hardening(unittest.TestCase):
         for name, value in self.saved.items():
             setattr(notify, name, value)
         shutil.rmtree(self.folder)
+
+    def test_the_status_names_events(self):
+        notify.load_config = lambda: {"general": {"enabled": "1"}, "eventLabels": {"gateway": "Gateway status"},
+                                      "channels": [{"uuid": CHANNEL, "enabled": "1", "url": "json://a/b",
+                                                    "events": ["gateway", "carp"], "summary": "none"}]}
+        self.assertEqual(notify.run_status()["events"], ["Gateway status", "carp"], "a label where there is one")
+
+    def test_a_held_lock_is_answered(self):
+        import fcntl
+        saved = notify.LOCK
+        notify.LOCK = os.path.join(self.folder, "lock")
+        try:
+            with open(notify.LOCK, "a") as held:
+                fcntl.flock(held, fcntl.LOCK_EX)
+                self.assertIsNone(notify.with_lock(0.6, lambda: "ran"), "a check holds it")
+            self.assertEqual(notify.with_lock(0.6, lambda: "ran"), "ran")
+        finally:
+            notify.LOCK = saved
 
     def test_a_standby_keeps_periods_until_due(self):
         now = int(notify.time.time())

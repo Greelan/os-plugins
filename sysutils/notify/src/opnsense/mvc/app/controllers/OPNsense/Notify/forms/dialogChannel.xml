@@ -53,7 +53,7 @@
         <type>select_multiple</type>
         <style>tokenize</style>
         <hint>All Monit services</hint>
-        <help><![CDATA[Which Monit services this channel reports, when Monit alerts are among its events. Leave empty for all of them. Monit state is read on each check, so an alert can wait up to the check interval; for immediate delivery, set a test's action to Execute with the path <code>/usr/local/sbin/configctl -dq notify check</code> under <a href="/ui/monit#tests">Services: Monit: Service Tests</a>.]]></help>
+        <help><![CDATA[Which Monit services this channel reports, when Monit alerts are among its events. Leave empty for all of them. Monit state is read on each check, so an alert can wait up to the check interval; for immediate delivery, set a test's action to Execute with the path <code>/usr/local/sbin/configctl -dq notify alarm</code> under <a href="/ui/monit#tests">Services: Monit: Service Tests</a>.]]></help>
         <grid_view>
             <ignore>true</ignore>
         </grid_view>

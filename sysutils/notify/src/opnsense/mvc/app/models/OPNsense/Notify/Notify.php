@@ -52,9 +52,9 @@ class Notify extends BaseModel
             if ((string)$channel->enabled != '1') {
                 continue;
             }
-            $events = explode(',', (string)$channel->events);
+            $events = $channel->events->getValues();
             if (!$channel->summary->isEqual('none')) {
-                $events = array_merge($events, explode(',', (string)$channel->summaryEvents));
+                $events = array_merge($events, $channel->summaryEvents->getValues());
             }
             if (in_array($event, $events)) {
                 return true;
@@ -74,7 +74,7 @@ class Notify extends BaseModel
         foreach ($this->channels->iterateItems() as $channel) {
             if (
                 (string)$channel->enabled == '1' && !$channel->summary->isEqual('none') &&
-                in_array($section, explode(',', (string)$channel->summarySections))
+                in_array($section, $channel->summarySections->getValues())
             ) {
                 return true;
             }

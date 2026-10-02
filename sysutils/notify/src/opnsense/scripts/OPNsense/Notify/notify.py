@@ -107,6 +107,11 @@ STATUS_INTERVAL = 300
 DEVICE_INTERVAL = 300
 # field holding the query part of a built URL, e.g. priority=high&format=markdown
 QUERY_FIELD = "__query"
+# plugins sending to any receiver (subclasses included), where the secret is often the path (a
+# Home Assistant webhook's id, say), which Apprise does not mask: the saved URL shown leaves it out
+PATH_SECRET = ("NotifyJSON", "NotifyForm", "NotifyXML")
+# held by a running check; a test or summary waits for it rather than run beside one
+LOCK = "/var/run/notify.lock"
 # URL arguments Apprise opens as a file on every send, by plugin class (subclasses included);
 # elsewhere, e.g. MSG91 or SendGrid, a template is only an ID. The dialog takes the file's
 # contents, which are stored with the channel and written under KEY_DIR at send time; the URL
@@ -1502,15 +1507,33 @@ def run_status():
         split = [c.get("description", c["uuid"]) for c in enabled if several_urls(c.get("url", ""))]
     except ImportError:
         split = []  # the status still reads without Apprise
+    labels = config.get("eventLabels") or {}
     return {
         "enabled": general.get("enabled", "0") == "1",
         "checked": clock(state["stamp"]) if state.get("stamp") else "",
         "age": duration(now - state["stamp"]) if state.get("stamp") else "",
         "channels": len(enabled),
-        "events": sorted(subscribed(enabled)),
+        "events": sorted(labels.get(event, event) for event in subscribed(enabled)),
         "queued": queued,
         "split": split,
     }
+
+
+def with_lock(seconds, func):
+    """func() holding the check lock, waited for up to this long; None while a check still holds
+    it, so the caller can say so instead of answering nothing."""
+    import fcntl
+    with open(LOCK, "a") as handle:
+        deadline = time.monotonic() + seconds
+        while True:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                if time.monotonic() > deadline:
+                    return None
+                time.sleep(0.5)
+                continue
+            return func()
 
 
 def run_test(uuid):
@@ -1690,9 +1713,19 @@ def apprise_services():
         # free-form arguments such as +header or -param, which can carry credentials
         prefixes = tuple(str(k["prefix"]) for k in (entry["details"].get("kwargs") or {}).values()
                          if k.get("prefix"))
+        # query names that carry a secret no option field masks: a private token given by name,
+        # or an alias of one, e.g. Slack's and ntfy's token=
+        private = {str(k) for k, t in entry["details"]["tokens"].items() if t.get("private")}
+        secrets = set(private)
+        for key, arg in entry["details"]["args"].items():
+            alias = arg.get("alias_of")
+            targets = alias if isinstance(alias, (tuple, list)) else (alias,) if alias else ()
+            if arg.get("private") or any(str(t) in private for t in targets):
+                secrets.add(str(key).lower())
         services[service_id] = {"id": service_id, "name": str(entry["service_name"]),
                                 "setup": str(entry.get("setup_url") or ""), "templates": templates,
-                                "tokens": tokens, "args": args, "options": options, "prefixes": prefixes}
+                                "tokens": tokens, "args": args, "options": options, "prefixes": prefixes,
+                                "secrets": secrets}
         for protocol in protocols:
             schemas.setdefault(protocol.lower(), service_id)
 
@@ -2013,7 +2046,7 @@ def describe_url(url, keep_secrets=False):
     fields["schema"] = url_schema(url)
     secrets = saved_values(service, results, [k for k in shown if tokens[k]["private"]])
     options, rest = split_query(service, url_query(url))
-    if any(custom_arg(text, service["prefixes"]) for text, _, _ in query_pairs(rest)):
+    if any(custom_arg(text, service["prefixes"]) or key in service["secrets"] for text, key, _ in query_pairs(rest)):
         return {"service": "", "custom": True}  # no field masks these, so keep the URL write-only
     for key, value in options.items():
         field = service["options"][key]
@@ -2168,6 +2201,17 @@ def from_service(service_id, fields, stored):
     return (url + "?" + query if query else url), files, ""
 
 
+def shown_url(plugin):
+    """The saved URL as shown, not used: as typed, e.g. an address's @ rather than %40, with the
+    secrets Apprise masks; for a webhook receiver (PATH_SECRET) the path is left out too, since
+    there the secret is often the path, which Apprise shows."""
+    shown = urllib.parse.unquote(plugin.url(privacy=True).split("?", 1)[0])
+    parts = urllib.parse.urlsplit(shown)
+    if any(c.__name__ in PATH_SECRET for c in type(plugin).__mro__) and parts.path.strip("/"):
+        shown = urllib.parse.urlunsplit((parts.scheme, parts.netloc, "/...", "", ""))
+    return shown
+
+
 def run_build(path):
     try:
         with open(path) as handle:
@@ -2180,7 +2224,8 @@ def run_build(path):
     channel = saved_channel(uuid)
     stored = channel.get("url", "")
     service_id = str(request.get("service") or "")
-    fields = {str(k): str(v).strip() for k, v in (request.get("fields") or {}).items()}
+    # a choice box with nothing selected posts null, which is not a value
+    fields = {str(k): str(v).strip() for k, v in (request.get("fields") or {}).items() if v is not None}
 
     files: dict = {}
     if service_id and (fields.get("changed") == "1" or not stored):
@@ -2196,8 +2241,7 @@ def run_build(path):
     plugin, error = check_url(url)
     if plugin is None:
         return {"error": error, "field": target_field}
-    # shown, not used: as typed, e.g. an address's @ rather than %40
-    masked = urllib.parse.unquote(plugin.url(privacy=True).split("?", 1)[0])
+    masked = shown_url(plugin)
     # keep the stored files the URL still points at, with anything newly pasted on top
     stored_args = stored_file_args(url)
     kept = {key: value for key, value in (channel.get("files") or {}).items() if key in stored_args}
@@ -2216,16 +2260,14 @@ if __name__ == "__main__":
         run_boot()
     elif len(sys.argv) > 1 and sys.argv[1] == "status":
         print(json.dumps(run_status()))
-    elif len(sys.argv) > 2 and sys.argv[1] == "test":
+    elif len(sys.argv) > 2 and sys.argv[1] in ("test", "summary"):
+        verb = "The test could not be run" if sys.argv[1] == "test" else "The summary could not be sent"
         try:
-            print(json.dumps(run_test(sys.argv[2])))
-        except Exception as exc:  # else no answer reads as a held lock
-            print(json.dumps({"status": "failed", "message": f"The test could not be run: {exc}"}))
-    elif len(sys.argv) > 2 and sys.argv[1] == "summary":
-        try:
-            print(json.dumps(run_summary(sys.argv[2])))
-        except Exception as exc:  # else no answer reads as a held lock
-            print(json.dumps({"status": "failed", "message": f"The summary could not be sent: {exc}"}))
+            result = with_lock(30, lambda: (run_test if sys.argv[1] == "test" else run_summary)(sys.argv[2]))
+        except Exception as exc:  # an answer, so the dialog can say what went wrong
+            result = {"status": "failed", "message": f"{verb}: {exc}"}
+        print(json.dumps(result or {"status": "failed", "message": f"{verb}; a check is still running, so try "
+                                                                     "again in a minute."}))
     elif len(sys.argv) > 1 and sys.argv[1] == "reports":
         print(json.dumps(run_reports()))
     elif len(sys.argv) > 2 and sys.argv[1] == "report":

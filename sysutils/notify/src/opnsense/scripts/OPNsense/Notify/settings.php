@@ -51,18 +51,20 @@ foreach ($model->general->iterateItems() as $key => $field) {
     $general[$key] = $field->getValue();
 }
 
+$monit = new Monit();
+
 /* uuid => name, so a channel can name the Monit services it wants */
 $services = [];
-foreach ((new Monit())->service->iterateItems() as $uuid => $service) {
+foreach ($monit->service->iterateItems() as $uuid => $service) {
     $services[$uuid] = (string)$service->name;
 }
 
 $channels = [];
 foreach ($model->channels->iterateItems() as $uuid => $channel) {
-    $monit = [];
-    foreach (explode(',', (string)$channel->monitServices) as $ref) {
+    $watched = [];
+    foreach ($channel->monitServices->getValues() as $ref) {
         if (isset($services[$ref])) {
-            $monit[] = $services[$ref];
+            $watched[] = $services[$ref];
         }
     }
     $channels[] = [
@@ -74,21 +76,18 @@ foreach ($model->channels->iterateItems() as $uuid => $channel) {
         /* write-only in the UI, but the backend has to send with them */
         'url' => $channel->url->getValue(),
         'files' => json_decode($channel->files->getValue(), true) ?: [],
-        'events' => array_values(array_filter(explode(',', (string)$channel->events))),
+        'events' => $channel->events->getValues(),
         'summary' => (string)$channel->summary,
-        'summaryEvents' => array_values(array_filter(explode(',', (string)$channel->summaryEvents))),
-        'summarySections' => array_values(array_filter(explode(',', (string)$channel->summarySections))),
-        'monit' => $monit,
+        'summaryEvents' => $channel->summaryEvents->getValues(),
+        'summarySections' => $channel->summarySections->getValues(),
+        'monit' => $watched,
     ];
 }
 
-/* what the model calls each event, for summaries; every channel offers the same list */
+/* what the model calls each event, for the status line and summaries */
 $labels = [];
-foreach ($model->channels->iterateItems() as $channel) {
-    foreach ($channel->events->getNodeData() as $key => $option) {
-        $labels[$key] = (string)$option['value'];
-    }
-    break;
+foreach ($model->channels->getTemplateNode()->events->getNodeData() as $key => $option) {
+    $labels[$key] = (string)$option['value'];
 }
 
 $certificates = [];
@@ -135,7 +134,7 @@ foreach ($config->interfaces->children() ?? [] as $name => $interface) {
     }
 }
 
-$monit = new Monit();
+$hostname = implode('.', array_filter([(string)($config->system->hostname ?? ''), (string)($config->system->domain ?? '')]));
 
 /* a UPS as its plugin's own status page asks for it: apcupsd when enabled, NUT by name@host */
 $ups = ['apcupsd' => false, 'nut' => ''];
@@ -157,17 +156,13 @@ echo json_encode([
         'description' => (string)($config->revision->description ?? ''),
     ],
     /* where the GUI is reached, for links to archived summaries */
-    'guiUrl' => (function () use ($config) {
+    'guiUrl' => (function () use ($config, $hostname) {
         $protocol = (string)($config->system->webgui->protocol ?? '') === 'http' ? 'http' : 'https';
         $port = (string)($config->system->webgui->port ?? '');
-        $host = implode('.', array_filter([(string)($config->system->hostname ?? ''), (string)($config->system->domain ?? '')]));
         $default = $protocol === 'https' ? '443' : '80';
-        return $host ? "{$protocol}://{$host}" . ($port !== '' && $port !== $default ? ":{$port}" : '') : '';
+        return $hostname ? "{$protocol}://{$hostname}" . ($port !== '' && $port !== $default ? ":{$port}" : '') : '';
     })(),
-    'hostname' => implode('.', array_filter([
-        (string)($config->system->hostname ?? ''),
-        (string)($config->system->domain ?? ''),
-    ])),
+    'hostname' => $hostname,
     'general' => $general,
     'channels' => $channels,
     'eventLabels' => $labels,

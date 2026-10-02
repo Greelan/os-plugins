@@ -135,7 +135,7 @@
                 </OptionValues>
             </summaryGraphs>
             <reportAddress type="TextField">
-                <Mask>/^https?:\/\/[^\s\/?#]+(\/[^\s?#]*)?$/</Mask>
+                <Mask>/^https?:\/\/[^\s\/?#@]+(\/[^\s?#]*)?$/</Mask>
                 <ValidationMessage>Enter an address such as https://fw.example.lan:8443.</ValidationMessage>
             </reportAddress>
             <summaryDate type="IntegerField">

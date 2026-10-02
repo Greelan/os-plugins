@@ -36,16 +36,34 @@ function notify_cron()
         /* state poll; the gateway and CARP syshooks only make it sooner */
         $jobs[]['autocron'] = ['/usr/local/sbin/configctl -d notify check', $minutes == '1' ? '*' : "*/{$minutes}"];
 
-        /* the summary's status section reports pending updates too */
+        /* the summary's status section reports pending updates too; a Firmware update check job
+           under System: Settings: Cron already polls, so then this one steps aside */
         if (
             (string)$model->general->firmwareCheck == '1' &&
             ($model->hasEvent('firmware') || $model->hasSummarySection('status'))
         ) {
-            $jobs[]['autocron'] = ['/usr/local/sbin/configctl -d firmware poll', '0', '4'];
+            $polled = false;
+            foreach ((new \OPNsense\Cron\Cron())->jobs->job->iterateItems() as $job) {
+                if ((string)$job->enabled == '1' && (string)$job->command == 'firmware poll') {
+                    $polled = true;
+                }
+            }
+            if (!$polled) {
+                $jobs[]['autocron'] = ['/usr/local/sbin/configctl -d firmware poll', '0', '4'];
+            }
         }
     }
 
     return $jobs;
+}
+
+function notify_syslog()
+{
+    $logfacilities = [];
+
+    $logfacilities['notify'] = ['facility' => ['notify']];
+
+    return $logfacilities;
 }
 
 function notify_xmlrpc_sync()

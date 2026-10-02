@@ -133,7 +133,9 @@
                         $control.append($('<option value="">').text("{{ lang._('Not set') }}"));
                     }
                     field.values.forEach(v => $control.append($('<option>').val(v).text(v)));
-                    $control.val(value || (field.default === undefined ? '' : field.values[0]));
+                    /* a custom URL may spell a choice its own way, e.g. priority=High, which Apprise reads the same */
+                    const choice = field.values.find(v => v.toLowerCase() === String(value).toLowerCase());
+                    $control.val(choice ?? (field.default === undefined ? '' : field.values[0]));
                 } else if (field.type === 'bool') {
                     $control = $('<input type="checkbox">').attr('id', id).prop('checked', ['1', 'yes', 'true'].includes(String(value).toLowerCase()));
                 } else if (field.type === 'file') {
@@ -260,7 +262,6 @@
             $('#channel\\.url').attr('placeholder', apprise.custom
                 ? "{{ lang._('Saved, leave empty to keep') }}" : null);
             appriseRenderFields(chosen, apprise.fields || {}, apprise.saved || []);
-            $('#row_channel\\.url').toggle(chosen === '__custom');
 
             monitFieldVisibility();
             $('#channel\\.events, #channel\\.summaryEvents, #channel\\.summary').off('changed.bs.select.notify')
@@ -305,7 +306,7 @@
                                     /* the URL is as typed, only the answer is escaped */
                                     appriseImported = {service: '', url: url, error: htmlDecode(data.error || '')};
                                 } else {
-                                    $message.text((data && data.error) || "{{ lang._('The URL could not be read.') }}");
+                                    $message.text(htmlDecode((data && data.error) || "{{ lang._('The URL could not be read.') }}"));
                                     return;
                                 }
                                 dlg.close();
@@ -359,24 +360,17 @@
                         method: function () {
                             const uuid = $(this).data("row-id") !== undefined ? $(this).data("row-id") : '';
                             const $icon = $(this).find('span');
+                            if ($icon.hasClass('fa-spinner')) {
+                                return; /* already sending */
+                            }
                             $icon.removeClass('fa-paper-plane').addClass('fa-spinner fa-pulse');
                             ajaxCall('/api/notify/service/test/' + uuid, {}, function (data, status) {
                                 $icon.removeClass('fa-spinner fa-pulse').addClass('fa-paper-plane');
-                                if (data && data.status === 'ok') {
-                                    BootstrapDialog.show({
-                                        type: BootstrapDialog.TYPE_SUCCESS,
-                                        title: "{{ lang._('Test notification') }}",
-                                        message: "{{ lang._('The test notification was sent.') }}",
-                                        buttons: [{label: "{{ lang._('Close') }}", action: function (dlg) { dlg.close(); }}]
-                                    });
-                                } else {
-                                    BootstrapDialog.show({
-                                        type: BootstrapDialog.TYPE_DANGER,
-                                        title: "{{ lang._('Test notification') }}",
-                                        message: $('<div>').text((data && data.message) || "{{ lang._('The test notification could not be sent.') }}"),
-                                        buttons: [{label: "{{ lang._('Close') }}", action: function (dlg) { dlg.close(); }}]
-                                    });
-                                }
+                                const ok = data && data.status === 'ok';
+                                stdDialogInform("{{ lang._('Test notification') }}",
+                                    ok ? "{{ lang._('The test notification was sent.') }}"
+                                       : $('<div>').text(htmlDecode((data && data.message) || "{{ lang._('The test notification could not be sent.') }}")),
+                                    "{{ lang._('Close') }}", undefined, ok ? 'success' : 'danger');
                             });
                         },
                         classname: 'fa fa-fw fa-paper-plane',
@@ -394,13 +388,10 @@
                             ajaxCall('/api/notify/service/summary/' + uuid, {}, function (data, status) {
                                 $icon.removeClass('fa-spinner fa-pulse').addClass('fa-list-alt');
                                 const ok = data && data.status === 'ok';
-                                BootstrapDialog.show({
-                                    type: ok ? BootstrapDialog.TYPE_SUCCESS : BootstrapDialog.TYPE_DANGER,
-                                    title: "{{ lang._('Summary') }}",
-                                    message: ok ? "{{ lang._('The summary so far was sent. Its period carries on until the next scheduled summary.') }}"
-                                                : $('<div>').text((data && data.message) || "{{ lang._('The summary could not be sent.') }}"),
-                                    buttons: [{label: "{{ lang._('Close') }}", action: function (dlg) { dlg.close(); }}]
-                                });
+                                stdDialogInform("{{ lang._('Summary') }}",
+                                    ok ? "{{ lang._('The summary so far was sent. Its period carries on until the next scheduled summary.') }}"
+                                       : $('<div>').text(htmlDecode((data && data.message) || "{{ lang._('The summary could not be sent.') }}")),
+                                    "{{ lang._('Close') }}", undefined, ok ? 'success' : 'danger');
                             });
                         },
                         /* only for enabled channels that have a summary */
@@ -438,8 +429,9 @@
         function loadStatus() {
             ajaxGet('/api/notify/service/status', {}, function (data) {
                 data = appriseDecode(data);
-                if (!data || data.status === 'failed') {
-                    $('#status_summary').text("{{ lang._('The status could not be read.') }}");
+                /* a denied request answers with errorMessage and no status fields */
+                if (!data || data.status === 'failed' || data.enabled === undefined) {
+                    $('#status_summary').text((data && data.errorMessage) || "{{ lang._('The status could not be read.') }}");
                     return;
                 }
                 const bits = [
@@ -451,8 +443,9 @@
                 ];
                 $('#status_summary').text(bits.filter(Boolean).join(' - '));
                 const split = data.split || [];
+                /* a function, so a $ in a channel name is not a replacement pattern */
                 $('#status_split').text("{{ lang._('These channels hold several URLs and are not sent to until each service has a channel of its own: %s') }}"
-                    .replace('%s', split.join(', '))).toggle(split.length > 0);
+                    .replace('%s', () => split.join(', '))).toggle(split.length > 0);
             });
         }
 
@@ -511,12 +504,8 @@
                 "{{ lang._('Yes') }}", "{{ lang._('Cancel') }}", function () {
                 ajaxCall('/api/notify/service/del_report/' + encodeURIComponent(name), {}, function (data) {
                     if (!data || data.status !== 'ok') {
-                        BootstrapDialog.show({
-                            type: BootstrapDialog.TYPE_DANGER,
-                            title: "{{ lang._('Archive') }}",
-                            message: "{{ lang._('The summary could not be deleted.') }}",
-                            buttons: [{label: "{{ lang._('Close') }}", action: function (dlg) { dlg.close(); }}]
-                        });
+                        stdDialogInform("{{ lang._('Archive') }}", "{{ lang._('The summary could not be deleted.') }}",
+                            "{{ lang._('Close') }}", undefined, 'danger');
                     }
                     archiveGrid.bootgrid('reload');
                 });
@@ -537,7 +526,7 @@
 </script>
 
 <ul class="nav nav-tabs" data-tabs="tabs" id="maintabs">
-    <li class="active"><a data-toggle="tab" href="#general">{{ lang._('General') }}</a></li>
+    <li class="active"><a data-toggle="tab" id="general_tab" href="#general">{{ lang._('General') }}</a></li>
     <li><a data-toggle="tab" href="#channels">{{ lang._('Channels') }}</a></li>
     <li><a data-toggle="tab" id="status_tab" href="#status">{{ lang._('Status') }}</a></li>
     <li><a data-toggle="tab" id="archive_tab" href="#archive">{{ lang._('Archive') }}</a></li>

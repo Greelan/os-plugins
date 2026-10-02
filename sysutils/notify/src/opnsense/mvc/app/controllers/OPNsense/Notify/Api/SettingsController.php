@@ -45,6 +45,7 @@ class SettingsController extends ApiMutableModelControllerBase
         /* a grid row carries every field, and the URL holds the channel's credentials */
         foreach ($result['rows'] as &$row) {
             unset($row['url'], $row['%url'], $row['files'], $row['%files']);
+            $row['target'] = self::shownTarget($row['service'] ?? '', $row['target'] ?? '');
         }
 
         return $result;
@@ -53,10 +54,25 @@ class SettingsController extends ApiMutableModelControllerBase
     public function getChannelAction($uuid = null)
     {
         $result = $this->getBase('channel', 'channels', $uuid);
+        if (isset($result['channel']['target'])) {
+            $result['channel']['target'] = self::shownTarget($result['channel']['service'], $result['channel']['target']);
+        }
         /* service fields for the dialog, without secrets; a key no form element maps to */
         $describe = $uuid != null ? (new Backend())->configdpRun('notify describe', [$uuid]) : '';
         $result['notify_apprise'] = json_decode($describe, true) ?: ['service' => ''];
         return $result;
+    }
+
+    /**
+     * A webhook receiver's secret is often its path, which the backend now leaves out of the saved
+     * URL it shows; a channel saved earlier still carries it until it is saved again.
+     */
+    private static function shownTarget($service, $target)
+    {
+        if (in_array($service, ['JSON', 'Form', 'XML']) && preg_match('#^([a-z]+://[^/]+)/.#i', $target, $match)) {
+            return $match[1] . '/...';
+        }
+        return $target;
     }
 
     public function setChannelAction($uuid)
@@ -83,6 +99,8 @@ class SettingsController extends ApiMutableModelControllerBase
      */
     private function channelUrl($uuid)
     {
+        /* as save() requires, before the backend builds a URL from the stored secrets */
+        $this->throwNotFullAdmin();
         if (!$this->request->isPost() || ($uuid !== null && !preg_match('/^[0-9a-f-]{36}$/i', (string)$uuid))) {
             return ['validations' => ['channel.url' => gettext('The channel could not be found.')]];
         }
@@ -98,7 +116,9 @@ class SettingsController extends ApiMutableModelControllerBase
 
         /* the request carries secrets, so hand it over in a private file rather than as an argument */
         $tmpfile = tempnam(sys_get_temp_dir(), 'notify_build_');
-        file_put_contents($tmpfile, json_encode($request));
+        if ($tmpfile === false || file_put_contents($tmpfile, json_encode($request)) === false) {
+            return ['validations' => ['channel.url' => gettext('The URL could not be checked.')]];
+        }
         try {
             $output = trim((new Backend())->configdpRun('notify build', [$tmpfile]));
         } finally {

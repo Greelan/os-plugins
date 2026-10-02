@@ -71,12 +71,17 @@ class ServiceController extends ApiControllerBase
      */
     public function importAction()
     {
+        $this->throwNotFullAdmin();
+
         if (!$this->request->isPost()) {
             return ['error' => gettext('Use a POST request.')];
         }
         /* the URL carries credentials, so hand it over in a private file */
         $tmpfile = tempnam(sys_get_temp_dir(), 'notify_parse_');
-        file_put_contents($tmpfile, json_encode(['url' => (string)$this->request->getPost('url', null, '')]));
+        $request = json_encode(['url' => (string)$this->request->getPost('url', null, '')]);
+        if ($tmpfile === false || file_put_contents($tmpfile, $request) === false) {
+            return ['error' => gettext('The URL could not be read.')];
+        }
         try {
             $result = json_decode((new Backend())->configdpRun('notify parse', [$tmpfile]), true);
         } finally {
@@ -90,13 +95,15 @@ class ServiceController extends ApiControllerBase
      */
     public function testAction($uuid)
     {
+        $this->throwNotFullAdmin();
+
         if (!$this->request->isPost() || !preg_match('/^[0-9a-f-]{36}$/i', (string)$uuid)) {
             return ['status' => 'failed', 'message' => gettext('Save the channel before testing it.')];
         }
         $result = json_decode((new Backend())->configdpRun('notify test', [$uuid]), true);
         if (!is_array($result)) {
-            /* no answer when a running check kept the lock for too long */
-            return ['status' => 'failed', 'message' => gettext('The test could not be run; a check may still be running, so try again in a minute.')];
+            /* the backend answers even while a check holds the lock, so this is a failure of its own */
+            return ['status' => 'failed', 'message' => gettext('The test could not be run; see the log.')];
         }
         return $result;
     }
@@ -154,8 +161,8 @@ class ServiceController extends ApiControllerBase
         /* longer than configd's default wait */
         $result = json_decode((new Backend())->configdpRun('notify summary', [$uuid], false, 300), true);
         if (!is_array($result)) {
-            /* no answer when a running check kept the lock for too long */
-            return ['status' => 'failed', 'message' => gettext('A check is still running; try again in a minute.')];
+            /* the backend answers even while a check holds the lock, so this is a failure of its own */
+            return ['status' => 'failed', 'message' => gettext('The summary could not be sent; see the log.')];
         }
         return $result;
     }
