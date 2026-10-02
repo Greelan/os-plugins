@@ -81,7 +81,6 @@ function blocky_configure_do($verbose)
 {
     service_log(blocky_enabled() ? 'Starting Blocky...' : 'Stopping Blocky...', $verbose);
 
-    configd_run('blocky certificates');
     configd_run('template reload OPNsense/Blocky');
     configd_run(blocky_enabled() ? 'blocky restart' : 'blocky stop');
 

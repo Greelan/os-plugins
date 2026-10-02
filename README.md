@@ -21,9 +21,9 @@ Plugins are then installed from the web UI under **System > Firmware > Plugins**
 
 ### os-blocky-greelan
 
-[Blocky](https://0xerr0r.github.io/blocky/) is a fast DNS proxy and ad-blocker.
+[Blocky](https://0xerr0r.github.io/blocky/) is a fast DNS proxy and ad-blocker. This plugin puts its whole configuration in the OPNsense web UI, won't save a setting Blocky would refuse, and shows its log. If you already run Blocky elsewhere, you can upload its config.yml to start from.
 
-This plugin provides a fully featured OPNsense UI, including log viewer, settings validation, and config.yml importer.
+Blocking uses deny and allow lists that can differ between groups of clients and follow a weekly schedule. Queries go upstream over plain DNS, DNS over TLS, HTTPS or QUIC, and Blocky can serve DNS over TLS and HTTPS itself with a certificate from the trust store. There are also domain and host overrides, caching with prefetching, DNSSEC validation, rebinding protection, rate limiting, a query log, Prometheus metrics and High Availability sync.
 
 Blocky answers on the DNS port (53 by default); disable the built-in Unbound/Dnsmasq resolver or run Blocky on another port.
 

@@ -135,6 +135,30 @@ class Template(unittest.TestCase):
         self.assertEqual((doc["certFile"], doc["keyFile"]),
                          ("/usr/local/etc/blocky/cert.pem", "/usr/local/etc/blocky/key.pem"))
 
+    def test_a_query_type_that_is_a_yaml_keyword(self):
+        self.assertEqual(render(filtering={"queryTypes": "A,NULL"})["filtering"]["queryTypes"], ["A", "NULL"])
+
+    def test_a_domain_starting_with_http_stays_inline(self):
+        # blocky takes a bare httpbin.org as a download; as a block it is text
+        doc = render(denylists=denylist("httpbin.org") + denylist("https://example.com/l.txt"),
+                     hostsFile={"sources": "http-ads.lan"})
+        self.assertEqual(doc["blocking"]["denylists"]["ads"], ["httpbin.org\n", "https://example.com/l.txt"])
+        self.assertEqual(doc["hostsFile"]["sources"], ["http-ads.lan\n"])
+
+    def test_a_document_marker_in_free_text(self):
+        doc = render(general={"userAgent": "ua\n---\nredis:\n  address: evil"})
+        self.assertEqual(doc["upstreams"]["userAgent"], "ua --- redis:   address: evil")
+        self.assertNotIn("redis", doc)
+
+    def test_entries_for_one_domain_are_combined(self):
+        rows = [{"enabled": "1", "domain": "a.lan", "ip": "10.0.0.1"}, {"enabled": "1", "domain": "b.lan", "ip": "10.0.0.3"},
+                {"enabled": "1", "domain": "a.lan", "ip": "10.0.0.2"}, {"enabled": "0", "domain": "a.lan", "ip": "10.0.0.9"}]
+        forwards = [{"enabled": "1", "domain": "x.lan", "resolver": "10.0.0.1"},
+                    {"enabled": "1", "domain": "x.lan", "resolver": "10.0.0.2"}]
+        doc = render(customdns=rows, conditional=forwards)
+        self.assertEqual(doc["customDNS"]["mapping"], {"a.lan": "10.0.0.1,10.0.0.2", "b.lan": "10.0.0.3"})
+        self.assertEqual(doc["conditional"]["mapping"], {"x.lan": "10.0.0.1,10.0.0.2"})
+
 
 if __name__ == "__main__":
     unittest.main()

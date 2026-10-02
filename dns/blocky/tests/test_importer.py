@@ -71,6 +71,39 @@ class Importer(unittest.TestCase):
         result = run("redis:\n  address: /var/run/redis/redis.sock\n")
         self.assertEqual(result["scalars"]["redis"]["address"], "/var/run/redis/redis.sock")
 
+    def test_text_keeps_its_spelling(self):
+        # blocky's yaml.v2 reads a string field as written; YAML 1.1 would make numbers of these
+        result = run("redis:\n  address: r:6379\n  username: 007\n  password: 0000\n  sentinelPassword: 1.10\n"
+                     "blocking:\n  clientGroupsBlock:\n    on: [ads]\n")
+        self.assertEqual([result["scalars"]["redis"][k] for k in ("username", "password", "sentinelPassword")],
+                         ["007", "0000", "1.10"])
+        self.assertEqual(result["arrays"]["clientgroups"][0]["client"], "on")
+        self.assertEqual(result["warnings"], [])
+        self.assertEqual(run("ports:\n  dns: 53\nprometheus:\n  enable: yes\n")["scalars"]["general"]["prometheus"], "1")
+
+    def test_values_blocky_takes_fit_the_fields(self):
+        result = run("blocking:\n  blockTTL: 0\n  schedules:\n    work:\n      weekdays: [Mon, Tue]\n      start: 09:00\n"
+                     "      end: 17:00\n  listSchedules:\n    ads: [work]\n  denylists:\n    ads: [ads.lan]\n"
+                     "upstreams:\n  timeout: 1.5s\nlog:\n  level: WARNING\nminTlsServeVersion: 1.1\n"
+                     "caching:\n  minTime: 2.25h\n  maxTime: 0\n  cacheTimeNegative: .5s\n")
+        general = result["scalars"]["general"]
+        self.assertEqual((general["blockTTL"], general["timeout"], general["cacheMinTime"], general["cacheMaxTime"],
+                          general["cacheTimeNegative"]),
+                         ("0m", "1s500ms", "2h15m", "0", "500ms"), "a bare 0 stays where the field takes it")
+        self.assertEqual(result["arrays"]["schedules"][0]["weekdays"], "mon,tue")
+        self.assertEqual((general["logLevel"], general["minTlsServeVersion"]), ("warn", "1.2"))
+        self.assertTrue(warned(result, "TLS 1.2"))
+
+    def test_hosts_entries_as_blocky_reads_them(self):
+        result = run("hostsFile:\n  sources:\n    - |\n      10.0.0.1\tprinter.lan\n      10.0.0.2  nas.lan\n"
+                     "    - /etc/hosts\nblocking:\n  denylists:\n    ads: ['0.0.0.0\tads.lan']\n")
+        self.assertEqual(result["scalars"]["hostsFile"]["sources"], "10.0.0.1 printer.lan,10.0.0.2  nas.lan,/etc/hosts",
+                         "a tab becomes a space, spaces stay as they are")
+        self.assertEqual(result["arrays"]["denylists"][0]["source"], "0.0.0.0 ads.lan")
+
+    def test_an_odd_date_is_text(self):
+        self.assertNotIn("error", run("upstreams:\n  userAgent: 2026-13-45\n"))
+
 
 if __name__ == "__main__":
     unittest.main()

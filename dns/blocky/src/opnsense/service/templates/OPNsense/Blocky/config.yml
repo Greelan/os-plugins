@@ -3,11 +3,12 @@
 # Blocky configuration generated from Services: Blocky DNS.
 {# a bare-integer duration is deprecated (read as minutes) - append 'm' to keep the value with a unit #}
 {% macro d(v) %}{{ (v ~ 'm') if v|string == (v|int)|string else v }}{% endmacro %}
-{# free text: single quotes keep backslashes literal, an embedded quote is doubled #}
-{% macro q(v) %}'{{ v|string|replace("'", "''") }}'{% endmacro %}
+{# free text: single quotes keep backslashes literal, an embedded quote is doubled, a line break
+   is the space it would fold to (a --- after one would end the document) #}
+{% macro q(v) %}'{{ v|string|replace('\r', '')|replace('\n', ' ')|replace("'", "''") }}'{% endmacro %}
 {# blocky reads a source as a file unless it starts with http or holds a newline, so a bare
    entry (domain, wildcard, /regex/) has to be emitted as a block scalar to stay inline #}
-{% macro is_path(v) %}{{ v.startswith('http') or v.startswith('file://') or (v.startswith('/') and not v.endswith('/')) }}{% endmacro %}
+{% macro is_path(v) %}{{ v.startswith('http://') or v.startswith('https://') or v.startswith('file://') or (v.startswith('/') and not v.endswith('/')) }}{% endmacro %}
 
 upstreams:
   strategy: {{ OPNsense.blocky.general.strategy|default('parallel_best') }}
@@ -53,10 +54,10 @@ customDNS:
 {% endif %}
 {% if cd_on %}
   mapping:
-{% set domains = [] %}
-{% for m in cd_on if m.domain not in domains %}{% do domains.append(m.domain) %}{% endfor %}
-{% for domain in domains %}
-    {{ q(domain) }}: {{ q(cd_on|selectattr('domain', 'equalto', domain)|map(attribute='ip')|join(',')) }}
+{% set by_domain = {} %}
+{% for m in cd_on %}{% do by_domain.setdefault(m.domain, []).append(m.ip) %}{% endfor %}
+{% for domain, ips in by_domain.items() %}
+    {{ q(domain) }}: {{ q(ips|join(',')) }}
 {% endfor %}
 {% endif %}
 {% if OPNsense.blocky.general.customZone %}
@@ -79,10 +80,10 @@ conditional:
 {% endfor %}
 {% endif %}
   mapping:
-{% set domains = [] %}
-{% for m in cf_on if m.domain not in domains %}{% do domains.append(m.domain) %}{% endfor %}
-{% for domain in domains %}
-    {{ q(domain) }}: {{ q(cf_on|selectattr('domain', 'equalto', domain)|map(attribute='resolver')|join(',')) }}
+{% set by_domain = {} %}
+{% for m in cf_on %}{% do by_domain.setdefault(m.domain, []).append(m.resolver) %}{% endfor %}
+{% for domain, resolvers in by_domain.items() %}
+    {{ q(domain) }}: {{ q(resolvers|join(',')) }}
 {% endfor %}
 
 {% endif %}
@@ -344,7 +345,7 @@ bootstrapDns:
 filtering:
   queryTypes:
 {% for t in OPNsense.blocky.filtering.queryTypes.split(',') %}
-    - {{ t|trim }}
+    - {{ q(t|trim) }}
 {% endfor %}
 {% endif %}
 {% if OPNsense.blocky.rebindingProtection is defined and OPNsense.blocky.rebindingProtection.enable == '1' %}

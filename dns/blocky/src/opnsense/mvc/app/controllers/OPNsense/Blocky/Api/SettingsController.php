@@ -29,6 +29,7 @@
 namespace OPNsense\Blocky\Api;
 
 use OPNsense\Base\ApiMutableModelControllerBase;
+use OPNsense\Base\UserException;
 use OPNsense\Core\Backend;
 use OPNsense\Core\Config;
 
@@ -61,7 +62,9 @@ class SettingsController extends ApiMutableModelControllerBase
         }
 
         $tmpfile = tempnam(sys_get_temp_dir(), 'blocky_import_');
-        file_put_contents($tmpfile, $payload);
+        if ($tmpfile === false || file_put_contents($tmpfile, $payload) === false) {
+            return ['status' => 'failed', 'message' => gettext('Could not parse the configuration.')];
+        }
         try {
             $raw = trim((new Backend())->configdpRun('blocky import', [$tmpfile]));
         } finally {
@@ -81,12 +84,14 @@ class SettingsController extends ApiMutableModelControllerBase
 
         // faithful mirror: reset everything to defaults so keys absent from the
         // file fall back to blocky's defaults (no stale values); keep the service
-        // on/off state, a plugin control that is not part of blocky's config.
+        // state and the certificate, plugin controls outside blocky's config.
         $enabled = (string)$model->general->enabled;
+        $certificate = (string)$model->general->certificate;
         foreach ($model->getFlatNodes() as $node) {
             $node->applyDefault();
         }
         $model->general->enabled = $enabled;
+        $model->general->certificate = $certificate;
 
         foreach (self::$importArrays as $name) {
             $uuids = [];
@@ -121,13 +126,63 @@ class SettingsController extends ApiMutableModelControllerBase
         }
 
         /* the base save refuses read-only users and records the change */
-        $this->save();
+        $this->save(false, true);
         return [
             'status' => 'ok',
             'counts' => $counts,
             'skipped' => $parsed['skipped'] ?? [],
             'warnings' => $parsed['warnings'] ?? [],
         ];
+    }
+
+    /**
+     * toggleBase() and delBase() save without validating, so try the change first and refuse it
+     * on any message it adds; the exception reaches the page as a dialog.
+     */
+    private function refuseIfInvalid(callable $change)
+    {
+        $before = [];
+        foreach ($this->getModel()->performValidation(true) as $msg) {
+            $before[$msg->getField() . ':' . $msg->getMessage()] = true;
+        }
+        $change($this->getModel());
+        $added = [];
+        foreach ($this->getModel()->performValidation(true) as $msg) {
+            if (empty($before[$msg->getField() . ':' . $msg->getMessage()])) {
+                $added[$msg->getMessage()] = true;
+            }
+        }
+        $this->invalidateModel();
+        if (!empty($added)) {
+            throw new UserException(implode(' ', array_keys($added)), gettext('Blocky would not start'));
+        }
+    }
+
+    private function toggleChecked($path, $uuids, $enabled)
+    {
+        if ($this->request->isPost()) {
+            $this->refuseIfInvalid(function ($model) use ($path, $uuids, $enabled) {
+                foreach (explode(',', (string)$uuids) as $uuid) {
+                    $node = $model->getNodeByReference($path . '.' . $uuid);
+                    if ($node !== null) {
+                        $node->enabled = $enabled === null ? ((string)$node->enabled == '1' ? '0' : '1') : (string)$enabled;
+                    }
+                }
+            });
+        }
+        return $this->toggleBase($path, $uuids, $enabled);
+    }
+
+    private function delChecked($path, $uuids)
+    {
+        if ($this->request->isPost()) {
+            $this->refuseIfInvalid(function ($model) use ($path, $uuids) {
+                foreach (explode(',', (string)$uuids) as $uuid) {
+                    $model->getNodeByReference($path)->del($uuid);
+                }
+            });
+        }
+        return $this->delBase($path, $uuids);
     }
 
     /**
@@ -166,12 +221,12 @@ class SettingsController extends ApiMutableModelControllerBase
 
     public function delUpstreamAction($uuid)
     {
-        return $this->delBase('upstreams', $uuid);
+        return $this->delChecked('upstreams', $uuid);
     }
 
     public function toggleUpstreamAction($uuid, $enabled = null)
     {
-        return $this->toggleBase('upstreams', $uuid, $enabled);
+        return $this->toggleChecked('upstreams', $uuid, $enabled);
     }
 
     /* bootstrap resolvers */
@@ -197,12 +252,12 @@ class SettingsController extends ApiMutableModelControllerBase
 
     public function delBootstrapAction($uuid)
     {
-        return $this->delBase('bootstrap', $uuid);
+        return $this->delChecked('bootstrap', $uuid);
     }
 
     public function toggleBootstrapAction($uuid, $enabled = null)
     {
-        return $this->toggleBase('bootstrap', $uuid, $enabled);
+        return $this->toggleChecked('bootstrap', $uuid, $enabled);
     }
 
     /* denylists */
@@ -228,12 +283,12 @@ class SettingsController extends ApiMutableModelControllerBase
 
     public function delDenylistAction($uuid)
     {
-        return $this->delBase('denylists', $uuid);
+        return $this->delChecked('denylists', $uuid);
     }
 
     public function toggleDenylistAction($uuid, $enabled = null)
     {
-        return $this->toggleBase('denylists', $uuid, $enabled);
+        return $this->toggleChecked('denylists', $uuid, $enabled);
     }
 
     /* allowlists */
@@ -259,12 +314,12 @@ class SettingsController extends ApiMutableModelControllerBase
 
     public function delAllowlistAction($uuid)
     {
-        return $this->delBase('allowlists', $uuid);
+        return $this->delChecked('allowlists', $uuid);
     }
 
     public function toggleAllowlistAction($uuid, $enabled = null)
     {
-        return $this->toggleBase('allowlists', $uuid, $enabled);
+        return $this->toggleChecked('allowlists', $uuid, $enabled);
     }
 
     /* custom DNS */
@@ -290,12 +345,12 @@ class SettingsController extends ApiMutableModelControllerBase
 
     public function delCustomdnsAction($uuid)
     {
-        return $this->delBase('customdns', $uuid);
+        return $this->delChecked('customdns', $uuid);
     }
 
     public function toggleCustomdnsAction($uuid, $enabled = null)
     {
-        return $this->toggleBase('customdns', $uuid, $enabled);
+        return $this->toggleChecked('customdns', $uuid, $enabled);
     }
 
     /* conditional forwarding */
@@ -321,12 +376,12 @@ class SettingsController extends ApiMutableModelControllerBase
 
     public function delConditionalAction($uuid)
     {
-        return $this->delBase('conditional', $uuid);
+        return $this->delChecked('conditional', $uuid);
     }
 
     public function toggleConditionalAction($uuid, $enabled = null)
     {
-        return $this->toggleBase('conditional', $uuid, $enabled);
+        return $this->toggleChecked('conditional', $uuid, $enabled);
     }
 
     /* client groups */
@@ -352,12 +407,12 @@ class SettingsController extends ApiMutableModelControllerBase
 
     public function delClientgroupAction($uuid)
     {
-        return $this->delBase('clientgroups', $uuid);
+        return $this->delChecked('clientgroups', $uuid);
     }
 
     public function toggleClientgroupAction($uuid, $enabled = null)
     {
-        return $this->toggleBase('clientgroups', $uuid, $enabled);
+        return $this->toggleChecked('clientgroups', $uuid, $enabled);
     }
 
     /* client name mappings (clientLookup.clients) */
@@ -383,12 +438,12 @@ class SettingsController extends ApiMutableModelControllerBase
 
     public function delClientlookupclientAction($uuid)
     {
-        return $this->delBase('clientlookupclients', $uuid);
+        return $this->delChecked('clientlookupclients', $uuid);
     }
 
     public function toggleClientlookupclientAction($uuid, $enabled = null)
     {
-        return $this->toggleBase('clientlookupclients', $uuid, $enabled);
+        return $this->toggleChecked('clientlookupclients', $uuid, $enabled);
     }
 
     /* custom DNS rewrites */
@@ -414,12 +469,12 @@ class SettingsController extends ApiMutableModelControllerBase
 
     public function delCustomdnsrewriteAction($uuid)
     {
-        return $this->delBase('customdnsrewrite', $uuid);
+        return $this->delChecked('customdnsrewrite', $uuid);
     }
 
     public function toggleCustomdnsrewriteAction($uuid, $enabled = null)
     {
-        return $this->toggleBase('customdnsrewrite', $uuid, $enabled);
+        return $this->toggleChecked('customdnsrewrite', $uuid, $enabled);
     }
 
     /* conditional rewrites */
@@ -445,12 +500,12 @@ class SettingsController extends ApiMutableModelControllerBase
 
     public function delConditionalrewriteAction($uuid)
     {
-        return $this->delBase('conditionalrewrite', $uuid);
+        return $this->delChecked('conditionalrewrite', $uuid);
     }
 
     public function toggleConditionalrewriteAction($uuid, $enabled = null)
     {
-        return $this->toggleBase('conditionalrewrite', $uuid, $enabled);
+        return $this->toggleChecked('conditionalrewrite', $uuid, $enabled);
     }
 
     /* schedules */
@@ -476,11 +531,11 @@ class SettingsController extends ApiMutableModelControllerBase
 
     public function delScheduleAction($uuid)
     {
-        return $this->delBase('schedules', $uuid);
+        return $this->delChecked('schedules', $uuid);
     }
 
     public function toggleScheduleAction($uuid, $enabled = null)
     {
-        return $this->toggleBase('schedules', $uuid, $enabled);
+        return $this->toggleChecked('schedules', $uuid, $enabled);
     }
 }

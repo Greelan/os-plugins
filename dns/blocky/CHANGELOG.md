@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.4_10 - 2026-10-02
+
+- Importing a zone file whose first record has no name keeps it as written.
+- Switching on or deleting an entry Blocky could not start with is refused with the reason; a dialog edit that leaves no "default" upstream, or repeats a rewrite or schedule, says so on the entry.
+- NULL as a dropped query type, a zero flush interval, a block type that is no address, a resolver with a trailing dot and a stamp without pinned addresses are refused on save.
+- A signing request cannot be chosen as the certificate.
+- A list entry starting with http, such as httpbin.org, is an inline entry, not a download.
+- An import keeps the selected certificate, takes durations, weekdays, log levels and hosts lines as Blocky does, and keeps a secret's spelling, e.g. 0000.
+- A file: secret is not refused as missing when the web interface runs without root.
+- A CSV or SQLite log target kept from 1.3 is cleared.
+- Many host overrides or conditional forwards render far faster.
+
 ## 1.4_9 - 2026-09-25
 
 - Host overrides, conditional forwards, client groups and client names given in more than one entry are combined instead of stopping Blocky from starting.

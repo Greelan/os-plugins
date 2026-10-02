@@ -37,7 +37,7 @@ POOL = [
     "/^ad[sx]?\\./", "/it's/", "https://example.com/list.txt", "/usr/local/etc/blocky/lists/mine.txt",
     "file:///usr/local/etc/blocky/lists/mine.txt", "/etc/hosts", "file:/usr/local/etc/blocky/secrets/x",
     "tcp://127.0.0.1:6000", "postgres://u:p@db/blocky", "user:pass@tcp(db:3306)/blocky", "host IN A 10.0.0.1",
-    "  IN A 10.0.0.1\nhost IN A 10.0.0.2", "$TTL 3600\n@ IN A 10.0.0.1",
+    "  IN A 10.0.0.1\nhost IN A 10.0.0.2", "$TTL 3600\n@ IN A 10.0.0.1", "  IN A 10.0.0.1\nh.lan. IN A 10.0.0.2",
     "udp:1.1.1.1", "tcp:1.1.1.1", "tcp-tls://1.1.1.1", "HTTPS://dns.google/dns-query", "1.1.1.1:99999",
     "tcp-tls:1.1.1.1:0", "SDNS://AAcAAAAAAAAABzEuMS4xLjE",
     "sdns://AAAAAAAAAAAABzEuMS4xLjE",
@@ -314,9 +314,8 @@ def imported(text):
     """The importer's output for a config.yml, as a harness case (run in a worker process)."""
     if SCRIPTS not in sys.path:
         sys.path[:0] = [SCRIPTS, os.path.join(SCRIPTS, "lib")]
-    import yaml
-    from import_config import Mapper
-    mapped = Mapper(yaml.safe_load(text)).run()
+    from import_config import Mapper, load
+    mapped = Mapper(load(text)).run()
     return {"fields": dict({f"{section}.{field}": v for section, fields in mapped["scalars"].items()
                             for field, v in fields.items()}, **{"general.enabled": "1"}),
             "rows": mapped["arrays"]}
@@ -471,6 +470,50 @@ class BlockyValidates(unittest.TestCase):
             if (blocky is None) != (model is None):
                 mismatches.append(f"{zone!r}: blocky {blocky or 'accepts'}; model {model or 'accepts'}")
         self.assertFalse(mismatches, "\n".join(mismatches))
+
+
+@unittest.skipUnless(CORE and shutil.which("php"), "needs OPNSENSE_CORE and php")
+class ModelRefuses(unittest.TestCase):
+    """Settings Blocky exits on are refused by the model, with the message on a row a dialog shows."""
+
+    DEFAULT = {"general.enabled": "1"}
+    UPSTREAM = {"enabled": "1", "group": "default", "server": "1.1.1.1"}
+    DOH_STAMP = "sdns://AgcAAAAAAAAABzEuMC4wLjEAEmNsb3VkZmxhcmUtZG5zLmNvbQovZG5zLXF1ZXJ5"
+
+    def messages(self, fields=None, **rows):
+        rows.setdefault("upstreams", [self.UPSTREAM])
+        return run_model([{"fields": dict(self.DEFAULT, **(fields or {})), "rows": rows}])[0][0]
+
+    def test_what_blocky_exits_on(self):
+        self.assertIn("general.blockType", self.messages({"general.blockType": "beef"}))
+        self.assertIn("general.blockType", self.messages({"general.blockType": "999.1.1.1"}))
+        self.assertNotIn("general.blockType", self.messages({"general.blockType": "0.0.0.0, ::"}))
+        self.assertIn("queryLog.flushInterval", self.messages({"queryLog.type": "mysql", "queryLog.target": "u:p@tcp(db)/b",
+                                                               "queryLog.flushInterval": "0s"}))
+        self.assertIn("queryLog.flushInterval", self.messages({"queryLog.type": "sqlite", "queryLog.flushInterval": "0m0s"}))
+        self.assertNotIn("queryLog.flushInterval", self.messages({"queryLog.type": "csv", "queryLog.flushInterval": "0s"}),
+                         "only a database log writes on a timer")
+        self.assertIn("upstreams.1.server", self.messages(upstreams=[self.UPSTREAM, dict(self.UPSTREAM, server="tcp-tls:dns.quad9.net.")]))
+        self.assertNotIn("upstreams.1.server", self.messages(upstreams=[self.UPSTREAM, dict(self.UPSTREAM, server="tcp-tls:dns.quad9.net")]))
+        self.assertIn("bootstrap.0.ips", self.messages(bootstrap=[{"enabled": "1", "type": "resolver", "content": self.DOH_STAMP}]))
+        self.assertNotIn("bootstrap.0.ips", self.messages(bootstrap=[{"enabled": "1", "type": "resolver", "content": self.DOH_STAMP,
+                                                                      "ips": "1.0.0.1"}]))
+        self.assertNotIn("bootstrap.0.ips", self.messages(bootstrap=[{"enabled": "1", "type": "resolver",
+                                                                      "content": "sdns://AAcAAAAAAAAABzEuMS4xLjE"}]),
+                         "a plain stamp carries its address")
+        self.assertNotIn("general.proxyProtocol", self.messages({"general.proxyProtocol": "dns", "general.dnsPort": ""}),
+                         "the DNS port falls back to 53")
+        self.assertEqual(list(self.messages({"general.timeout": "2562047h"})), [], "the largest Go duration")
+        self.assertIn("general.timeout", self.messages({"general.timeout": "2562048h"}))
+
+    def test_a_key_given_twice_names_a_row(self):
+        rows = [{"enabled": "1", "fromDomain": "a.lan", "toDomain": "b.lan"}, {"enabled": "1", "fromDomain": "a.lan", "toDomain": "c.lan"}]
+        found = self.messages(customdnsrewrite=rows)
+        self.assertIn("customdnsrewrite.1.fromDomain", found, "a dialog shows the message on the row it edits")
+
+    def test_the_last_default_upstream(self):
+        found = self.messages(upstreams=[dict(self.UPSTREAM, group="lan")])
+        self.assertIn("general.enabled", found)
 
 
 if __name__ == "__main__":

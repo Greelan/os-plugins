@@ -31,7 +31,7 @@ namespace OPNsense\Blocky;
 use OPNsense\Base\BaseModel;
 use OPNsense\Base\Messages\Message;
 use OPNsense\Core\Backend;
-use OPNsense\Trust\Cert;
+use OPNsense\Trust\Store;
 
 /**
  * Class Blocky
@@ -40,6 +40,7 @@ use OPNsense\Trust\Cert;
 class Blocky extends BaseModel
 {
     /* Blocky runs as root, so a list it reads from disk lives in the plugin's own directory */
+    private const ETC_DIR = '/usr/local/etc/blocky';
     public const HOSTS_FILES = ['/etc/hosts'];
     /* the socket the Redis plugin (databases/redis) opens */
     public const REDIS_SOCKETS = ['/var/run/redis/redis.sock'];
@@ -69,8 +70,8 @@ class Blocky extends BaseModel
     {
         $messages = parent::performValidation($validateFullModel);
 
-        /* Require at least one enabled upstream in the "default" group whenever
-         * the service is enabled -- Blocky refuses to start without it. */
+        /* Blocky refuses to start without an enabled upstream in the "default" group; a grid
+         * dialog only sees messages on its own row, so the row edited away gets one too */
         if ((string)$this->general->enabled == '1') {
             $has_default = false;
             foreach ($this->upstreams->iterateItems() as $upstream) {
@@ -84,6 +85,14 @@ class Blocky extends BaseModel
                     gettext('Add at least one enabled upstream resolver in the "default" group before enabling Blocky.'),
                     'general.enabled'
                 ));
+                foreach ($this->upstreams->iterateItems() as $upstream) {
+                    if ($upstream->isFieldChanged()) {
+                        $messages->appendMessage(new Message(
+                            gettext('Blocky needs an enabled resolver in the "default" group; this was the last one.'),
+                            $upstream->group->__reference
+                        ));
+                    }
+                }
             }
         }
 
@@ -107,24 +116,42 @@ class Blocky extends BaseModel
             }
         }
 
-        /* each of these is a key in config.yml, and Blocky refuses a key given twice */
+        /* each is a key in config.yml, and Blocky refuses a key given twice; the message goes on
+         * the row being edited, else on the later rows */
         foreach ([['customdnsrewrite', 'fromDomain'], ['conditionalrewrite', 'fromDomain'], ['schedules', 'name']] as [$array, $key]) {
-            $seen = [];
+            $rows = [];
             foreach ($this->$array->iterateItems() as $row) {
-                if ((string)$row->enabled != '1') {
+                if ((string)$row->enabled == '1') {
+                    $rows[(string)$row->$key][] = $row;
+                }
+            }
+            foreach ($rows as $same) {
+                if (count($same) < 2) {
                     continue;
                 }
-                if (isset($seen[(string)$row->$key])) {
+                $changed = array_filter($same, function ($row) {
+                    return $row->isFieldChanged();
+                });
+                foreach ($changed ?: array_slice($same, 1) as $row) {
                     $messages->appendMessage(new Message(
                         gettext('Another enabled entry already uses this; combine them or disable one.'),
                         $row->$key->__reference
                     ));
                 }
-                $seen[(string)$row->$key] = true;
             }
         }
 
-        /* Go refuses a duration past about 292 years */
+        /* the database query log writer exits on a flush interval of zero */
+        if (
+            ($validateFullModel || $this->queryLog->flushInterval->isFieldChanged() ||
+                $this->queryLog->type->isFieldChanged()) &&
+            in_array((string)$this->queryLog->type, ['mysql', 'postgresql', 'timescale', 'sqlite']) &&
+            preg_match('/^(0+(ns|us|ms|s|m|h))+$/', (string)$this->queryLog->flushInterval)
+        ) {
+            $messages->appendMessage(new Message(gettext('Enter a flush interval above zero.'), 'queryLog.flushInterval'));
+        }
+
+        /* Go refuses a duration past about 292 years (2^63-1 ns) */
         foreach (self::DURATION_FIELDS as $ref) {
             $field = $this->getNodeByReference($ref);
             $value = ltrim((string)$field, '-');
@@ -137,7 +164,7 @@ class Blocky extends BaseModel
                 $ns += (float)$part[1] * ['ns' => 1, 'us' => 1e3, 'ms' => 1e6, 's' => 1e9, 'm' => 6e10,
                     'h' => 3.6e12][$part[2] ?? 'm'];
             }
-            if ($ns >= 9.2e18) {
+            if ($ns > PHP_INT_MAX) {
                 $messages->appendMessage(new Message(gettext('Enter a duration of at most 2562047h.'), $field->__reference));
             }
         }
@@ -198,7 +225,7 @@ class Blocky extends BaseModel
             $lookup = trim((string)$this->general->clientLookupUpstream);
             if ($lookup !== '' && !$this->isUpstream($lookup)) {
                 $messages->appendMessage(new Message(
-                    gettext('Enter a resolver, e.g. 192.168.1.1 or tcp-tls:dns.quad9.net.'),
+                    gettext('Enter a resolver, e.g. tcp-tls:dns.quad9.net or 192.168.1.1, with no trailing dot.'),
                     'general.clientLookupUpstream'
                 ));
             }
@@ -209,7 +236,7 @@ class Blocky extends BaseModel
                 !$this->isUpstream((string)$upstream->server)
             ) {
                 $messages->appendMessage(new Message(
-                    gettext('Enter a resolver, e.g. 192.168.1.1 or tcp-tls:dns.quad9.net.'),
+                    gettext('Enter a resolver, e.g. tcp-tls:dns.quad9.net or 192.168.1.1, with no trailing dot.'),
                     $upstream->server->__reference
                 ));
             }
@@ -221,7 +248,7 @@ class Blocky extends BaseModel
             foreach (explode(',', (string)$mapping->resolver) as $resolver) {
                 if (!$this->isUpstream($resolver)) { /* an empty entry too, which Blocky gets as '' */
                     $messages->appendMessage(new Message(
-                        gettext('Enter a resolver, e.g. 192.168.1.1 or tcp-tls:dns.quad9.net.'),
+                        gettext('Enter a resolver, e.g. tcp-tls:dns.quad9.net or 192.168.1.1, with no trailing dot.'),
                         $mapping->resolver->__reference
                     ));
                     break;
@@ -256,17 +283,17 @@ class Blocky extends BaseModel
             ));
         }
 
-        /* Blocky exits when a PROXY protocol listener family has no port configured */
-        $proxy_ports = [
-            'dns' => 'dnsPort', 'http' => 'httpPort', 'https' => 'httpsPort', 'tls' => 'tlsPort',
-        ];
-        if ($validateFullModel || $this->general->proxyProtocol->isFieldChanged()) {
-            foreach (explode(',', (string)$this->general->proxyProtocol) as $listener) {
-                $listener = trim($listener);
-                if ($listener !== '' && trim((string)$this->general->{$proxy_ports[$listener]}) === '') {
+        /* Blocky exits on a block type that is neither a mode nor a list of addresses */
+        if ($validateFullModel || $this->general->blockType->isFieldChanged()) {
+            $type = trim((string)$this->general->blockType);
+            foreach ($type === '' ? [] : explode(',', $type) as $part) {
+                if (
+                    !in_array(strtolower($type), ['zeroip', 'nxdomain', 'refused'], true) &&
+                    filter_var(trim($part), FILTER_VALIDATE_IP) === false
+                ) {
                     $messages->appendMessage(new Message(
-                        sprintf(gettext('Configure a %s port before requiring the PROXY protocol on it.'), $listener),
-                        'general.proxyProtocol'
+                        gettext('Enter zeroIP, nxDomain, refused, or a comma separated list of IPv4/IPv6 addresses.'),
+                        'general.blockType'
                     ));
                     break;
                 }
@@ -303,8 +330,8 @@ class Blocky extends BaseModel
                 ));
                 continue;
             }
-            $host = $this->upstreamHost((string)$bootstrap->content);
-            if ($host === null || filter_var($host, FILTER_VALIDATE_IP) !== false) {
+            $host = $this->upstreamHost((string)$bootstrap->content) ?? $this->stampHost((string)$bootstrap->content);
+            if ($host === null || $host === '' || filter_var(trim($host, '[]'), FILTER_VALIDATE_IP) !== false) {
                 continue;
             }
             if ($this->bootstrapIsPlain((string)$bootstrap->content)) {
@@ -424,6 +451,9 @@ class Blocky extends BaseModel
                 in_array((string)$this->queryLog->type, ['mysql', 'postgresql', 'timescale', 'dnstap']),
             ],
         ];
+        /* a GUI running as wwwonly (Strict security) cannot see into root's directory; Blocky
+         * refuses to start on a missing file anyway */
+        $blind = file_exists(self::ETC_DIR) && !is_readable(self::ETC_DIR);
         foreach ($secrets as $ref => [$users, $used]) {
             $node = $this->getNodeByReference($ref);
             $changed = $validateFullModel || $node->isFieldChanged();
@@ -439,7 +469,7 @@ class Blocky extends BaseModel
                 $recheck = $recheck || $this->getNodeByReference($user)->isFieldChanged();
             }
             $file = self::secretFile($node->getValue());
-            if (($changed || ($used && $recheck)) && $file !== null && !is_file($file)) {
+            if (($changed || ($used && $recheck)) && $file !== null && !$blind && !is_file($file)) {
                 $messages->appendMessage(new Message(gettext('This file does not exist.'), $ref));
             }
         }
@@ -794,16 +824,13 @@ class Blocky extends BaseModel
     }
 
     /**
-     * Is this certificate in the trust store, with a private key to serve it?
+     * Is this certificate in the trust store, with a private key to serve it? A signing request
+     * has a key but no certificate yet.
      */
     private function hasPrivateKey($refid)
     {
-        foreach ((new Cert())->cert->iterateItems() as $cert) {
-            if ((string)$cert->refid == $refid) {
-                return !empty((string)$cert->prv);
-            }
-        }
-        return false;
+        $cert = Store::getCertificate($refid);
+        return is_array($cert) && !empty($cert['prv']) && !empty($cert['subject']);
     }
 
     /**
@@ -851,15 +878,37 @@ class Blocky extends BaseModel
         if (empty($host) || ($port !== null && ((int)$port < 1 || (int)$port > 65535))) {
             return false;
         }
-        return filter_var($host, FILTER_VALIDATE_IP) !== false ||
+        return filter_var($host, FILTER_VALIDATE_IP) !== false || self::isHostName($host);
+    }
+
+    /**
+     * A host name as Blocky's upstream parser takes it: no trailing dot, which PHP's filter allows.
+     */
+    private static function isHostName($host)
+    {
+        return substr($host, -1) !== '.' &&
             filter_var($host, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) !== false;
     }
 
     /**
-     * Does this DNS stamp parse as one Blocky uses: plain DNS, DoH, DoT or DoQ, per draft-denis-dns-stamps?
+     * The host a stamp names, '' for none, null when the stamp does not parse.
      */
-    private function isStamp($encoded)
+    private function stampHost($value)
     {
+        $value = trim($value);
+        if (strpos($value, 'sdns://') !== 0 || !$this->isStamp(substr($value, strlen('sdns://')), $host)) {
+            return null;
+        }
+        return $host;
+    }
+
+    /**
+     * Does this DNS stamp parse as one Blocky uses: plain DNS, DoH, DoT or DoQ, per draft-denis-dns-stamps?
+     * $host receives the provider name, without its port, '' for a plain DNS stamp.
+     */
+    private function isStamp($encoded, &$host = null)
+    {
+        $host = '';
         $raw = base64_decode(strtr($encoded, '-_', '+/'), true);
         if ($raw === false || strlen($raw) < 9 || !in_array(ord($raw[0]), [0x00, 0x02, 0x03, 0x04], true)) {
             return false;
@@ -898,10 +947,11 @@ class Blocky extends BaseModel
             $hostname = preg_replace('/:[0-9]+$/', '', $hostname);
             if (
                 $hostname !== '' && filter_var(trim($hostname, '[]'), FILTER_VALIDATE_IP) === false &&
-                filter_var($hostname, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) === false
+                !self::isHostName($hostname)
             ) {
                 return false;
             }
+            $host = $hostname;
             if ($pos < strlen($raw) && !$vlp()) {
                 return false; /* optional bootstrap addresses */
             }

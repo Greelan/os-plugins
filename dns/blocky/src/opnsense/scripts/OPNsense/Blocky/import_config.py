@@ -62,6 +62,44 @@ except ImportError:
 TRUTHY = ("y", "yes", "true", "on", "1")
 FALSY = ("n", "no", "false", "off", "0")
 
+
+class TextLoader(yaml.SafeLoader):
+    """Plain scalars as text, null apart: blocky's yaml.v2 keeps a string field's spelling (a
+    password 0000, a client on:) where YAML 1.1 reads a number, a bool or a date."""
+
+
+TextLoader.yaml_implicit_resolvers = {
+    first: [(tag, pattern) for tag, pattern in resolvers if tag == "tag:yaml.org,2002:null"]
+    for first, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+
+
+def load(stream):
+    return yaml.load(stream, Loader=TextLoader)
+
+
+# blocky takes a fractional duration, e.g. 1.5s; the model's masks want whole numbers per unit
+DURATION_UNITS = (("h", 3600 * 10 ** 9), ("m", 60 * 10 ** 9), ("s", 10 ** 9), ("ms", 10 ** 6), ("us", 10 ** 3),
+                  ("ns", 1))
+DURATION_RE = re.compile(r"^((\d+(\.\d*)?|\.\d+)(ns|us|µs|μs|ms|s|m|h))+$")
+
+
+def whole_duration(text):
+    """A Go duration rewritten with whole numbers per unit, or the text as it was."""
+    if not DURATION_RE.match(text) or ("." not in text and "µ" not in text and "μ" not in text):
+        return text
+    total = 0
+    for number, _, unit in re.findall(r"(\d+(\.\d*)?|\.\d+)(ns|us|µs|μs|ms|s|m|h)", text):
+        scale = dict(DURATION_UNITS)["us" if unit in ("µs", "μs") else unit]
+        whole, _, fraction = number.partition(".")
+        total += int(whole or 0) * scale + (int((fraction + "0" * 9)[:9]) * scale) // 10 ** 9
+    parts = []
+    for unit, scale in DURATION_UNITS:
+        if total >= scale:
+            parts.append("%d%s" % (total // scale, unit))
+            total %= scale
+    return "".join(parts) or "0s"
+
 # download settings blocky applies to the sources
 DOWNLOAD_FIELDS = (
     ("timeout", "downloadTimeout"),
@@ -146,6 +184,9 @@ DURATION_FIELDS = {
     "hostsFile.downloadCooldown", "redis.connectionCooldown",
 }
 
+# duration fields whose mask takes a bare 0 (off), as the other masks do not
+BARE_ZERO_FIELDS = {"general.refreshPeriod", "general.downloadReadTimeout", "general.cacheMinTime",
+                    "general.cacheMaxTime", "general.customTTL", "hostsFile.hostsTTL"}
 # blocky only checks the sign of these, so any negative duration means the same as -1
 NEGATIVE_FIELDS = {"general.cacheMinTime", "general.cacheMaxTime", "general.cacheTimeNegative",
                    "general.downloadReadHeaderTimeout"}
@@ -224,6 +265,7 @@ class Mapper:
         self.doc = doc if isinstance(doc, dict) else {}
         self.scalars = {}
         self.arrays = {}
+        self.seen = set()
         self.skipped = []
         self.warnings = []
 
@@ -253,6 +295,12 @@ class Mapper:
             self.warnings.append("%s: expected a single value; not imported." % label)
             return None
         return str(value).strip()
+
+    def _zone_text(self, value, label):
+        """Zone text: a leading blank means "same owner as before", so only blank lines and
+        trailing space go."""
+        text = self._scalar(value, label)
+        return None if text is None else str(value).rstrip().lstrip("\r\n")
 
     def _sequence(self, value, label):
         """Return value as a list; a lone scalar counts as a one-item list."""
@@ -350,21 +398,27 @@ class Mapper:
             return
         if value.startswith("-") and "%s.%s" % (section, field) in NEGATIVE_FIELDS:
             value = "-1"
-        elif value.isdigit() and value != "0" and "%s.%s" % (section, field) in DURATION_FIELDS:
-            self.warnings.append("%s: %s has no unit; imported as %sm, the way blocky reads it."
-                                 % (label, value, value))
-            value += "m"
+        elif "%s.%s" % (section, field) in DURATION_FIELDS:
+            if value == "0" and "%s.%s" % (section, field) in BARE_ZERO_FIELDS:
+                pass  # the field's own spelling for off
+            elif value.isdigit():
+                self.warnings.append("%s: %s has no unit; imported as %sm, the way blocky reads it."
+                                     % (label, value, value))
+                value += "m"
+            else:
+                value = whole_duration(value)
         self.scalars.setdefault(section, {})[field] = value
 
     def _map(self, path, section, field, transform=None):
         self._put(section, field, self._get(*path.split(".")), path, transform)
 
     def _row(self, name, row, label):
-        rows = self.arrays.setdefault(name, [])
-        if row in rows:
+        key = (name, tuple(sorted(row.items())))
+        if key in self.seen:
             self.warnings.append("%s: duplicate entry; imported once." % label)
             return
-        rows.append(row)
+        self.seen.add(key)
+        self.arrays.setdefault(name, []).append(row)
 
     # -- top level ---------------------------------------------------------
     def run(self):
@@ -472,9 +526,17 @@ class Mapper:
         self._map("ports.dohPath", "general", "dohPath")
         self._map("ports.proxyProtocol", "general", "proxyProtocol", self._list)
 
+    def _tls_version(self, value, label):
+        """blocky serves TLS 1.2 at least, and raises an older setting itself."""
+        text = self._scalar(value, label)
+        if text in ("1.0", "1.1"):
+            self.warnings.append("%s: blocky serves TLS 1.2 at least; imported as 1.2." % label)
+            return "1.2"
+        return text
+
     def _general_connect_tls(self):
         self._map("connectIPVersion", "general", "connectIPVersion")
-        self._map("minTlsServeVersion", "general", "minTlsServeVersion")
+        self._map("minTlsServeVersion", "general", "minTlsServeVersion", self._tls_version)
         for key in ("certFile", "keyFile"):
             if self._get(key) is not None:
                 self.warnings.append("%s: import the certificate under System: Trust and select it "
@@ -534,11 +596,11 @@ class Mapper:
                           "bootstrapDns: %s" % upstream)
 
     def _inline_sources(self, value):
-        """A denylist/allowlist source may be a URL/path (single line) or a YAML
-        block with several inline entries; expand blocks into one row each."""
+        """A list or hosts source may be a URL/path (single line) or a YAML block with several
+        inline entries; expand blocks into one row each, a tab as the space blocky reads it as."""
         out = []
         for line in value.splitlines():
-            line = line.strip()
+            line = line.strip().replace("\t", " ")
             if line and not line.startswith("#"):
                 out.append(line)
         return out
@@ -595,7 +657,7 @@ class Mapper:
             spec = self._as_mapping(spec, label)
             for key in sorted(set(spec) - SCHEDULE_KEYS):
                 self.warnings.append("%s.%s: not recognized; not imported." % (label, key))
-            weekdays = self._list(spec.get("weekdays"), "%s.weekdays" % label) or ""
+            weekdays = (self._list(spec.get("weekdays"), "%s.weekdays" % label) or "").lower()
             if weekdays == "":
                 # blocky requires weekdays too
                 self.warnings.append("%s: no weekdays; not imported." % label)
@@ -644,10 +706,20 @@ class Mapper:
                     "enabled": "1", "name": client, "ips": value,
                 }, label)
 
+    def _log_level(self, value, label):
+        """A logrus level in any case and spelling; the model offers error to trace."""
+        text = self._scalar(value, label)
+        if text is None:
+            return None
+        level = {"warning": "warn", "panic": "error", "fatal": "error"}.get(text.lower(), text.lower())
+        if level != text:
+            self.warnings.append("%s: %s imported as %s." % (label, text, level))
+        return level
+
     def _prometheus_log(self):
         self._map("prometheus.enable", "general", "prometheus", self._bool)
         self._map("prometheus.path", "general", "prometheusPath")
-        self._map("log.level", "general", "logLevel")
+        self._map("log.level", "general", "logLevel", self._log_level)
         self._map("log.format", "general", "logFormat")
         self._map("log.privacy", "general", "logPrivacy", self._bool)
 
@@ -668,13 +740,13 @@ class Mapper:
                 self._row("customdnsrewrite", {
                     "enabled": "1", "fromDomain": str(src), "toDomain": value,
                 }, label)
-        zone = self._scalar(self._get("customDNS", "zone"), "customDNS.zone")
+        zone = self._zone_text(self._get("customDNS", "zone"), "customDNS.zone")
         if zone:
             zone, included = zone_without_includes(zone)
             if included:
                 self.warnings.append("customDNS.zone: $INCLUDE lines would make blocky read other files; "
                                      "they were left out.")
-            self._put("general", "customZone", zone, "customDNS.zone")
+            self._put("general", "customZone", zone, "customDNS.zone", lambda value, label: value)
 
     def _conditional(self):
         self._map("conditional.fallbackUpstream", "general", "conditionalFallback", self._bool)
@@ -755,7 +827,12 @@ class Mapper:
                   self._bool)
 
     def _hosts_file(self):
-        sources = self._list(self._get("hostsFile", "sources"), "hostsFile.sources")
+        entries: list = []
+        for source in self._sequence(self._get("hostsFile", "sources"), "hostsFile.sources"):
+            text = self._scalar(source, "hostsFile.sources")
+            if text is not None:
+                entries += self._inline_sources(text) if "\n" in text else [text]
+        sources = self._list(entries, "hostsFile.sources")
         kept = []
         for one in (sources or "").split(","):
             if one and not allowed_file(one, ("/etc/hosts",)):
@@ -822,14 +899,14 @@ def main():
         sys.exit(0)
     try:
         with open(sys.argv[1], "r", encoding="utf-8") as handle:
-            doc = yaml.safe_load(handle)
+            doc = load(handle)
     except UnicodeDecodeError:
         print(json.dumps({"error": "the file is not valid UTF-8 text."}))
         sys.exit(0)
     except OSError as exc:
         print(json.dumps({"error": "could not read the file: %s" % (exc.strerror or exc)}))
         sys.exit(0)
-    except yaml.YAMLError as exc:
+    except (yaml.YAMLError, ValueError) as exc:
         print(json.dumps({"error": "invalid YAML: %s" % exc}))
         sys.exit(0)
     if doc is None:

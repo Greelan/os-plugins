@@ -1,5 +1,15 @@
-Blocky is a fast and lightweight DNS proxy and ad-blocker for local networks, written in Go. It blocks queries against configurable deny and allow lists (per client group), forwards to one or more upstream resolvers with selectable strategies, supports conditional forwarding, custom DNS mappings, response caching with prefetching and optional Prometheus metrics.
+Blocky is a fast and lightweight DNS proxy and ad-blocker for local networks, written in Go. This plugin puts its whole configuration in the OPNsense web UI, won't save a setting Blocky would refuse, and shows its log. If you already run Blocky elsewhere, you can upload its config.yml to start from.
+
+Blocking uses deny and allow lists that can differ between groups of clients, matched by name, address or subnet, and follow a weekly schedule. Clients can be given names by hand where reverse DNS does not provide them.
+
+Queries go upstream over plain DNS, DNS over TLS, HTTPS or QUIC, spread across resolvers in parallel, at random or in strict order. Domain overrides send chosen domains to their own resolvers, and host overrides answer for names directly, with a zone file for records beyond simple addresses. Answers are cached, and popular ones refreshed before they expire.
+
+Blocky can serve DNS over TLS and HTTPS itself, with a certificate from the trust store. It can validate DNSSEC, guard against DNS rebinding and limit query rates, and for larger setups offers DNS64, EDNS Client Subnet and a shared Redis cache.
+
+Queries can be logged to CSV files, SQLite, MySQL/MariaDB, PostgreSQL, TimescaleDB or dnstap, and metrics exposed for Prometheus. Settings are synced to a High Availability peer.
 
 Note: Blocky answers on the DNS port (53 by default). When running it on port 53 you must either disable the built-in Unbound/Dnsmasq resolver or run Blocky on an alternate port and forward to it.
+
+Changelog: https://pkg.greelan.net/changelog/os-blocky-greelan.html
 
 WWW: https://0xerr0r.github.io/blocky/

@@ -57,7 +57,7 @@ class BootstrapContentField extends BaseField
             if ((string)$this->getParentNode()->type == 'resolvfile') {
                 $validators[] = new CallbackValidator(["callback" => function ($data) {
                     if (!preg_match('/^\/[^\s\'"]*$/', (string)$data)) {
-                        return [gettext('Enter an absolute path, e.g. /etc/resolv.conf.')];
+                        return [gettext('Enter an absolute path, e.g. /usr/local/etc/blocky/lists/resolv.conf.')];
                     }
                     return [];
                 }

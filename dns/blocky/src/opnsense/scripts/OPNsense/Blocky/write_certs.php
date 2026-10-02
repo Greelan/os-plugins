@@ -36,7 +36,6 @@
 require_once('script/load_phalcon.php');
 
 use OPNsense\Blocky\Blocky;
-use OPNsense\Trust\Cert;
 use OPNsense\Trust\Store as CertStore;
 
 $cert_file = '/usr/local/etc/blocky/cert.pem';
@@ -49,37 +48,32 @@ if (empty($refid)) {
     exit(0);
 }
 
-foreach ((new Cert())->cert->iterateItems() as $cert) {
-    if ((string)$cert->refid != $refid) {
-        continue;
-    }
-    if (empty((string)$cert->prv)) {
-        syslog(LOG_ERR, 'blocky: certificate ' . $refid . ' has no key, keeping the previous files');
-        exit(1);
-    }
-    $chain = base64_decode((string)$cert->crt);
-    if (!empty((string)$cert->caref) && ($ca = CertStore::getCaChain((string)$cert->caref))) {
-        $chain .= "\n" . $ca;
-    }
-    $written = false;
-    foreach ([$cert_file => $chain, $key_file => base64_decode((string)$cert->prv)] as $file => $pem) {
-        @touch($file);
-        @chmod($file, 0600);
-        if (hash('sha256', $pem) !== @hash_file('sha256', $file)) {
-            file_put_contents($file, $pem);
-            $written = true;
-        }
-    }
-    if ($written) {
-        /* the files are named for Blocky, so record which certificate they hold */
-        syslog(LOG_NOTICE, sprintf(
-            'blocky: exported certificate %s (%s)',
-            (string)$cert->descr ?: $refid,
-            $refid
-        ));
-    }
-    exit(0);
+$cert = CertStore::getCertificate($refid);
+if (!is_array($cert)) {
+    syslog(LOG_ERR, 'blocky: certificate ' . $refid . ' was not found');
+    exit(1);
 }
-
-syslog(LOG_ERR, 'blocky: certificate ' . $refid . ' was not found');
-exit(1);
+if (empty($cert['prv']) || empty($cert['subject'])) {
+    /* a signing request has a key but no certificate yet */
+    syslog(LOG_ERR, 'blocky: certificate ' . $refid . ' has no key or no certificate, keeping the previous files');
+    exit(1);
+}
+$chain = $cert['crt'] . ($cert['ca']['crt'] ?? '');
+$written = false;
+foreach ([$cert_file => $chain, $key_file => $cert['prv']] as $file => $pem) {
+    @touch($file);
+    @chmod($file, 0600);
+    if (hash('sha256', $pem) !== @hash_file('sha256', $file)) {
+        file_put_contents($file, $pem);
+        $written = true;
+    }
+}
+if ($written) {
+    /* the files are named for Blocky, so record which certificate they hold */
+    syslog(LOG_NOTICE, sprintf(
+        'blocky: exported certificate %s (%s)',
+        $cert['subject']['CN'] ?? $cert['name'] ?? $refid,
+        $refid
+    ));
+}
+exit(0);
