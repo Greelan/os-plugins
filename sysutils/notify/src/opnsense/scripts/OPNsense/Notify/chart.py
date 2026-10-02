@@ -66,9 +66,10 @@ def day_marks(first, last):
             marks.append((stamp - first) / (last - first))
 
 
-def chart_png(series, marks, scale=2):
+def chart_png(series, marks, scale=2, top=None):
     """A line chart as PNG: series of (values, color, filled[, outlined]), None being a gap; a filled
-    one is outlined unless told otherwise. Drawn at scale and averaged down to smooth edges."""
+    one is outlined unless told otherwise. The top edge is top, else a tenth above the highest value.
+    Drawn at scale and averaged down to smooth edges."""
     width, height = GRAPH_SIZE
     w, h = width * scale, height * scale
     # a plane per channel, column after column, so a column is one slice; colors are
@@ -80,7 +81,7 @@ def chart_png(series, marks, scale=2):
             for k in range(4):
                 planes[k][x * h + y] = rgba[k]
 
-    top = max([v for values, *_ in series for v in values if v is not None] + [0]) * 1.1 or 1
+    top = top or max([v for values, *_ in series for v in values if v is not None] + [0]) * 1.1 or 1
     for step in range(1, 4):
         y = h - 1 - round(step / 4 * (h - 1))
         for x in range(0, w, 2 * scale):

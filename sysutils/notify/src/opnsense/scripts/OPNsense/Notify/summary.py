@@ -836,9 +836,9 @@ def draw_series(spec, directory):
     os.makedirs(directory, exist_ok=True)
     path = os.path.join(directory, spec["name"])
     with open(path, "wb") as handle:
-        # areas without an outline, so each series is one color
+        # areas without an outline, so each series is one color; a percentage against 100
         handle.write(chart_png([(values, color, filled, False) for _, values, color, filled in lines],
-                               day_marks(stamps[0], stamps[-1])))
+                               day_marks(stamps[0], stamps[-1]), top=100 if unit == "percent" else None))
     return {"path": path, "legend": graph_legend(unit, lines)}
 
 

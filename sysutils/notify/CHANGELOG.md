@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5_7 - 2026-10-03
+
+- The summary's processor graph is drawn against 100%.
+
 ## 1.5_6 - 2026-10-02
 
 - A token given as token= in a custom URL, as Slack and ntfy allow, stays out of the browser.

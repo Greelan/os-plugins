@@ -984,6 +984,22 @@ class SummaryTiming(unittest.TestCase):
             shutil.rmtree(folder)
         self.assertEqual(reads, ["wan-packets.rrd"], "two periods, one reading")
 
+    def test_a_percentage_is_drawn_against_100(self):
+        tops, saved, folder = [], (summary.configctl_json, summary.chart_png), tempfile.mkdtemp()
+        cpu = {name: [10.0, 32.0, 20.0] for name in ("user", "nice", "system", "interrupt")}
+        summary.configctl_json = lambda *a: self.health(cpu if "processor" in a[2] else self.FETCH)
+        summary.chart_png = lambda series, marks, **kw: tops.append(kw.get("top")) or b""
+        summary.GRAPHS.clear()
+        try:
+            for kind, key in (("cpu", "system"), ("blocks", "wan")):
+                summary.draw_series({"kind": kind, "key": key, "title": key, "name": f"{kind}.png",
+                                     "start": 1727000100, "end": 1727000700}, folder)
+        finally:
+            summary.configctl_json, summary.chart_png = saved
+            summary.GRAPHS.clear()
+            shutil.rmtree(folder)
+        self.assertEqual(tops, [100, None], "a percentage has a fixed top, a count fits its peak")
+
     @staticmethod
     def health(rows, step=300):
         """Core's `health fetch` answer for {source: [values]} from 1727000100 on, one step apart."""
