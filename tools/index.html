@@ -133,6 +133,12 @@
   tbody tr:nth-child(even) { background: var(--code-bg); }
   tbody tr:nth-child(even) { background: color-mix(in srgb, var(--text) 3%, transparent); }
 
+  /* directory listings */
+  .listing { font-size: .85rem; }
+  .listing td:first-child { font-family: var(--mono); word-break: break-all; }
+  .listing td + td, .listing th + th { white-space: nowrap; text-align: right; }
+  .listing td + td { color: var(--muted); }
+
   section { margin-top: 1.5rem; }
 
   footer {
@@ -146,7 +152,7 @@
 <body>
 <header class="topbar">
   <a class="brand" href="/">Greelan's plugin repository</a>
-  <nav aria-label="Site"><a href="/">Home</a></nav>
+  <nav aria-label="Site"><a href="/">Home</a><a href="/files.html">Files</a><a href="https://github.com/Greelan/os-plugins" target="_blank" rel="noopener noreferrer">GitHub</a></nav>
 </header>
 <main>
 <article class="card">
@@ -154,7 +160,6 @@
 </article>
 </main>
 <footer>
-  <a href="https://github.com/Greelan/os-plugins" target="_blank" rel="noopener noreferrer">GitHub</a>
   <div>Last built %%BUILT%%</div>
 </footer>
 <script>

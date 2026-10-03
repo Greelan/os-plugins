@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # Render the pkg.greelan.net site into repo/: index.html from README.md (with a
-# per-plugin "changelog" link injected into each plugin heading) and one
-# changelog/<pkgname>.html per plugin from its CHANGELOG.md.
+# per-plugin "changelog" link injected into each plugin heading), one
+# changelog/<pkgname>.html per plugin from its CHANGELOG.md, and a directory
+# listing per package folder (files.html at the root, index.html below it).
 import datetime
 import glob
 import html
 import os
 import re
+from urllib.parse import quote
 
 import markdown
 
@@ -126,3 +128,44 @@ for pkgname, changelog, _, _ in plugins:
     body = f'<h1 id="{pkgname}"><span class="plugin">{pkgname}</span> changelog</h1>\n' + render(content)
     out = os.path.join(REPO, "changelog", f"{pkgname}.html")
     open(out, "w").write(page(body, title=f"{pkgname} changelog"))
+
+
+# site pages rather than repository content
+UNLISTED = {"index.html", "files.html", "changelog"}
+
+
+def listing(directory, path, parent=None):
+    """Directory listing page: subdirectories first, then files with size and time."""
+    entries = sorted((e for e in os.scandir(directory) if e.name not in UNLISTED), key=lambda e: e.name)
+    rows = [f'<tr><td><a href="{parent}">../</a></td><td></td><td></td></tr>'] if parent else []
+    for name in sorted({e.name for e in entries if e.is_dir()}):
+        # "./" keeps an ABI name like FreeBSD:14:amd64 from reading as a URL scheme
+        rows.append('<tr><td><a href="./{}/">{}/</a></td><td>-</td><td>-</td></tr>'.format(
+            quote(name, safe=":,+@"), html.escape(name)))
+    for e in entries:
+        if not e.is_file():
+            continue
+        st = e.stat()
+        when = datetime.datetime.fromtimestamp(st.st_mtime, datetime.timezone.utc)
+        rows.append('<tr><td><a href="./{}">{}</a></td><td>{}</td><td>{}</td></tr>'.format(
+            quote(e.name, safe=":,+@"), html.escape(e.name),
+            when.strftime("%Y-%m-%d %H:%M"), f"{st.st_size:,}"))
+    title = f"Index of {path}"
+    body = (f'<h1>{html.escape(title)}</h1>\n<table class="listing">\n'
+            '<thead><tr><th>Name</th><th>Modified (UTC)</th><th>Size</th></tr></thead>\n'
+            '<tbody>\n%s\n</tbody>\n</table>' % "\n".join(rows))
+    return page(body, title=title)
+
+
+def index_tree(directory, path, parent):
+    open(os.path.join(directory, "index.html"), "w").write(listing(directory, path, parent))
+    for e in os.scandir(directory):
+        if e.is_dir():
+            index_tree(e.path, f"{path}{e.name}/", "../")
+
+
+# the landing page owns the root's index.html; the dev channel is not listed
+for e in os.scandir(REPO):
+    if e.is_dir() and e.name not in UNLISTED:
+        index_tree(e.path, f"/{e.name}/", "/files.html")
+open(os.path.join(REPO, "files.html"), "w").write(listing(REPO, "/"))
