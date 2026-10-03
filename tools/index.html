@@ -134,7 +134,13 @@
   tbody tr:nth-child(even) { background: color-mix(in srgb, var(--text) 3%, transparent); }
 
   /* directory listings */
-  .listing { font-size: .85rem; }
+  /* full width with fixed columns, so every listing lines up the same */
+  .listing { display: table; table-layout: fixed; font-size: .85rem; }
+  .listing th:nth-child(2) { width: 10.5em; }
+  .listing th:nth-child(3) { width: 6.5em; }
+  @media (max-width: 34rem) {
+    .listing th:nth-child(2), .listing td:nth-child(2) { display: none; }
+  }
   .listing td:first-child { font-family: var(--mono); word-break: break-all; }
   .listing td + td, .listing th + th { white-space: nowrap; text-align: right; }
   .listing td + td { color: var(--muted); }
@@ -152,16 +158,14 @@
 <body>
 <header class="topbar">
   <a class="brand" href="/">Greelan's plugin repository</a>
-  <nav aria-label="Site"><a href="/">Home</a><a href="/files.html">Files</a><a href="https://github.com/Greelan/os-plugins" target="_blank" rel="noopener noreferrer">GitHub</a></nav>
+  <nav aria-label="Site"><a href="/">Home</a><a href="/files/">Files</a><a href="https://github.com/Greelan/os-plugins" target="_blank" rel="noopener noreferrer">GitHub</a></nav>
 </header>
 <main>
 <article class="card">
 %%CONTENT%%
 </article>
 </main>
-<footer>
-  <div>Last built %%BUILT%%</div>
-</footer>
+%%FOOTER%%
 <script>
   /* no clipboard outside a secure context */
   if (navigator.clipboard) {

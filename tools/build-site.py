@@ -2,7 +2,7 @@
 # Render the pkg.greelan.net site into repo/: index.html from README.md (with a
 # per-plugin "changelog" link injected into each plugin heading), one
 # changelog/<pkgname>.html per plugin from its CHANGELOG.md, and a directory
-# listing per package folder (files.html at the root, index.html below it).
+# listing per package folder (files/index.html for the root, index.html below it).
 import datetime
 import glob
 import html
@@ -28,10 +28,12 @@ def render(md):
     return re.sub(r'<a href="(https?://)', r'<a target="_blank" rel="noopener noreferrer" href="\1', body)
 
 
-def page(body, title=None):
+def page(body, title=None, built=False):
+    # the build date only on the landing page
+    footer = f"<footer>\n  <div>Last built {BUILT}</div>\n</footer>" if built else ""
     return (HEAD.replace("%%TITLE%%", html.escape(title or TITLE))
             + body
-            + FOOT.replace("%%BUILT%%", BUILT))
+            + FOOT.replace("%%FOOTER%%", footer))
 
 
 def built_packages():
@@ -116,7 +118,7 @@ for pkgname, changelog, depends, bundled in plugins:
 leftovers = package_list(sorted(set(found) - listed), found)
 if leftovers:
     body += f'<h2 id="other-packages">Other packages</h2>\n{leftovers}'
-open(os.path.join(REPO, "index.html"), "w").write(page(body))
+open(os.path.join(REPO, "index.html"), "w").write(page(body, built=True))
 
 # one changelog page per plugin that ships one (drop the file's title, keep "## version" as h2)
 for pkgname, changelog, _, _ in plugins:
@@ -131,7 +133,7 @@ for pkgname, changelog, _, _ in plugins:
 
 
 # site pages rather than repository content
-UNLISTED = {"index.html", "files.html", "changelog"}
+UNLISTED = {"index.html", "files", "changelog"}
 
 
 def listing(directory, path, parent=None):
@@ -139,16 +141,16 @@ def listing(directory, path, parent=None):
     entries = sorted((e for e in os.scandir(directory) if e.name not in UNLISTED), key=lambda e: e.name)
     rows = [f'<tr><td><a href="{parent}">../</a></td><td></td><td></td></tr>'] if parent else []
     for name in sorted({e.name for e in entries if e.is_dir()}):
-        # "./" keeps an ABI name like FreeBSD:14:amd64 from reading as a URL scheme
-        rows.append('<tr><td><a href="./{}/">{}/</a></td><td>-</td><td>-</td></tr>'.format(
-            quote(name, safe=":,+@"), html.escape(name)))
+        # absolute, as the root listing lives at /files/; a bare FreeBSD:14:amd64 would read as a URL scheme
+        rows.append('<tr><td><a href="{}{}/">{}/</a></td><td>-</td><td>-</td></tr>'.format(
+            quote(path, safe=":,+@/"), quote(name, safe=":,+@"), html.escape(name)))
     for e in entries:
         if not e.is_file():
             continue
         st = e.stat()
         when = datetime.datetime.fromtimestamp(st.st_mtime, datetime.timezone.utc)
-        rows.append('<tr><td><a href="./{}">{}</a></td><td>{}</td><td>{}</td></tr>'.format(
-            quote(e.name, safe=":,+@"), html.escape(e.name),
+        rows.append('<tr><td><a href="{}{}">{}</a></td><td>{}</td><td>{}</td></tr>'.format(
+            quote(path, safe=":,+@/"), quote(e.name, safe=":,+@"), html.escape(e.name),
             when.strftime("%Y-%m-%d %H:%M"), f"{st.st_size:,}"))
     title = f"Index of {path}"
     body = (f'<h1>{html.escape(title)}</h1>\n<table class="listing">\n'
@@ -167,5 +169,6 @@ def index_tree(directory, path, parent):
 # the landing page owns the root's index.html; the dev channel is not listed
 for e in os.scandir(REPO):
     if e.is_dir() and e.name not in UNLISTED:
-        index_tree(e.path, f"/{e.name}/", "/files.html")
-open(os.path.join(REPO, "files.html"), "w").write(listing(REPO, "/"))
+        index_tree(e.path, f"/{e.name}/", "/files/")
+os.makedirs(os.path.join(REPO, "files"), exist_ok=True)
+open(os.path.join(REPO, "files", "index.html"), "w").write(listing(REPO, "/"))
