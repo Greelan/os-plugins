@@ -685,8 +685,11 @@ class Blocky extends BaseModel
                 } elseif ($directive === '$ORIGIN' && count($tokens) === 2 && $isName($tokens[1])) {
                     $origin = true;
                 } elseif ($directive === '$GENERATE' && count($tokens) > 2 && !$isName($tokens[2])) {
-                    return sprintf(gettext('Line %d: end the name %s with a dot, or put an $ORIGIN line before it.'),
-                        $at, $tokens[2]);
+                    return sprintf(
+                        gettext('Line %d: end the name %s with a dot, or put an $ORIGIN line before it.'),
+                        $at,
+                        $tokens[2]
+                    );
                 } elseif ($directive !== '$GENERATE' && $directive !== '$INCLUDE') {
                     return sprintf(gettext('Line %d: %s is not a directive Blocky reads this way.'), $at, $tokens[0]);
                 }
@@ -694,8 +697,11 @@ class Blocky extends BaseModel
             }
             $i = 0;
             if (!$blank && !$isName($tokens[$i++])) {
-                return sprintf(gettext('Line %d: end the name %s with a dot, or put an $ORIGIN line before it.'),
-                    $at, $tokens[0]);
+                return sprintf(
+                    gettext('Line %d: end the name %s with a dot, or put an $ORIGIN line before it.'),
+                    $at,
+                    $tokens[0]
+                );
             }
             $ttl = $class = false;
             while ($i < count($tokens)) {

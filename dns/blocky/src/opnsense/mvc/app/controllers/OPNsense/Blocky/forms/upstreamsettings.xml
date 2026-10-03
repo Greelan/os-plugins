@@ -3,7 +3,7 @@
         <id>blocky.general.strategy</id>
         <label>Resolver strategy</label>
         <type>dropdown</type>
-        <help>How the resolvers in an upstream group are queried. parallel_best races two resolvers and takes the fastest answer. random picks one and asks a second if it does not respond, which is slower but sends each query to a single upstream. Both pick at random, weighted so a resolver that failed within the last hour is less likely to be chosen. strict tries them in order, moving on only when one does not respond.</help>
+        <help>How the resolvers in an upstream group are queried. Parallel best races two resolvers and takes the fastest answer. Random picks one and asks a second if it does not respond, which is slower but sends each query to a single upstream. Both pick at random, weighted so a resolver that failed within the last hour is less likely to be chosen. Strict tries them in order, moving on only when one does not respond.</help>
     </field>
     <field>
         <id>blocky.general.timeout</id>
@@ -16,7 +16,7 @@
         <id>blocky.general.initStrategy</id>
         <label>Startup strategy</label>
         <type>dropdown</type>
-        <help>Behavior when connecting to upstreams at startup: blocking waits, failOnError aborts startup on failure, fast starts immediately.</help>
+        <help>Behavior when connecting to upstreams at startup: Blocking waits, Fail on error aborts startup on failure, Fast starts immediately.</help>
     </field>
     <field>
         <id>blocky.general.userAgent</id>

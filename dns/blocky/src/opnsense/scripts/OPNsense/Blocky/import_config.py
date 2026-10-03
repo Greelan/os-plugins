@@ -100,6 +100,7 @@ def whole_duration(text):
             total %= scale
     return "".join(parts) or "0s"
 
+
 # download settings blocky applies to the sources
 DOWNLOAD_FIELDS = (
     ("timeout", "downloadTimeout"),
@@ -394,8 +395,8 @@ class Mapper:
         if value is None:
             return
         value = (transform or self._scalar)(value, label)
-        if value is None:
-            return
+        if not value:
+            return  # an empty key is an absent one: the import starts from the defaults
         if value.startswith("-") and "%s.%s" % (section, field) in NEGATIVE_FIELDS:
             value = "-1"
         elif "%s.%s" % (section, field) in DURATION_FIELDS:

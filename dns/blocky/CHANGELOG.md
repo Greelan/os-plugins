@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4_12 - 2026-10-04
+
+- Settings with a default cannot be saved empty.
+- Choices read as words, e.g. Warning instead of warn.
+- The Blocky log can be chosen for remote logging.
+
 ## 1.4_11 - 2026-10-03
 
 - Stopping Blocky and importing a configuration through configd take calls from root and the web interface only.

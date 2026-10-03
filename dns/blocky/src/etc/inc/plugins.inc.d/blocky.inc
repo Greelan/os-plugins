@@ -65,6 +65,15 @@ function blocky_services()
     return $services;
 }
 
+function blocky_syslog()
+{
+    $logfacilities = [];
+
+    $logfacilities['blocky'] = ['facility' => ['blocky']];
+
+    return $logfacilities;
+}
+
 function blocky_xmlrpc_sync()
 {
     $result = [];

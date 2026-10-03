@@ -1,7 +1,7 @@
 <model>
     <mount>//OPNsense/blocky</mount>
     <description>Blocky DNS proxy</description>
-    <version>1.0.4</version>
+    <version>1.0.5</version>
     <items>
         <general>
             <enabled type="BooleanField">
@@ -10,6 +10,7 @@
             </enabled>
             <dnsPort type="CSVListField">
                 <Default>53</Default>
+                <Required>Y</Required>
                 <AsList>Y</AsList>
                 <FieldSeparator>,</FieldSeparator>
                 <Mask>/^(\[[0-9A-Fa-f:]+\]:[0-9]{1,5}|[0-9A-Za-z._-]+:[0-9]{1,5}|:?[0-9]{1,5})$/</Mask>
@@ -27,11 +28,11 @@
                 <Default>info</Default>
                 <Required>Y</Required>
                 <OptionValues>
-                    <error>error</error>
-                    <warn>warn</warn>
-                    <info>info</info>
-                    <debug>debug</debug>
-                    <trace>trace</trace>
+                    <error>Error</error>
+                    <warn>Warning</warn>
+                    <info>Info</info>
+                    <debug>Debug</debug>
+                    <trace>Trace</trace>
                 </OptionValues>
             </logLevel>
             <logPrivacy type="BooleanField">
@@ -42,9 +43,9 @@
                 <Default>dual</Default>
                 <Required>Y</Required>
                 <OptionValues>
-                    <dual>dual</dual>
-                    <v4>v4</v4>
-                    <v6>v6</v6>
+                    <dual>Dual stack</dual>
+                    <v4>IPv4 only</v4>
+                    <v6>IPv6 only</v6>
                 </OptionValues>
             </connectIPVersion>
             <tlsPort type="CSVListField">
@@ -63,6 +64,7 @@
             </httpsPort>
             <dohPath type="TextField">
                 <Default>/dns-query</Default>
+                <Required>Y</Required>
                 <Mask>/^\/[\w\/.-]*$/</Mask>
                 <ValidationMessage>Enter a URL path beginning with a slash, e.g. /dns-query.</ValidationMessage>
             </dohPath>
@@ -81,13 +83,14 @@
                 <Default>parallel_best</Default>
                 <Required>Y</Required>
                 <OptionValues>
-                    <parallel_best>parallel_best</parallel_best>
-                    <random>random</random>
-                    <strict>strict</strict>
+                    <parallel_best>Parallel best</parallel_best>
+                    <random>Random</random>
+                    <strict>Strict</strict>
                 </OptionValues>
             </strategy>
             <timeout type="TextField">
                 <Default>2s</Default>
+                <Required>Y</Required>
                 <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
                 <ValidationMessage>Enter a duration such as 500ms, 2s or 1m. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </timeout>
@@ -95,19 +98,21 @@
                 <Default>blocking</Default>
                 <Required>Y</Required>
                 <OptionValues>
-                    <blocking>blocking</blocking>
-                    <failOnError>failOnError</failOnError>
-                    <fast>fast</fast>
+                    <blocking>Blocking</blocking>
+                    <failOnError>Fail on error</failOnError>
+                    <fast>Fast</fast>
                 </OptionValues>
             </initStrategy>
             <userAgent type="TextField"/>
             <quicMaxIdleTimeout type="TextField">
                 <Default>30s</Default>
+                <Required>Y</Required>
                 <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
                 <ValidationMessage>Enter a duration such as 30s. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </quicMaxIdleTimeout>
             <quicKeepAlivePeriod type="TextField">
                 <Default>15s</Default>
+                <Required>Y</Required>
                 <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
                 <ValidationMessage>Enter a duration such as 15s. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </quicKeepAlivePeriod>
@@ -119,11 +124,13 @@
             </blockType>
             <blockTTL type="TextField">
                 <Default>6h</Default>
+                <Required>Y</Required>
                 <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
                 <ValidationMessage>Enter a duration such as 30m, 6h or 1h30m. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </blockTTL>
             <refreshPeriod type="TextField">
                 <Default>4h</Default>
+                <Required>Y</Required>
                 <Mask>/^(0|([0-9]+(ns|us|ms|s|m|h))+)$/</Mask>
                 <ValidationMessage>Enter a duration such as 4h or 30m (0 to disable). Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </refreshPeriod>
@@ -131,9 +138,9 @@
                 <Default>blocking</Default>
                 <Required>Y</Required>
                 <OptionValues>
-                    <blocking>blocking</blocking>
-                    <failOnError>failOnError</failOnError>
-                    <fast>fast</fast>
+                    <blocking>Blocking</blocking>
+                    <failOnError>Fail on error</failOnError>
+                    <fast>Fast</fast>
                 </OptionValues>
             </loadingStrategy>
             <maxErrorsPerSource type="IntegerField">
@@ -143,6 +150,7 @@
             </maxErrorsPerSource>
             <downloadTimeout type="TextField">
                 <Default>5s</Default>
+                <Required>Y</Required>
                 <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
                 <ValidationMessage>Enter a duration such as 5s or 60s. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </downloadTimeout>
@@ -153,21 +161,25 @@
             </downloadAttempts>
             <downloadCooldown type="TextField">
                 <Default>500ms</Default>
+                <Required>Y</Required>
                 <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
                 <ValidationMessage>Enter a duration such as 500ms. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </downloadCooldown>
             <downloadWriteTimeout type="TextField">
                 <Default>20s</Default>
+                <Required>Y</Required>
                 <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
                 <ValidationMessage>Enter a duration such as 20s. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </downloadWriteTimeout>
             <downloadReadTimeout type="TextField">
                 <Default>20s</Default>
+                <Required>Y</Required>
                 <Mask>/^(0|([0-9]+(ns|us|ms|s|m|h))+)$/</Mask>
                 <ValidationMessage>Enter a duration such as 20s (0 to disable). Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </downloadReadTimeout>
             <downloadReadHeaderTimeout type="TextField">
                 <Default>20s</Default>
+                <Required>Y</Required>
                 <Mask>/^(-1|([0-9]+(ns|us|ms|s|m|h))+)$/</Mask>
                 <ValidationMessage>Enter a duration such as 20s (-1 to disable). Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </downloadReadHeaderTimeout>
@@ -178,11 +190,13 @@
             </loadingConcurrency>
             <cacheMinTime type="TextField">
                 <Default>0</Default>
+                <Required>Y</Required>
                 <Mask>/^(0|-[0-9]+|([0-9]+(ns|us|ms|s|m|h))+)$/</Mask>
                 <ValidationMessage>Enter a duration such as 5m or 1h, or 0 (and below) to fall back to the record TTL. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </cacheMinTime>
             <cacheMaxTime type="TextField">
                 <Default>0</Default>
+                <Required>Y</Required>
                 <Mask>/^(0|-[0-9]+|([0-9]+(ns|us|ms|s|m|h))+)$/</Mask>
                 <ValidationMessage>Enter a duration such as 30m or 1h; 0 falls back to the record TTL, a negative value (e.g. -1) disables caching. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </cacheMaxTime>
@@ -192,24 +206,29 @@
             </prefetching>
             <cacheTimeNegative type="TextField">
                 <Default>30m</Default>
+                <Required>Y</Required>
                 <Mask>/^(-1|([0-9]+(ns|us|ms|s|m|h))+)$/</Mask>
                 <ValidationMessage>Enter a duration such as 30m (use -1 to disable negative caching). Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </cacheTimeNegative>
             <maxItemsCount type="IntegerField">
                 <Default>0</Default>
+                <Required>Y</Required>
                 <MinimumValue>0</MinimumValue>
             </maxItemsCount>
             <prefetchExpires type="TextField">
                 <Default>2h</Default>
+                <Required>Y</Required>
                 <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
                 <ValidationMessage>Enter a duration such as 2h. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </prefetchExpires>
             <prefetchThreshold type="IntegerField">
                 <Default>5</Default>
+                <Required>Y</Required>
                 <MinimumValue>0</MinimumValue>
             </prefetchThreshold>
             <prefetchMaxItemsCount type="IntegerField">
                 <Default>0</Default>
+                <Required>Y</Required>
                 <MinimumValue>0</MinimumValue>
             </prefetchMaxItemsCount>
             <cacheExclude type="CSVListField">
@@ -221,6 +240,7 @@
             </cacheExclude>
             <customTTL type="TextField">
                 <Default>1h</Default>
+                <Required>Y</Required>
                 <Mask>/^([0-9]+|([0-9]+(ns|us|ms|s|m|h))+)$/</Mask>
                 <ValidationMessage>Enter a duration such as 1h, or a plain number (minutes). Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </customTTL>
@@ -246,6 +266,7 @@
             </prometheus>
             <prometheusPath type="TextField">
                 <Default>/metrics</Default>
+                <Required>Y</Required>
                 <Mask>/^\/[\w\/.-]*$/</Mask>
                 <ValidationMessage>Enter a URL path beginning with a slash, e.g. /metrics.</ValidationMessage>
             </prometheusPath>
@@ -253,17 +274,17 @@
                 <Default>text</Default>
                 <Required>Y</Required>
                 <OptionValues>
-                    <text>text</text>
-                    <json>json</json>
+                    <text>Text</text>
+                    <json>JSON</json>
                 </OptionValues>
             </logFormat>
             <proxyProtocol type="OptionField">
                 <Multiple>Y</Multiple>
                 <OptionValues>
-                    <dns>dns</dns>
-                    <http>http</http>
-                    <https>https</https>
-                    <tls>tls</tls>
+                    <dns>DNS</dns>
+                    <http>HTTP</http>
+                    <https>HTTPS</https>
+                    <tls>TLS</tls>
                 </OptionValues>
             </proxyProtocol>
             <downloadCache type="BooleanField">
@@ -615,23 +636,25 @@
             </creationAttempts>
             <creationCooldown type="TextField">
                 <Default>2s</Default>
+                <Required>Y</Required>
                 <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
                 <ValidationMessage>Enter a duration such as 2s. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </creationCooldown>
             <flushInterval type="TextField">
                 <Default>30s</Default>
+                <Required>Y</Required>
                 <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
                 <ValidationMessage>Enter a duration such as 30s. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </flushInterval>
             <fields type="OptionField">
                 <Multiple>Y</Multiple>
                 <OptionValues>
-                    <clientIP>clientIP</clientIP>
-                    <clientName>clientName</clientName>
-                    <responseReason>responseReason</responseReason>
-                    <responseAnswer>responseAnswer</responseAnswer>
-                    <question>question</question>
-                    <duration>duration</duration>
+                    <clientIP>Client IP</clientIP>
+                    <clientName>Client name</clientName>
+                    <responseReason>Response reason</responseReason>
+                    <responseAnswer>Response answer</responseAnswer>
+                    <question>Question</question>
+                    <duration>Duration</duration>
                 </OptionValues>
             </fields>
             <ignoreSudn type="BooleanField">
@@ -657,6 +680,7 @@
             </sources>
             <hostsTTL type="TextField">
                 <Default>1h</Default>
+                <Required>Y</Required>
                 <Mask>/^([0-9]+|([0-9]+(ns|us|ms|s|m|h))+)$/</Mask>
                 <ValidationMessage>Enter a duration such as 1h, or a plain number (minutes). Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </hostsTTL>
@@ -666,11 +690,13 @@
             </filterLoopback>
             <refreshPeriod type="TextField">
                 <Default>4h</Default>
+                <Required>Y</Required>
                 <Mask>/^(0|([0-9]+(ns|us|ms|s|m|h))+)$/</Mask>
                 <ValidationMessage>Enter a duration such as 4h or 30m (0 to disable). Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </refreshPeriod>
             <downloadTimeout type="TextField">
                 <Default>5s</Default>
+                <Required>Y</Required>
                 <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
                 <ValidationMessage>Enter a duration such as 5s. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </downloadTimeout>
@@ -681,6 +707,7 @@
             </downloadAttempts>
             <downloadCooldown type="TextField">
                 <Default>500ms</Default>
+                <Required>Y</Required>
                 <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
                 <ValidationMessage>Enter a duration such as 500ms. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </downloadCooldown>
@@ -697,9 +724,9 @@
                 <Default>blocking</Default>
                 <Required>Y</Required>
                 <OptionValues>
-                    <blocking>blocking</blocking>
-                    <failOnError>failOnError</failOnError>
-                    <fast>fast</fast>
+                    <blocking>Blocking</blocking>
+                    <failOnError>Fail on error</failOnError>
+                    <fast>Fast</fast>
                 </OptionValues>
             </loadingStrategy>
             <maxErrorsPerSource type="IntegerField">
@@ -737,6 +764,7 @@
             </enable>
             <prefix type="NetworkField">
                 <Default>64:ff9b::/96</Default>
+                <Required>Y</Required>
                 <NetMaskRequired>Y</NetMaskRequired>
                 <AddressFamily>ipv6</AddressFamily>
                 <AsList>Y</AsList>
@@ -767,6 +795,7 @@
             </connectionAttempts>
             <connectionCooldown type="TextField">
                 <Default>1s</Default>
+                <Required>Y</Required>
                 <Mask>/^([0-9]+(ns|us|ms|s|m|h))+$/</Mask>
                 <ValidationMessage>Enter a duration such as 1s. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </connectionCooldown>

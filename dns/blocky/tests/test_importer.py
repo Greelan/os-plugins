@@ -101,6 +101,10 @@ class Importer(unittest.TestCase):
                          "a tab becomes a space, spaces stay as they are")
         self.assertEqual(result["arrays"]["denylists"][0]["source"], "0.0.0.0 ads.lan")
 
+    def test_an_empty_key_is_left_to_the_default(self):
+        result = run("ports:\n  dns: \"\"\nblocking:\n  blockTTL: \"\"\n  loading:\n    refreshPeriod: \"\"\n")
+        self.assertNotIn("general", result["scalars"])
+
     def test_an_odd_date_is_text(self):
         self.assertNotIn("error", run("upstreams:\n  userAgent: 2026-13-45\n"))
 

@@ -41,7 +41,7 @@
         <label>Log format</label>
         <type>dropdown</type>
         <advanced>true</advanced>
-        <help>Log output format: text (human readable) or json (structured, for log processors).</help>
+        <help>Log output format: Text (human readable) or JSON (structured, for log processors).</help>
     </field>
     <field>
         <id>blocky.general.logPrivacy</id>
@@ -53,7 +53,7 @@
         <id>blocky.general.connectIPVersion</id>
         <label>Connect IP version</label>
         <type>dropdown</type>
-        <help>IP version used for outgoing connections to upstreams and list downloads: dual (both), v4 (IPv4 only) or v6 (IPv6 only).</help>
+        <help>IP version used for outgoing connections to upstreams and list downloads.</help>
     </field>
     <field>
         <type>header</type>

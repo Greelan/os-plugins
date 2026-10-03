@@ -24,7 +24,7 @@
         <id>blocky.general.loadingStrategy</id>
         <label>List loading strategy</label>
         <type>dropdown</type>
-        <help>How lists load at startup: blocking waits for all of them before serving, failOnError aborts startup if one fails to load, fast serves immediately and loads them in the background.</help>
+        <help>How lists load at startup: Blocking waits for all of them before serving, Fail on error aborts startup if one fails to load, Fast serves immediately and loads them in the background.</help>
     </field>
     <field>
         <id>blocky.general.maxErrorsPerSource</id>
