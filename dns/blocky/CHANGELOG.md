@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4_11 - 2026-10-03
+
+- Stopping Blocky and importing a configuration through configd take calls from root and the web interface only.
+
 ## 1.4_10 - 2026-10-02
 
 - Importing a zone file whose first record has no name keeps it as written.
