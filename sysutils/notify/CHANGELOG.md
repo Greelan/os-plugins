@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5_8 - 2026-10-03
+
+- Sending, building and importing a channel, and deleting an archived summary, through configd take calls from root and the web interface only.
+
 ## 1.5_7 - 2026-10-03
 
 - The summary's processor graph is drawn against 100%.
