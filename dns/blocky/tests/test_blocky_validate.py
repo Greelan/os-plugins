@@ -491,6 +491,24 @@ class ModelRefuses(unittest.TestCase):
         self.assertIn("queryLog.flushInterval", self.messages({"queryLog.type": "mysql", "queryLog.target": "u:p@tcp(db)/b",
                                                                "queryLog.flushInterval": "0s"}))
         self.assertIn("queryLog.flushInterval", self.messages({"queryLog.type": "sqlite", "queryLog.flushInterval": "0m0s"}))
+        # the server could read any file Blocky can, as root
+        self.assertIn("queryLog.target", self.messages({"queryLog.type": "mysql",
+                                                        "queryLog.target": "u:p@tcp(db)/b?allowAllFiles=true"}))
+        self.assertIn("queryLog.target", self.messages({"queryLog.type": "postgresql",
+                                                        "queryLog.target": "postgres://u@db/b?sslkey=/root/k.pem"}))
+        self.assertNotIn("queryLog.target", self.messages({"queryLog.type": "postgresql",
+                                                           "queryLog.target": "postgres://u@db/b?sslmode=require"}))
+        # the template drops a carriage return, and trims a hosts source as Python does, so a check
+        # would not see what Blocky reads: such values are refused outright
+        self.assertIn("queryLog.target", self.messages({"queryLog.type": "mysql",
+                                                        "queryLog.target": "u:p@tcp(db)/b?allowAll\rFiles=true"}))
+        redis = {"redis.address": "10.0.0.1:6379"}
+        self.assertIn("redis.password", self.messages(dict(redis, **{"redis.password": "fi\rle:/etc/master.passwd"})))
+        self.assertIn("redis.address", self.messages({"redis.address": "\r/var/run/configd.socket"}))
+        for source in ("\u2003/etc/master.passwd", "\x1f/etc/master.passwd", "/usr/local/etc/blocky/lists/\r../x"):
+            self.assertIn("hostsFile.sources", self.messages({"hostsFile.sources": source}), repr(source))
+        # spaces and tabs around an entry are trimmed, as core's HostnameField trims
+        self.assertNotIn("hostsFile.sources", self.messages({"hostsFile.sources": " /etc/hosts\t, 10.0.0.1 host.lan "}))
         self.assertNotIn("queryLog.flushInterval", self.messages({"queryLog.type": "csv", "queryLog.flushInterval": "0s"}),
                          "only a database log writes on a timer")
         self.assertIn("upstreams.1.server", self.messages(upstreams=[self.UPSTREAM, dict(self.UPSTREAM, server="tcp-tls:dns.quad9.net.")]))

@@ -623,7 +623,9 @@
                     <dnstap>dnstap</dnstap>
                 </OptionValues>
             </type>
-            <target type=".\SecretField"/>
+            <target type=".\SecretField">
+                <AllowNewlines>N</AllowNewlines>
+            </target>
             <logRetentionDays type="IntegerField">
                 <Default>0</Default>
                 <MinimumValue>0</MinimumValue>
@@ -675,8 +677,12 @@
             </queryTypes>
         </filtering>
         <hostsFile>
-            <sources type="CSVListField">
+            <sources type=".\HostsSourcesField">
                 <AsList>Y</AsList>
+                <!-- each entry is trimmed; the template trims as Python does, which takes more -->
+                <Mask>/^[^\p{Cc}\p{Z}]([^\p{Cc}]*[^\p{Cc}\p{Z}])?$/u</Mask>
+                <MaskPerItem>Y</MaskPerItem>
+                <ValidationMessage>Enter each source without control characters or surrounding spaces.</ValidationMessage>
             </sources>
             <hostsTTL type="TextField">
                 <Default>1h</Default>
@@ -776,9 +782,13 @@
             </exclusionSet>
         </dns64>
         <redis>
-            <address type="TextField"/>
+            <address type="TextField">
+                <AllowNewlines>N</AllowNewlines>
+            </address>
             <username type="TextField"/>
-            <password type=".\SecretField"/>
+            <password type=".\SecretField">
+                <AllowNewlines>N</AllowNewlines>
+            </password>
             <database type="IntegerField">
                 <Default>0</Default>
                 <MinimumValue>0</MinimumValue>
@@ -800,7 +810,9 @@
                 <ValidationMessage>Enter a duration such as 1s. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </connectionCooldown>
             <sentinelUsername type="TextField"/>
-            <sentinelPassword type=".\SecretField"/>
+            <sentinelPassword type=".\SecretField">
+                <AllowNewlines>N</AllowNewlines>
+            </sentinelPassword>
             <sentinelAddresses type="CSVListField">
                 <AsList>Y</AsList>
                 <FieldSeparator>,</FieldSeparator>

@@ -48,7 +48,9 @@ migrated deprecated keys, wrong shapes, unknown keys and dropped values.
 import json
 import os
 import re
+import stat
 import sys
+import urllib.parse
 
 # PyYAML is vendored under lib/ (pure-Python, pinned in lib/VENDOR), so no pkg dependency is needed.
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
@@ -57,6 +59,11 @@ try:
 except ImportError:
     print(json.dumps({"error": "bundled PyYAML could not be loaded."}))
     sys.exit(0)
+
+# the web interface hands the file over in its tmp (AppConfig tempDir); only such a file is read
+TEMP_DIR = "/var/lib/php/tmp"
+TEMP_PREFIX = "blocky_import_"
+IMPORT_MAX = 4 * 1024 * 1024
 
 # YAML 1.1 boolean spellings, for values that reach us as quoted strings.
 TRUTHY = ("y", "yes", "true", "on", "1")
@@ -243,9 +250,24 @@ def in_directory(path, directory):
 
 
 def zone_without_includes(zone):
-    """The zone with its $INCLUDE lines removed, and whether there were any; mirrors the model."""
+    """The zone with its $INCLUDE lines removed, and whether there were any; mirrors the model, which
+    checks the zone as the template writes it, without carriage returns."""
+    zone = zone.replace("\r", "")
     stripped = re.sub(r"^\s*\$INCLUDE\b.*(\r?\n|$)", "", zone, flags=re.I | re.M)
     return stripped, stripped != zone
+
+
+def database_target(value):
+    """A database target naming no file for blocky to read; a file: value is root's own. Mirrors the
+    model: a key starts the string or follows ?, & or the whitespace PostgreSQL separates keywords with."""
+    return value.startswith("file:") or not re.search(
+        r"(^|[?&\t\n\v\f\r ])(allowAllFiles|sslcert|sslkey|sslrootcert|passfile|servicefile)[\t\n\v\f\r ]*=",
+        urllib.parse.unquote_plus(value), re.I)
+
+
+# a hosts file source, as the model's mask has it: no control characters, nothing a trim removes around it
+SPACES = "\x20\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000"
+HOSTS_SOURCE = re.compile("[^\x00-\x1f\x7f-\x9f%s]([^\x00-\x1f\x7f-\x9f]*[^\x00-\x1f\x7f-\x9f%s])?" % (SPACES, SPACES))
 
 
 def dnstap_target(value):
@@ -571,7 +593,7 @@ class Mapper:
                 for key in sorted(set(entry) - BOOTSTRAP_KEYS):
                     self.warnings.append("bootstrapDns.%s: not recognized; not imported." % key)
                 path = self._scalar(entry.get("resolvFile"), "bootstrapDns.resolvFile")
-                if path and not in_directory(path, LIST_DIR):
+                if path and not in_directory(path.replace("\r", ""), LIST_DIR):
                     self.warnings.append("bootstrapDns.resolvFile: %s is outside %s; not imported."
                                          % (path, LIST_DIR.rstrip("/")))
                     path = None
@@ -772,7 +794,13 @@ class Mapper:
         fixed = {"csv": "/var/db/blocky/querylog", "csv-client": "/var/db/blocky/querylog",
                  "sqlite": "/var/db/blocky/querylog.db"}.get(str(self._get("queryLog", "type") or "").strip())
         target = self._get("queryLog", "target")
-        if self._get("queryLog", "type") == "dnstap" and isinstance(target, str) and not dnstap_target(target):
+        if self._get("queryLog", "type") in ("mysql", "postgresql", "timescale") and isinstance(target, str) \
+                and not database_target(target):
+            # MySQL's allowAllFiles and PostgreSQL's file options are read as root, so the log is left off
+            self.warnings.append("queryLog.target: options that read a file are taken only from a file: value; "
+                                 "query logging was left off.")
+            self.scalars.setdefault("queryLog", {})["type"] = "none"
+        elif self._get("queryLog", "type") == "dnstap" and isinstance(target, str) and not dnstap_target(target):
             # a unix socket would be connected to as root, so the log is left off
             self.warnings.append("queryLog.target: only a tcp:// address is taken for dnstap; query logging "
                                  "was left off.")
@@ -787,7 +815,9 @@ class Mapper:
 
     def _redis(self):
         address = self._get("redis", "address")
-        if isinstance(address, str) and address.startswith("/") and address != REDIS_SOCKET:
+        if isinstance(address, str) and ("\r" in address or "\n" in address):
+            self.warnings.append("redis.address: line breaks are not taken; not imported.")
+        elif isinstance(address, str) and address.startswith("/") and address != REDIS_SOCKET:
             self.warnings.append("redis.address: only the Redis plugin socket %s is taken; not imported."
                                  % REDIS_SOCKET)
         else:
@@ -836,7 +866,10 @@ class Mapper:
         sources = self._list(entries, "hostsFile.sources")
         kept = []
         for one in (sources or "").split(","):
-            if one and not allowed_file(one, ("/etc/hosts",)):
+            if one and not HOSTS_SOURCE.fullmatch(one):
+                self.warnings.append("hostsFile.sources: %r has control characters or surrounding spaces; "
+                                     "not imported." % one)
+            elif one and not allowed_file(one, ("/etc/hosts",)):
                 self.warnings.append("hostsFile.sources: %s is a file other than /etc/hosts outside %s; "
                                      "not imported." % (one, LIST_DIR.rstrip("/")))
             elif one:
@@ -856,6 +889,9 @@ class Mapper:
     def _secret(self, path, section, field):
         """blocky reads a file: value from disk as root, so only the secrets directory is allowed."""
         value = self._get(*path.split("."))
+        if isinstance(value, str) and ("\r" in value or "\n" in value):
+            self.warnings.append("%s: line breaks are not taken; not imported." % path)
+            return
         if isinstance(value, str) and not allowed_secret(value):
             self.warnings.append("%s: a file: value must name a file in %s; not imported."
                                  % (path, SECRET_DIR.rstrip("/")))
@@ -898,16 +934,28 @@ def main():
     if len(sys.argv) != 2:
         print(json.dumps({"error": "usage: import_config.py <config.yml>"}))
         sys.exit(0)
+    name = os.path.basename(sys.argv[1])
+    if not name.startswith(TEMP_PREFIX):
+        print(json.dumps({"error": "the file was not handed over by the web interface."}))
+        sys.exit(0)
     try:
-        with open(sys.argv[1], "r", encoding="utf-8") as handle:
-            doc = load(handle)
+        # no links, and a FIFO is refused rather than waited on
+        with open(os.open(os.path.join(TEMP_DIR, name), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise OSError("not a file the web interface wrote")
+            data = handle.read(IMPORT_MAX + 1)
+        if len(data) > IMPORT_MAX:
+            print(json.dumps({"error": "the file is larger than a configuration should be."}))
+            sys.exit(0)
+        doc = load(data.decode("utf-8"))
     except UnicodeDecodeError:
         print(json.dumps({"error": "the file is not valid UTF-8 text."}))
         sys.exit(0)
     except OSError as exc:
         print(json.dumps({"error": "could not read the file: %s" % (exc.strerror or exc)}))
         sys.exit(0)
-    except (yaml.YAMLError, ValueError) as exc:
+    except (yaml.YAMLError, ValueError, RecursionError) as exc:
         print(json.dumps({"error": "invalid YAML: %s" % exc}))
         sys.exit(0)
     if doc is None:

@@ -30,6 +30,7 @@ namespace OPNsense\Blocky\Api;
 
 use OPNsense\Base\ApiMutableModelControllerBase;
 use OPNsense\Base\UserException;
+use OPNsense\Core\AppConfig;
 use OPNsense\Core\Backend;
 use OPNsense\Core\Config;
 
@@ -55,13 +56,16 @@ class SettingsController extends ApiMutableModelControllerBase
         if (!$this->request->isPost()) {
             return ['status' => 'failed', 'message' => gettext('Use a POST request.')];
         }
+        /* save() checks it too, but only after the backend has parsed the file */
+        $this->throwReadOnly();
         /* unfiltered: the sanitiser escapes quotes and ampersands, which breaks the YAML */
         $payload = (string)$this->request->getPost('payload');
         if (trim($payload) === '') {
             return ['status' => 'failed', 'message' => gettext('No configuration was provided.')];
         }
 
-        $tmpfile = tempnam(sys_get_temp_dir(), 'blocky_import_');
+        /* the importer reads only this directory and prefix */
+        $tmpfile = tempnam((new AppConfig())->application->tempDir, 'blocky_import_');
         if ($tmpfile === false || file_put_contents($tmpfile, $payload) === false) {
             return ['status' => 'failed', 'message' => gettext('Could not parse the configuration.')];
         }

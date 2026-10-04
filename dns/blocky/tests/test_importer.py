@@ -13,12 +13,19 @@ BASE = "upstreams:\n  groups:\n    default: [1.1.1.1]\n"
 
 
 def run(yml):
-    with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as handle:
-        handle.write(BASE + yml)
-    try:
-        answer = subprocess.run([sys.executable, IMPORTER, handle.name], capture_output=True, text=True, check=True)
-    finally:
-        os.unlink(handle.name)
+    with tempfile.TemporaryDirectory() as folder:
+        path = os.path.join(folder, "blocky_import_test")
+        with open(path, "w") as handle:
+            handle.write(BASE + yml)
+        return imported(folder, path)
+
+
+def imported(folder, path):
+    """The importer's answer for a path, with folder standing in for the web interface's tmp."""
+    code = ("import sys; sys.path.insert(0, sys.argv.pop(1)); import import_config; "
+            "import_config.TEMP_DIR = sys.argv.pop(1); import_config.main()")
+    answer = subprocess.run([sys.executable, "-c", code, os.path.dirname(IMPORTER), folder, path],
+                            capture_output=True, text=True, check=True)
     return json.loads(answer.stdout)
 
 
@@ -27,6 +34,55 @@ def warned(result, text):
 
 
 class Importer(unittest.TestCase):
+    def test_only_the_web_interface_handover_is_read(self):
+        with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as elsewhere:
+            outside = os.path.join(elsewhere, "blocky_import_x")
+            with open(outside, "w") as handle:
+                handle.write(BASE)
+            # read from the web interface's tmp by name, wherever the path points
+            self.assertIn("error", imported(folder, outside))
+            self.assertIn("error", imported(folder, "/etc/hosts"))
+            os.symlink(outside, os.path.join(folder, "blocky_import_link"))
+            self.assertIn("error", imported(folder, os.path.join(folder, "blocky_import_link")))
+            with open(os.path.join(folder, "blocky_import_big"), "w") as handle:
+                handle.write(BASE + "#" * (4 * 1024 * 1024))
+            self.assertIn("error", imported(folder, os.path.join(folder, "blocky_import_big")))
+            with open(os.path.join(folder, "blocky_import_deep"), "w") as handle:
+                handle.write(BASE + "x: " + "[" * 100000 + "]" * 100000 + "\n")
+            self.assertIn("error", imported(folder, os.path.join(folder, "blocky_import_deep")))
+            # a hard link names a file the web interface did not write; a FIFO would block the open
+            os.link(outside, os.path.join(folder, "blocky_import_hard"))
+            self.assertIn("error", imported(folder, os.path.join(folder, "blocky_import_hard")))
+            os.mkfifo(os.path.join(folder, "blocky_import_fifo"))
+            self.assertIn("error", imported(folder, os.path.join(folder, "blocky_import_fifo")))
+            self.assertNotIn("error", run(""))
+
+    def test_a_database_target_that_reads_a_file_leaves_the_log_off(self):
+        result = run("queryLog:\n  type: mysql\n  target: u:p@tcp(db)/b?allowAllFiles=true\n")
+        self.assertEqual(result["scalars"]["queryLog"]["type"], "none")
+        self.assertNotIn("target", result["scalars"]["queryLog"])
+        self.assertTrue(warned(result, "queryLog.target"))
+
+    def test_line_breaks_and_padded_hosts_sources_are_left_out(self):
+        result = run('redis:\n  address: "\\r/var/run/configd.socket"\n  password: "fi\\rle:/etc/master.passwd"\n'
+                     'hostsFile:\n  sources:\n    - "\\u2003/etc/master.passwd"\n    - /etc/hosts\n')
+        self.assertNotIn("address", result["scalars"].get("redis", {}))
+        self.assertNotIn("password", result["scalars"].get("redis", {}))
+        self.assertEqual(result["scalars"]["hostsFile"]["sources"], "/etc/hosts")
+        for key in ("redis.address", "redis.password", "hostsFile.sources"):
+            self.assertTrue(warned(result, key), key)
+
+    def test_yaml_builds_no_objects_and_expands_no_aliases(self):
+        marker = os.path.join(tempfile.gettempdir(), f"blocky_import_ran{os.getpid()}")
+        result = run(f"x: !!python/object/apply:os.system ['touch {marker}']\n")
+        self.assertIn("error", result)
+        self.assertFalse(os.path.exists(marker))
+        # nine levels of nine: shared, not copied, so the answer stays small
+        bomb = "a0: &a0 [x, x, x, x, x, x, x, x, x]\n" + "".join(
+            f"a{i}: &a{i} [{', '.join([f'*a{i - 1}'] * 9)}]\n" for i in range(1, 10))
+        result = run(bomb + "blocking:\n  denylists:\n    ads: *a9\n  clientGroupsBlock:\n    default: *a9\n")
+        self.assertLess(len(json.dumps(result)), 10000)
+
     def test_list_files_only_from_the_list_directory(self):
         result = run("blocking:\n  denylists:\n    ads:\n      - https://example.com/list.txt\n"
                      "      - /etc/master.passwd\n      - /usr/local/etc/blocky/lists/mine.txt\n"

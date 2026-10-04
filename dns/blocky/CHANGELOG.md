@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4_13 - 2026-10-10
+
+- A query log connection string cannot name a file for Blocky to read, such as allowAllFiles or sslkey; such options go in a file: value.
+- Redis and query log settings refuse line breaks; hosts file sources are trimmed and refuse control characters.
+
 ## 1.4_12 - 2026-10-04
 
 - Settings with a default cannot be saved empty.

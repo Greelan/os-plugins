@@ -32,7 +32,7 @@
         <type>select_multiple</type>
         <style>tokenize</style>
         <allownew>true</allownew>
-        <hint>e.g. 1.1.1.1</hint>
+        <hint>1.1.1.1</hint>
         <help>Addresses of the resolver above, needed whenever it is given as a host name so it can be reached without a lookup. Leave empty when the resolver is an IP address. Blocky refuses to start if a host name has no addresses here.</help>
         <grid_view/>
     </field>

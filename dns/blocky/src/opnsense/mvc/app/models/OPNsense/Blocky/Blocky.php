@@ -61,6 +61,9 @@ class Blocky extends BaseModel
         'general.customTTL', 'queryLog.creationCooldown', 'queryLog.flushInterval', 'hostsFile.hostsTTL',
         'hostsFile.refreshPeriod', 'hostsFile.downloadTimeout', 'hostsFile.downloadCooldown',
         'redis.connectionCooldown'];
+    /* database connection options that read a file, as root (isDatabaseTarget); a key starts the string
+       or follows ?, & or the whitespace PostgreSQL separates keywords with */
+    private const FILE_OPTIONS = '/(^|[?&\s])(allowAllFiles|sslcert|sslkey|sslrootcert|passfile|servicefile)\s*=/i';
     private const SECRET_DIR = '/^\/usr\/local\/etc\/blocky\/secrets(\/(?!\.\.?(\/|$))[^\/\0]+)+$/u';
 
     /**
@@ -537,6 +540,17 @@ class Blocky extends BaseModel
                 'queryLog.target'
             ));
         }
+        if (
+            ($validateFullModel || $this->queryLog->type->isFieldChanged() ||
+                $this->queryLog->target->isFieldChanged()) &&
+            in_array((string)$this->queryLog->type, ['mysql', 'postgresql', 'timescale']) &&
+            !self::isDatabaseTarget($this->queryLog->target->getValue())
+        ) {
+            $messages->appendMessage(new Message(
+                gettext('Leave out allowAllFiles, sslcert, sslkey, sslrootcert, passfile and servicefile, or give the connection string as a file: value.'),
+                'queryLog.target'
+            ));
+        }
 
         /* a list or hosts file on disk must be one the plugin keeps, or the system hosts file */
         foreach (['denylists', 'allowlists'] as $section) {
@@ -572,7 +586,7 @@ class Blocky extends BaseModel
      */
     public static function hasZoneInclude($zone)
     {
-        return preg_match('/^\s*\$INCLUDE\b/mi', (string)$zone) === 1;
+        return preg_match('/^\s*\$INCLUDE\b/mi', self::rendered($zone)) === 1;
     }
 
     /**
@@ -581,6 +595,7 @@ class Blocky extends BaseModel
      */
     public static function zoneError($zone)
     {
+        $zone = self::rendered($zone);
         /* split into records: quotes, ; comments and ( ) continuations as the zone format has them */
         $records = [];
         $tokens = [];
@@ -764,7 +779,16 @@ class Blocky extends BaseModel
      */
     public static function isListFile($path)
     {
-        return preg_match(self::LIST_DIR, (string)$path) === 1;
+        return preg_match(self::LIST_DIR, self::rendered($path)) === 1;
+    }
+
+    /**
+     * A value as the template writes it, which drops carriage returns; for fields that cannot refuse
+     * line breaks themselves (AllowNewlines): the zone, and a bootstrap entry's content.
+     */
+    private static function rendered($value)
+    {
+        return str_replace("\r", '', (string)$value);
     }
 
     /**
@@ -791,6 +815,16 @@ class Blocky extends BaseModel
         $target = trim((string)$target);
         return $target === '' || strpos($target, 'tcp://') === 0 ||
             (self::secretFile($target) !== null && self::isAllowedSecret($target));
+    }
+
+    /**
+     * Does this database target leave files alone? MySQL's allowAllFiles lets the server read any
+     * file, and PostgreSQL reads the files these options name, as root; a file: value is root's own.
+     * Matched after URL decoding, as PostgreSQL decodes a URL's option names.
+     */
+    public static function isDatabaseTarget($target)
+    {
+        return self::secretFile($target) !== null || preg_match(self::FILE_OPTIONS, urldecode((string)$target)) !== 1;
     }
 
     /**
