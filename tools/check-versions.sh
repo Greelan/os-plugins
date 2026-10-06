@@ -24,16 +24,17 @@ for MK in */*/Makefile; do
     grep -q 'Mk/plugins.mk' "${MK}" || continue
     DIR=$(dirname "${MK}")
     git diff --quiet "${BEFORE}" "${AFTER}" -- "${DIR}" ":(exclude)${DIR}/CHANGELOG.md" \
-        ":(exclude)${DIR}/tests" ":(exclude)${DIR}/BLOCKY_VERSION" && continue
+        ":(exclude)${DIR}/tests" ":(exclude)${DIR}/BLOCKY_VERSION" \
+        ":(exclude)${DIR}/BLOCKY_REVISION" && continue
     if [ "$(version "${BEFORE}" "${MK}")" = "$(version "${AFTER}" "${MK}")" ]; then
         echo "${DIR}: the package's files changed but PLUGIN_VERSION/PLUGIN_REVISION did not" >&2
         STATUS=1
     fi
 done
 if ! git diff --quiet "${BEFORE}" "${AFTER}" -- tools/build-blocky-port.sh &&
-    git diff --quiet "${BEFORE}" "${AFTER}" -- dns/blocky/BLOCKY_VERSION; then
-    echo "tools/build-blocky-port.sh changed but the blocky version did not; the published" \
-        "package would be kept, so rebuild it with a forced manual run" >&2
+    git diff --quiet "${BEFORE}" "${AFTER}" -- dns/blocky/BLOCKY_VERSION dns/blocky/BLOCKY_REVISION; then
+    echo "tools/build-blocky-port.sh changed but neither dns/blocky/BLOCKY_VERSION nor" \
+        "dns/blocky/BLOCKY_REVISION did; the published package would be kept" >&2
     STATUS=1
 fi
 exit ${STATUS}

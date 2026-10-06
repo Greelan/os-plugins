@@ -1,12 +1,13 @@
 #!/bin/sh
 # Build a blocky binary package from the FreeBSD port, pinned to $1 (upstream
-# version); output pkg into $2. Invoked by the build workflow.
+# version) at package revision $2; output pkg into $3. Invoked by the build workflow.
 #
 # The port supplies the packaging the plugin needs.
 set -e
 
 VERSION="$1"
-OUT="$2"
+REVISION="$2"
+OUT="$3"
 PORT="${PORTSDIR:-/usr/ports}/dns/blocky"
 
 mkdir -p "${OUT}"
@@ -23,5 +24,18 @@ if ! grep -qF -- '-o ${logfile}' "${RC_IN}"; then
 fi
 sed -i '' -e 's#-o \${logfile}#-T \${name}#' "${RC_IN}"
 
-make -C "${PORT}" DISTVERSION="${VERSION}" clean makesum package
+# rc.subr's stop waits for blocky alone, while daemon(8) removes the pidfile after it:
+# a restart's start_precmd races that removal, its install(1) fails and blocky stays
+# stopped. Removing the pidfile once stopped, as the samplicator port does, leaves
+# install a new file, which daemon's late removal no longer matches.
+if ! grep -qx 'start_precmd="blocky_precmd"' "${RC_IN}" ||
+    ! grep -qF -- '-p ${pidfile}' "${RC_IN}" || grep -q '^stop_postcmd=' "${RC_IN}"; then
+    echo "${RC_IN} changed how it handles its pidfile; the restart fix needs updating" >&2
+    exit 1
+fi
+sed -i '' -e '/^start_precmd="blocky_precmd"$/a\
+stop_postcmd="rm -f ${pidfile}"
+' "${RC_IN}"
+
+make -C "${PORT}" DISTVERSION="${VERSION}" PORTREVISION="${REVISION}" clean makesum package
 find "${PORT}/work" -name 'blocky-*.pkg' -exec cp {} "${OUT}/" \;

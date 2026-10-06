@@ -51,14 +51,24 @@ for mk in "${SELF}"/*/*/Makefile; do
     find "${pdir}/work" -name '*.pkg' -exec cp {} "${STAGE}/" \;
 done
 
-# blocky, from the port pinned to BLOCKY_VERSION, which may add its own _revision
-if [ -n "${BLOCKY_VERSION}" ] &&
-    ! reuse "blocky-$(echo "${BLOCKY_VERSION}" | sed 's/[.]/\\./g')(_[0-9]+)?\.pkg"; then
+# blocky, from the port pinned to BLOCKY_VERSION, at the port's own revision plus
+# BLOCKY_REVISION: a rebuild picks up a ports revision, and a change of ours within
+# the same blocky version raises BLOCKY_REVISION (back to 0 with the next version)
+if [ -n "${BLOCKY_VERSION}" ]; then
     # ports tree: mounted on the FreeBSD 15 image, absent on 14 (never remove it)
     if [ ! -e /usr/ports/Mk/bsd.port.mk ]; then
         git clone --depth 1 https://git.FreeBSD.org/ports.git /usr/ports
     fi
-    sh "${SELF}/tools/build-blocky-port.sh" "${BLOCKY_VERSION}" "${STAGE}"
+    ours=
+    [ -f "${SELF}/dns/blocky/BLOCKY_REVISION" ] &&
+        ours=$(tr -d ' \n' < "${SELF}/dns/blocky/BLOCKY_REVISION")
+    revision=$(($(make -C /usr/ports/dns/blocky -V PORTREVISION) + ${ours:-0}))
+    # pkg leaves a zero revision out of the version
+    version="${BLOCKY_VERSION}"
+    [ "${revision}" -eq 0 ] || version="${version}_${revision}"
+    if ! reuse "blocky-$(echo "${version}" | sed 's/[.]/\\./g')\.pkg"; then
+        sh "${SELF}/tools/build-blocky-port.sh" "${BLOCKY_VERSION}" "${revision}" "${STAGE}"
+    fi
 fi
 rm -f "${PUBLISHED}"
 
