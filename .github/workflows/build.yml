@@ -87,18 +87,21 @@ jobs:
         run: pip install requests
       - name: Fetch vendored libraries
         run: python tools/vendor.py update
+      # the scripts read only a file handed over in the web interface's tmp, which RUNNER_TEMP stands in for
       - name: Blocky importer (PyYAML)
         run: |
-          printf 'upstreams:\n  groups:\n    default:\n      - 1.1.1.1\n' > "${RUNNER_TEMP}/config.yml"
-          python dns/blocky/src/opnsense/scripts/OPNsense/Blocky/import_config.py "${RUNNER_TEMP}/config.yml" |
+          printf 'upstreams:\n  groups:\n    default:\n      - 1.1.1.1\n' > "${RUNNER_TEMP}/blocky_import_ci"
+          python -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); import import_config; import_config.TEMP_DIR = sys.argv.pop(1); import_config.main()' \
+            dns/blocky/src/opnsense/scripts/OPNsense/Blocky "${RUNNER_TEMP}" "${RUNNER_TEMP}/blocky_import_ci" |
             python -c 'import json, sys; d = json.load(sys.stdin); assert "error" not in d, d'
       - name: Notify (Apprise, Markdown)
         working-directory: sysutils/notify/src/opnsense/scripts/OPNsense/Notify
         run: |
           python notify.py services | python -c 'import json, sys; assert len(json.load(sys.stdin)) > 100'
           printf '{"service": "tgram", "fields": {"bot_token": "123456789:abcdefg_hijklmnop", "changed": "1"}}' \
-            > "${RUNNER_TEMP}/build.json"
-          python notify.py build "${RUNNER_TEMP}/build.json" |
+            > "${RUNNER_TEMP}/notify_build_ci"
+          python -c 'import json, sys, notify; notify.TEMP_DIR = sys.argv[1]; print(json.dumps(notify.run_build(sys.argv[2])))' \
+            "${RUNNER_TEMP}" "${RUNNER_TEMP}/notify_build_ci" |
             python -c 'import json, sys; d = json.load(sys.stdin); assert d.get("service") == "Telegram", d'
           python -c 'import sys; sys.path.insert(0, "lib"); import markdown; assert "<em>" in markdown.markdown("*ok*")'
       # the blocky harness takes minutes: on a push, only when it touches what it covers;
