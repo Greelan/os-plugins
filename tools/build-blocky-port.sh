@@ -37,5 +37,11 @@ sed -i '' -e '/^start_precmd="blocky_precmd"$/a\
 stop_postcmd="rm -f ${pidfile}"
 ' "${RC_IN}"
 
-make -C "${PORT}" DISTVERSION="${VERSION}" PORTREVISION="${REVISION}" clean makesum package
+# the port's build dependencies (its Go above all) from packages, so they are not built from
+# source; whatever no package covers is built, and BATCH keeps any options dialog from
+# waiting forever with no terminal
+deps=$(make -C "${PORT}" build-depends-list | sed 's#^/usr/ports/##')
+[ -z "${deps}" ] || pkg install -y ${deps} ||
+    echo "not every build dependency of ${PORT} is packaged; the rest are built from source" >&2
+make -C "${PORT}" BATCH=yes DISTVERSION="${VERSION}" PORTREVISION="${REVISION}" clean makesum package
 find "${PORT}/work" -name 'blocky-*.pkg' -exec cp {} "${OUT}/" \;

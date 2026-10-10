@@ -179,7 +179,11 @@ jobs:
           envs: 'BLOCKY_VERSION PROD_REPO_URL FORCE_BUILD DEV_REPO_URL'
           release: ${{ matrix.release }}
           usesh: true
-          prepare: pkg install -y git gmake go
+          # latest packages, as the ports tree is HEAD: quarterly can lack the Go a port now wants
+          prepare: |
+            mkdir -p /usr/local/etc/pkg/repos
+            echo 'FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest" }' > /usr/local/etc/pkg/repos/FreeBSD.conf
+            pkg install -y git gmake go
           run: sh tools/build-repo.sh
 
       - name: Summarize built packages
