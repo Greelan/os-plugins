@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.6 - 2026-10-08
+
+- Apprise 2, adding Delta Chat, Mobile Message, Telnyx, WPUSH and YouLMK; Simplepush needs a current API Token and cannot encrypt.
+- Saved PGP, Apprise API and Fluxer settings read as before; an imported URL says what Apprise 2 reads differently.
+- A server address Apprise 2 cannot read, e.g. some IPv6 addresses, is refused rather than sent to a service's cloud.
+- Secrets stay out of the dialog, the saved URL shown and send errors.
+- Email without a format gets plain text; Notify Format lists only the formats a service takes.
+- Markdown services show alert text as written; the report link is a link there and on HTML services.
+- A failed send is retried even with Optional Service set.
+- A stopped service is reported after 4 to 6 minutes at the default check interval; the startup notice is sent even when no services are listed yet.
+- VPN peers are queried only with a VPN configured.
+
 ## 1.5_8 - 2026-10-03
 
 - Sending, building and importing a channel, and deleting an archived summary, through configd take calls from root and the web interface only.

@@ -490,7 +490,7 @@ def current_status(config, now):
         pending = len(firmware_changes(firmware))  # as the Firmware page counts them
         major = firmware.get("upgrade_major_version") or ""
         found = ", ".join(filter(None, [f"{pending} update(s) pending" if pending else "",
-                                         f"{major} available" if major else ""])) or "Up to date"
+                                        f"{major} available" if major else ""])) or "Up to date"
         lines.append(f"Firmware: {found} (checked {checked})")
     else:
         # e.g. after a reboot, as it lives in /tmp, or while a check rewrites it
@@ -682,8 +682,9 @@ def build_summary(config, channel, period, now, shared=None):
             row(part, [names.get(device, device), size(received.get(device, 0)), size(sent.get(device, 0))])
         for device in busiest(devices):
             graph(part, "traffic", device, f"{names.get(device, device)} traffic", color(devices.index(device)))
-        brief.append("Traffic: " + (" · ".join(f"{names.get(d, d)} {size(received.get(d, 0))} in, "
-                                                f"{size(sent.get(d, 0))} out" for d in devices[:3]) or "none recorded"))
+        traffic = " · ".join(f"{names.get(d, d)} {size(received.get(d, 0))} in, {size(sent.get(d, 0))} out"
+                             for d in devices[:3])
+        brief.append("Traffic: " + (traffic or "none recorded"))
         pie(part, "traffic", [received.get(d, 0) + sent.get(d, 0) for d in devices])
 
     if "health" in sections:

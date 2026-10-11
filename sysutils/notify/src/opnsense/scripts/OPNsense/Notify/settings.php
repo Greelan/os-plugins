@@ -35,6 +35,7 @@
  */
 
 require_once('script/load_phalcon.php');
+require_once('plugins.inc.d/wireguard.inc');
 
 use OPNsense\Core\Config;
 use OPNsense\Diagnostics\SystemHealth;
@@ -149,6 +150,12 @@ if (class_exists('\\OPNsense\\Nut\\Nut')) {
     }
 }
 
+/* VPNs with something configured, the only ones the check asks for peers; as core decides */
+$vpn = [
+    'wireguard' => !empty(wireguard_services()),
+    'openvpn' => (new \OPNsense\OpenVPN\OpenVPN())->isEnabled(),
+];
+
 echo json_encode([
     'revision' => [
         'time' => (string)($config->revision->time ?? ''),
@@ -176,6 +183,7 @@ echo json_encode([
     /* Reporting: Health, which the summary graphs draw on; as core decides whether to collect */
     'healthReporting' => !(new SystemHealth())->enabled->isEmpty(),
     'ups' => $ups,
+    'vpn' => $vpn,
     'monit' => [
         'username' => trim((string)$monit->general->httpdUsername),
         'password' => trim((string)$monit->general->httpdPassword),

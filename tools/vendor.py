@@ -91,9 +91,13 @@ def vendor(libdir, name, version, package_dir, license_file):
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             with open(dest, "wb") as handle:
                 handle.write(archive.extractfile(member).read())
+            # core's lint-exec wants every file in a scripts directory executable
+            os.chmod(dest, 0o755)
         license_data = archive.extractfile(f"{top}/{license_file}").read()
-        with open(os.path.join(target, os.path.basename(license_file)), "wb") as handle:
+        license_path = os.path.join(target, os.path.basename(license_file))
+        with open(license_path, "wb") as handle:
             handle.write(license_data)
+        os.chmod(license_path, 0o755)
     print(f"vendored {name} {version} into {os.path.relpath(target, ROOT)}")
 
 

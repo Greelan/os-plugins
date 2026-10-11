@@ -29,7 +29,9 @@
 namespace OPNsense\Notify\Api;
 
 use OPNsense\Base\ApiMutableModelControllerBase;
+use OPNsense\Core\AppConfig;
 use OPNsense\Core\Backend;
+use OPNsense\Notify\Notify;
 
 class SettingsController extends ApiMutableModelControllerBase
 {
@@ -38,6 +40,15 @@ class SettingsController extends ApiMutableModelControllerBase
     protected static $internalSaveRequiresAdmin = true;
 
 
+    /**
+     * The general settings only: channels are read through their grid, which leaves out their
+     * credentials (as core's IDS settings leave out their rules)
+     */
+    protected function getModelNodes()
+    {
+        return ['general' => $this->getModel()->general->getNodes()];
+    }
+
     /* channels */
     public function searchChannelAction()
     {
@@ -45,7 +56,7 @@ class SettingsController extends ApiMutableModelControllerBase
         /* a grid row carries every field, and the URL holds the channel's credentials */
         foreach ($result['rows'] as &$row) {
             unset($row['url'], $row['%url'], $row['files'], $row['%files']);
-            $row['target'] = self::shownTarget($row['service'] ?? '', $row['target'] ?? '');
+            $row['target'] = Notify::shownTarget($row['service'] ?? '', $row['target'] ?? '');
         }
 
         return $result;
@@ -55,24 +66,13 @@ class SettingsController extends ApiMutableModelControllerBase
     {
         $result = $this->getBase('channel', 'channels', $uuid);
         if (isset($result['channel']['target'])) {
-            $result['channel']['target'] = self::shownTarget($result['channel']['service'], $result['channel']['target']);
+            $channel = $result['channel'];
+            $result['channel']['target'] = Notify::shownTarget($channel['service'], $channel['target']);
         }
         /* service fields for the dialog, without secrets; a key no form element maps to */
         $describe = $uuid != null ? (new Backend())->configdpRun('notify describe', [$uuid]) : '';
         $result['notify_apprise'] = json_decode($describe, true) ?: ['service' => ''];
         return $result;
-    }
-
-    /**
-     * A webhook receiver's secret is often its path, which the backend now leaves out of the saved
-     * URL it shows; a channel saved earlier still carries it until it is saved again.
-     */
-    private static function shownTarget($service, $target)
-    {
-        if (in_array($service, ['JSON', 'Form', 'XML']) && preg_match('#^([a-z]+://[^/]+)/.#i', $target, $match)) {
-            return $match[1] . '/...';
-        }
-        return $target;
     }
 
     public function setChannelAction($uuid)
@@ -115,7 +115,7 @@ class SettingsController extends ApiMutableModelControllerBase
         ];
 
         /* the request carries secrets, so hand it over in a private file rather than as an argument */
-        $tmpfile = tempnam(sys_get_temp_dir(), 'notify_build_');
+        $tmpfile = tempnam((new AppConfig())->application->tempDir, 'notify_build_');
         if ($tmpfile === false || file_put_contents($tmpfile, json_encode($request)) === false) {
             return ['validations' => ['channel.url' => gettext('The URL could not be checked.')]];
         }

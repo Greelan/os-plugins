@@ -246,6 +246,7 @@
             $select.on('changed.bs.select', function () {
                 appriseMarkChanged();
                 appriseRenderFields($(this).val(), {}, []);
+                summaryFormatNote();
             });
             if (appriseImported !== null) {
                 apprise = appriseImported;
@@ -263,9 +264,21 @@
                 ? "{{ lang._('Saved, leave empty to keep') }}" : null);
             appriseRenderFields(chosen, apprise.fields || {}, apprise.saved || []);
 
+            /* the saved URL, which an empty box keeps, or the one imported */
+            appriseTextEmail = {url: apprise.url || '', textEmail: apprise.textEmail === true};
+            $('#summary_note').remove();
+            $('#channel\\.summary').closest('td').append($('<div id="summary_note" class="text-warning" style="margin-top: 0.5em;">')
+                .text(htmlDecode("{{ lang._("Apprise's Notify Format is set to text, so the summary arrives as short text with a link to the report instead of the full report. Choose html to receive the full report.") }}")));
+            $('#frm_' + dialogId).off('change.notifyformat').on('change.notifyformat', '#apprise\\.format', summaryFormatNote);
+            $('#channel\\.url').off('input.notifyformat').on('input.notifyformat', summaryFormatNote);
+            summaryFormatNote();
+
             monitFieldVisibility();
             $('#channel\\.events, #channel\\.summaryEvents, #channel\\.summary').off('changed.bs.select.notify')
-                .on('changed.bs.select.notify', monitFieldVisibility);
+                .on('changed.bs.select.notify', function () {
+                    monitFieldVisibility();
+                    summaryFormatNote();
+                });
             monitPlaceholder();
             $('#channel\\.monitServices').off('tokenize:tokens:change.notify')
                 .on('tokenize:tokens:change.notify', monitPlaceholder);
@@ -304,7 +317,8 @@
                                     appriseImported = appriseDecode(data);
                                 } else if (data && data.service === '') {
                                     /* the URL is as typed, only the answer is escaped */
-                                    appriseImported = {service: '', url: url, error: htmlDecode(data.error || '')};
+                                    appriseImported = {service: '', url: url, error: htmlDecode(data.error || ''),
+                                                       textEmail: data.textEmail === true};
                                 } else {
                                     $message.text(htmlDecode((data && data.error) || "{{ lang._('The URL could not be read.') }}"));
                                     return;
@@ -338,6 +352,39 @@
             $('#row_channel\\.summaryEvents, #row_channel\\.summarySections').toggle(summary);
         }
 
+        /* email kept to text gets the summary as short text with a link, not the full report; a saved
+           or imported custom URL says so itself while the box holds it */
+        let appriseTextEmail = {url: '', textEmail: false};
+        function summaryFormatNote() {
+            const serviceId = $('#apprise_service').val();
+            const service = (appriseServices || []).find(s => s.id === serviceId);
+            const text = service !== undefined
+                ? service.email && $('#apprise\\.format').val() === 'text'
+                : serviceId === '__custom' && $('#channel\\.url').val() === appriseTextEmail.url && appriseTextEmail.textEmail;
+            $('#summary_note').toggle(text && $('#channel\\.summary').val() !== 'none');
+        }
+
+        /* a grid command that sends through the backend, spinning until it says how that went */
+        function sendCommand(endpoint, icon, title, sent, failed) {
+            return function () {
+                const uuid = $(this).data("row-id") !== undefined ? $(this).data("row-id") : '';
+                const $icon = $(this).find('span');
+                if ($icon.hasClass('fa-spinner')) {
+                    return; /* already sending */
+                }
+                $icon.removeClass(icon).addClass('fa-spinner fa-pulse');
+                ajaxCall(endpoint + uuid, {}, function (data, status) {
+                    $icon.removeClass('fa-spinner fa-pulse').addClass(icon);
+                    const ok = data && data.status === 'ok';
+                    const warning = ok && data.message;
+                    stdDialogInform(title, ok && !warning ? sent
+                        : $('<div>').text(warning ? htmlDecode(sent) + ' ' + htmlDecode(data.message)
+                                                  : htmlDecode((data && data.message) || failed)),
+                        "{{ lang._('Close') }}", undefined, warning ? 'warning' : (ok ? 'success' : 'danger'));
+                });
+            };
+        }
+
         let channelGrid = null;
         function initChannelGrid() {
             if (channelGrid !== null) {
@@ -357,43 +404,16 @@
                 },
                 commands: {
                     test: {
-                        method: function () {
-                            const uuid = $(this).data("row-id") !== undefined ? $(this).data("row-id") : '';
-                            const $icon = $(this).find('span');
-                            if ($icon.hasClass('fa-spinner')) {
-                                return; /* already sending */
-                            }
-                            $icon.removeClass('fa-paper-plane').addClass('fa-spinner fa-pulse');
-                            ajaxCall('/api/notify/service/test/' + uuid, {}, function (data, status) {
-                                $icon.removeClass('fa-spinner fa-pulse').addClass('fa-paper-plane');
-                                const ok = data && data.status === 'ok';
-                                stdDialogInform("{{ lang._('Test notification') }}",
-                                    ok ? "{{ lang._('The test notification was sent.') }}"
-                                       : $('<div>').text(htmlDecode((data && data.message) || "{{ lang._('The test notification could not be sent.') }}")),
-                                    "{{ lang._('Close') }}", undefined, ok ? 'success' : 'danger');
-                            });
-                        },
+                        method: sendCommand('/api/notify/service/test/', 'fa-paper-plane', "{{ lang._('Test notification') }}",
+                            "{{ lang._('The test notification was sent.') }}", "{{ lang._('The test notification could not be sent.') }}"),
                         classname: 'fa fa-fw fa-paper-plane',
                         title: "{{ lang._('Send test notification') }}",
                         sequence: 10
                     },
                     summary: {
-                        method: function () {
-                            const uuid = $(this).data("row-id") !== undefined ? $(this).data("row-id") : '';
-                            const $icon = $(this).find('span');
-                            if ($icon.hasClass('fa-spinner')) {
-                                return; /* already sending */
-                            }
-                            $icon.removeClass('fa-list-alt').addClass('fa-spinner fa-pulse');
-                            ajaxCall('/api/notify/service/summary/' + uuid, {}, function (data, status) {
-                                $icon.removeClass('fa-spinner fa-pulse').addClass('fa-list-alt');
-                                const ok = data && data.status === 'ok';
-                                stdDialogInform("{{ lang._('Summary') }}",
-                                    ok ? "{{ lang._('The summary so far was sent. Its period carries on until the next scheduled summary.') }}"
-                                       : $('<div>').text(htmlDecode((data && data.message) || "{{ lang._('The summary could not be sent.') }}")),
-                                    "{{ lang._('Close') }}", undefined, ok ? 'success' : 'danger');
-                            });
-                        },
+                        method: sendCommand('/api/notify/service/summary/', 'fa-list-alt', "{{ lang._('Summary') }}",
+                            "{{ lang._('The summary so far was sent. Its period carries on until the next scheduled summary.') }}",
+                            "{{ lang._('The summary could not be sent.') }}"),
                         /* only for enabled channels that have a summary */
                         filter: function (cell) {
                             return cell.getData().enabled === '1' && cell.getData().summary !== 'none';

@@ -38,7 +38,27 @@ use OPNsense\Base\Messages\Message;
 class Notify extends BaseModel
 {
     /* an archived summary's file name, as summary.py writes it */
-    const REPORT_NAME = '/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-(daily|weekly|monthly)(-now)?-\d{8}-\d{6}\.html\z/';
+    public const REPORT_NAME = '/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-(daily|weekly|monthly)(-now)?-\d{8}-\d{6}\.html\z/';
+
+    /**
+     * A channel's saved URL as shown, also one saved by an earlier release, without what Apprise
+     * showed there of a secret: a webhook receiver's path, which often is one, or a Matrix access
+     * token or Threema gateway ID where a user would stand
+     */
+    public static function shownTarget(string $service, string $target): string
+    {
+        if (in_array($service, ['JSON', 'Form', 'XML']) && preg_match('#^([a-z]+://[^/]+)/.#i', $target, $match)) {
+            return $match[1] . '/...';
+        }
+        if (
+            in_array($service, ['Matrix', 'Threema Gateway']) &&
+            preg_match('#^([a-z]+://)([^:@/]+)@#i', $target, $match) &&
+            $match[2] !== '****' && strpos($match[2], '...') === false
+        ) {
+            return $match[1] . '****@' . substr($target, strlen($match[0]));
+        }
+        return $target;
+    }
 
     /**
      * Is an enabled channel subscribed to this event, as it happens or in its summary?

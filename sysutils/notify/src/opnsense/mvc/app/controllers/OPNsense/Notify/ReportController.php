@@ -67,6 +67,6 @@ class ReportController extends ControllerBase
             "Content-Security-Policy: default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox"
         );
         $this->response->setRawHeader('X-Content-Type-Options: nosniff');
-        $this->response->setContent($this->page);
+        $this->response->setContent($this->page, true);
     }
 }

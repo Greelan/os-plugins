@@ -29,6 +29,7 @@
 namespace OPNsense\Notify\Api;
 
 use OPNsense\Base\ApiControllerBase;
+use OPNsense\Core\AppConfig;
 use OPNsense\Core\Backend;
 use OPNsense\Notify\Notify;
 
@@ -77,7 +78,7 @@ class ServiceController extends ApiControllerBase
             return ['error' => gettext('Use a POST request.')];
         }
         /* the URL carries credentials, so hand it over in a private file */
-        $tmpfile = tempnam(sys_get_temp_dir(), 'notify_parse_');
+        $tmpfile = tempnam((new AppConfig())->application->tempDir, 'notify_parse_');
         $request = json_encode(['url' => (string)$this->request->getPost('url', null, '')]);
         if ($tmpfile === false || file_put_contents($tmpfile, $request) === false) {
             return ['error' => gettext('The URL could not be read.')];

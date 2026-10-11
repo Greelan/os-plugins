@@ -50,13 +50,16 @@ only reported once a previous state exists; the first poll records a baseline.
 
 import base64
 import collections
+import contextlib
 import enum
 import functools
+import html
 import http.client
 import json
 import os
 import re
 import socket
+import stat
 import sys
 import syslog
 import time
@@ -117,18 +120,29 @@ LOCK = "/var/run/notify.lock"
 # contents, which are stored with the channel and written under KEY_DIR at send time; the URL
 # then carries KEY_MARKER. Any other local path is refused, so a channel cannot make root read a
 # file of its choosing. Checked against this Apprise; the tests fail on another until it is again.
-# Before raising it, also confirm the Apprise internals the URL checks call still exist and behave
+# Before raising it, also confirm the Apprise internals this script uses still exist and behave
 # the same: plugins.url_to_dict and N_MGR, utils.parse's parse_qsd, parse_urls, VALID_URL_RE and
-# NOTIFY_CUSTOM_*_TOKENS (see apprise_view, check_url, query_pairs, custom_arg); and that plugins
-# still hold their settings as attributes, which an import compares (see same_settings).
-FILE_ARGS_APPRISE = "1.13.1"
+# NOTIFY_CUSTOM_*_TOKENS (see apprise_view, check_url, query_pairs, custom_arg), email's
+# AppriseSMTPController.sendmail, its _socket and logger (see partly_sent) and PGP_MODES (see
+# apprise1_notes), and that Apprise.notify still applies emojis before convert_between (see
+# with_link); and that plugins still hold their settings as attributes, which an import compares
+# (see same_settings).
+FILE_ARGS_APPRISE = "2.0.1"
 FILE_ARGS = {
     "NotifyDiscord": ("template",), "NotifyTelegram": ("template",), "NotifySlack": ("template",),
     "NotifyWorkflows": ("template",), "NotifyFCM": ("keyfile",), "NotifyVapid": ("keyfile", "subfile"),
-    "NotifyEmail": ("pgppub", "pgpkey", "pgpprv"),
+    "NotifyEmail": ("pgppub", "pgpprv"),
+}
+# tokens Apprise masks in its own URL without marking them private, e.g. Mastodon's access token or
+# a login; kept out of the browser as the private ones are. The tests read them from Apprise's url()
+PRIVATE_TOKENS = {
+    "NotifyMastodon": ("token",), "NotifyMisskey": ("token",), "NotifySMSEagle": ("token",),
+    "NotifyBulkSMS": ("token_id",), "NotifyPlivo": ("auth_id", "token"), "NotifyLametric": ("app_token",),
+    "NotifyBulkVS": ("user",), "NotifySMSC": ("user",), "NotifySerwerSMS": ("user",), "NotifyRocketChat": ("webhook",),
+    "NotifyPagerDuty": ("source", "component"), "NotifyVoipms": ("from_phone",),
 }
 # files that may instead be fetched from an https address; private keys are never fetched
-REMOTE_FILE_ARGS = ("template", "pgppub", "pgpkey")
+REMOTE_FILE_ARGS = ("template", "pgppub")
 # what each file holds, as the dialog labels it and hints at it: (plugin class or None, argument)
 FILE_LABELS = {
     (None, "template"): ("Template (JSON)", "Paste the JSON message template, or give an https:// address"),
@@ -140,9 +154,16 @@ FILE_LABELS = {
 }
 KEY_MARKER = "stored"
 KEY_DIR = "/var/db/notify/keys"
+# ends each message Apprise logs, so one holding a line break (a quoted value, a server's reply)
+# is read whole; no logged value can know it
+LOG_MARK = f"\0{os.urandom(8).hex()}\0"
 # a model UUID, as it names the channel's files
 CHANNEL_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 KEY_MAX = 64 * 1024
+# the web interface hands a build or import request over in its tmp (AppConfig tempDir); only such a
+# file is read
+TEMP_DIR = "/var/lib/php/tmp"
+REQUEST_MAX = 1024 * 1024
 # recorded state older than this predates a pause (disabled, or the firewall was off),
 # so it is dropped rather than compared against
 STALE_SECONDS = 3600
@@ -208,9 +229,10 @@ MONIT_EVENTS = (
 MONIT_MONITOR_YES = 0x1
 MONIT_MONITOR_INIT = 0x2
 
-# a service is reported once it has been stopped this long, over two checks at least; restarts,
-# e.g. on Apply, take seconds
-SERVICE_HOLD = 300
+# a service is reported once stopped this long over two reads; restarts take seconds
+SERVICE_HOLD = 240
+# with all services running, they are read every other one-minute check
+SERVICE_READ = 120
 # checks run on a whole interval but not to the second, so a hold that should end on one does
 SERVICE_SLACK = 30
 # a stop first seen this soon after boot, and not seen running since, is one after boot
@@ -511,9 +533,9 @@ def check_firmware(config, previous):
     if not key or key == previous.get("key"):
         return state, []
     reasons = [reason for _, _, reason in changes]
+    counts = ", ".join(f"{reasons.count(r)} {r}" for _, r in FIRMWARE_CHANGES if r in reasons)
     lines = [line for _, line, _ in changes] if len(changes) <= FIRMWARE_PACKAGES else \
-        [f"{len(changes)} package changes: " + ", ".join(f"{reasons.count(r)} {r}" for _, r in FIRMWARE_CHANGES
-                                                       if r in reasons) + "."]
+        [f"{len(changes)} package changes: {counts}."]
     if major:
         lines.append(f"Major upgrade to {major} is available.")
     if data.get("upgrade_needs_reboot") == "1" or data.get("needs_reboot") == "1":
@@ -673,6 +695,15 @@ def check_service(config, previous):
     """Services stopped for SERVICE_HOLD, as the Services widget shows them; not while booting or
     running a firmware action, on a CARP standby or just after a role change. The hold runs on
     uptime, which a clock step does not move."""
+    # while any service is stopped, or the end of a stop is held, every check reads, so the end is
+    # seen and sent within a minute; otherwise on even minutes, so a check in between, e.g. a gateway
+    # alarm's, does not put the next read off
+    last = (previous or {}).get("uptime")
+    stopped = any(not entry.get("running") for entry in (previous or {}).get("services", {}).values()) \
+        or bool((previous or {}).get("ended"))
+    if last is not None and not stopped and 0 <= time.monotonic() - last < SERVICE_READ - SERVICE_SLACK \
+            and round(time.time() / 60) % 2:
+        return previous, []
     services = service_states()
     if not services:
         return previous, []  # unread, or empty for a moment: a firewall always has services
@@ -694,8 +725,10 @@ def check_service(config, previous):
     if not continuous:
         # uptime may have started over, so a reported stop is timed by the clock from here
         known = {k: dict(v, carried=True) if v.get("reported") else v for k, v in known.items()}
-    # ends of reported stops that came while nothing was sent: {key: (label, seconds stopped)}
+    # ends of reported stops that came while nothing was sent: {key: (label, seconds stopped)}, and
+    # the keys of those first seen late, apart so an earlier release still reads the ends
     ended = dict(previous.get("ended", {}))
+    late_ends = set(previous.get("late", ()))
     probed = None
 
     def busy():
@@ -714,6 +747,10 @@ def check_service(config, previous):
         last = known.get(key) or {}
         if last.get("reported") and running:
             ended[key] = (label, stopped_for(last))
+            if last.get("late"):
+                late_ends.add(key)
+            else:
+                late_ends.discard(key)
             last = {}
         if running:
             current[key] = {"running": True}
@@ -723,7 +760,9 @@ def check_service(config, previous):
         else:
             # not seen running since boot: it may not have started, or stopped before a check
             boot = uptime < SERVICE_BOOT and not (continuous and last.get("running"))
-            entry = {"down": uptime, "since": uptime, "at": now, "seen": 0, "boot": boot, "late": not continuous,
+            # more than a minute since the last read, so it may have stopped well before
+            late = not continuous or uptime - previous.get("uptime", uptime) > 60 + SERVICE_SLACK
+            entry = {"down": uptime, "since": uptime, "at": now, "seen": 0, "boot": boot, "late": late,
                      "label": label}
         entry["seen"] += 1
         entry.pop("missing", None)
@@ -753,14 +792,22 @@ def check_service(config, previous):
         else:
             # disabled, removed, or an instance renamed: say so, rather than leave it open
             messages.append(dict(message("service", "info", f"{entry.get('label', key)} is no longer listed",
-                                         f"Stopped for {duration(stopped_for(entry))}, then removed from the "
-                                         "services."), note=True))
+                                         f"Stopped for {for_at_least(entry.get('late'))}"
+                                         f"{duration(stopped_for(entry))}, then removed from the services."),
+                                 note=True))
     if not unsent:
         # sent, not counted again in summaries; an earlier stop's end before any new stop
         messages[:0] = [dict(message("service", "success", f"{label} is running again",
-                                     f"Stopped for {duration(stopped)}."), note=True) for label, stopped in ended.values()]
+                                     f"Stopped for {for_at_least(key in late_ends)}{duration(stopped)}."), note=True)
+                        for key, (label, stopped, *_) in ended.items()]
         ended = {}
-    return {"role": role, "hold": hold_until, "services": current, "ended": ended, "uptime": uptime}, messages
+    return {"role": role, "hold": hold_until, "services": current, "ended": ended,
+            "late": sorted(late_ends & set(ended)), "uptime": uptime}, messages
+
+
+def for_at_least(late):
+    """A stop first seen a while after the read before is timed from then, so it lasted longer."""
+    return "at least " if late else ""
 
 
 def is_carp_backup(config, unknown=True):
@@ -777,7 +824,9 @@ def is_carp_backup(config, unknown=True):
 def check_vpn(config, previous):
     now = int(time.time())
     current, messages, idle = {}, [], {}
-    peers = configctl_json("wireguard", "show")
+    # settings.php says which VPNs have something configured
+    vpn = config.get("vpn") or {"wireguard": True, "openvpn": True}
+    peers = configctl_json("wireguard", "show") if vpn.get("wireguard") else {}
     if peers is None:
         # unreadable: keep what was known, rather than report every peer gone
         current.update({k: v for k, v in (previous or {}).items() if k.startswith("WireGuard ")})
@@ -794,7 +843,7 @@ def check_vpn(config, previous):
                                                          else "stale")
         if current[name] == "stale":
             idle[name] = now - handshake
-    sessions = configctl_json("openvpn", "connections", "server,client")
+    sessions = configctl_json("openvpn", "connections", "server,client") if vpn.get("openvpn") else {}
     if sessions is None:
         current.update({k: v for k, v in (previous or {}).items() if k.startswith("OpenVPN ")})
     sessions = sessions if isinstance(sessions, dict) else {}
@@ -1089,8 +1138,12 @@ COLLECTORS = (
 def plugin_classes(schema):
     """Class names of the service behind a schema, its bases included."""
     from apprise.plugins import N_MGR
-    plugin = N_MGR[schema] if schema in N_MGR else None
-    return {c.__name__ for c in plugin.__mro__} if plugin is not None else set()
+    return class_names(N_MGR[schema]) if schema in N_MGR else set()
+
+
+def class_names(cls):
+    """Names of a plugin class and its bases, as the tables here name services."""
+    return {c.__name__ for c in cls.__mro__}
 
 
 def file_args(schema):
@@ -1218,13 +1271,19 @@ def deliver(channel, title, body, ntype, report=None):
     """Send one notification: (ok, error). It never raises: an odd URL or a fault in Apprise
     fails this delivery alone, which is retried, rather than the whole check."""
     try:
-        return deliver_once(channel, title, body, ntype, report)
+        ok, said = deliver_once(channel, title, body, ntype, report)
     except Exception as exc:
         # its type and where, not its text, which in Apprise or requests can carry the URL's secrets
         frame = traceback.extract_tb(exc.__traceback__)[-1] if exc.__traceback__ else None
         where = f" at {os.path.basename(frame.filename)}:{frame.lineno}" if frame else ""
         log(syslog.LOG_ERR, f"delivery tripped: {type(exc).__name__}{where}")
         return False, f"Delivery failed ({type(exc).__name__})."
+    # what Apprise says can carry the URL's secrets, e.g. a webhook's address in a connection error;
+    # what cannot be masked is not said, and a send that went stays sent
+    try:
+        return ok, masked(said, url_secrets(channel.get("url", ""))) if said else said
+    except Exception:
+        return ok, "" if ok else "Delivery failed."
 
 
 def deliver_once(channel, title, body, ntype, report=None):
@@ -1241,17 +1300,18 @@ def deliver_once(channel, title, body, ntype, report=None):
         url = with_key_files(channel)
     except (ValueError, OSError) as exc:
         return False, str(exc)
-    with apprise.LogCapture(level=apprise.logging.WARNING, fmt="%(message)s") as captured:
-        # the one plugin the checks looked at: add() given the string would split it at commas
-        plugin, error = one_plugin(url)
+    refused_by_server: list = []
+    with apprise_log() as captured, partly_sent(refused_by_server):
+        # the one plugin the checks looked at (add() would split the string at commas), waited for
+        # as Apprise 1.13 did: a send given up on can still arrive, and would be sent again
+        plugin, error = one_plugin(url, asset=apprise.AppriseAsset(service_timeout=0))
         notifier = apprise.Apprise()
         if plugin is None or not notifier.add(plugin):
             return False, error or "The URL is not a valid Apprise URL."
-        server = next(iter(notifier), None)
-        if server is not None and "NotifyDiscord" in {c.__name__ for c in type(server).__mro__}:
+        plugin.optional = False  # a failure must reach the queue, not count as sent
+        if "NotifyDiscord" in class_names(type(plugin)):
             title, body = quiet(title), quiet(body)
-        email = report and server is not None and server.notify_format == apprise.NotifyFormat.HTML \
-            and "NotifyEmail" in {c.__name__ for c in type(server).__mro__}
+        email = report and full_report(plugin)
         page, drawn = None, {}
         if email:
             try:
@@ -1259,27 +1319,126 @@ def deliver_once(channel, title, body, ntype, report=None):
                 page = report_page(report, drawn, embed=False)  # a whole document, for its style sheet
             except Exception as exc:  # e.g. /tmp full: send the short text
                 log(syslog.LOG_ERR, f"summary report could not be prepared, sending the short text: {exc}")
-        if page is not None and server is not None:
-            server.inline = True  # graphs in their sections, not listed at the end
+        if page is not None:
+            plugin.inline = True  # graphs in their sections, not listed at the end
             ok = bool(notifier.notify(body=page, title=title, notify_type=ntype,
                                       body_format=apprise.NotifyFormat.HTML,
                                       attach=[graph["path"] for graph in drawn.values()] or None))
         else:
-            if "overflow" not in url_args(url):
-                # over a service's limit it is refused: split a summary, cut the rest
-                for each in notifier:
-                    each.overflow_mode = apprise.OverflowMode.SPLIT if report else apprise.OverflowMode.TRUNCATE
-            # the text carries outsiders' input, e.g. a failed login's user name, so services that
-            # render HTML get it escaped rather than as markup
-            ok = bool(notifier.notify(body=body, title=title, notify_type=ntype,
-                                      body_format=apprise.NotifyFormat.TEXT))
+            title, body, given = with_link(plugin, title, body, (report or {}).get("link"))
+            if "overflow" not in url_args(url) and 0 < plugin.body_maxlen < len(title) + len(body):
+                # over a service's limit it is refused: split a summary, cut the rest. Only then, as
+                # Apprise sizes some services anew for each send, e.g. Matrix, and can cut short there
+                plugin.overflow_mode = apprise.OverflowMode.SPLIT if report else apprise.OverflowMode.TRUNCATE
+            ok = bool(notifier.notify(body=body, title=title, notify_type=ntype, body_format=given))
+    if ok and refused_by_server:
+        return ok, f"The mail server refused {', '.join(sorted(set(refused_by_server)))}."
     return ok, "" if ok else last_warning(captured, "Delivery failed.")
 
 
+def with_link(server, title, body, link):
+    """(title, body, format) of the short text, with the report's link last as a link in the format
+    the service renders. The text carries outsiders' input, e.g. a failed login's user name, so
+    it goes as text, which Apprise escapes for Markdown or HTML, a link in it too; with a link it
+    is prepared here as Apprise.notify prepares it, emojis and then conversion."""
+    import apprise
+    from apprise.conversion import convert_between
+    from apprise.emojis import apply_emojis
+    text = apprise.NotifyFormat.TEXT
+    rendered = server.resolve_format(text) if link else text
+    if rendered == apprise.NotifyFormat.MARKDOWN:
+        # Telegram's legacy Markdown would show a URL's escapes in the link's text
+        anchor = "[Full report](%s)" % re.sub(r"[\s()]", lambda m: urllib.parse.quote(m.group()), link)
+    elif rendered == apprise.NotifyFormat.HTML:
+        # the URL shown too, as a service may send HTML as text, e.g. Matrix to Slack
+        anchor = 'Full report: <a href="{0}">{0}</a>'.format(html.escape(link))
+    elif link:
+        # bracketed: Apprise's Discord can append a ping right after the body
+        return title, f"{body}\nFull report: <{link}>", text
+    else:
+        return title, body, text
+
+    def prepared(content):
+        return convert_between(text, rendered, apply_emojis(content) if server.interpret_emojis else content)
+    # a title Apprise blends into the body is converted with it
+    return prepared(title) if title and server.title_maxlen <= 0 else title, prepared(body + "\n") + anchor, rendered
+
+
+@contextlib.contextmanager
+def partly_sent(refused):
+    """As with Apprise 1.13, a message the mail server took for some of its recipients is sent, so a
+    retry does not reach them again; those it refused are collected with its reply. Apprise sends
+    a message per To address, with any Cc and Bcc: one refused outright still fails the send."""
+    from apprise.plugins.email import smtp
+    original = smtp.AppriseSMTPController.sendmail
+
+    def sendmail(self, from_addr, to_addrs, message):
+        # Apprise's own, with the refusals smtplib returns recorded (it raises when all are refused),
+        # and Apprise's warnings about them held back, as they are no reason for a failed send
+        missed: dict = {}
+        socket_sendmail = self._socket.sendmail
+
+        def recorded(*args, **kwargs):
+            missed.update(socket_sendmail(*args, **kwargs) or {})
+            return missed
+
+        def held(record):
+            return not (isinstance(record.args, tuple) and record.args and record.args[0] in missed)
+        self._socket.sendmail = recorded
+        smtp.logger.addFilter(held)
+        try:
+            sent = original(self, from_addr, to_addrs, message)
+        finally:
+            del self._socket.sendmail
+            smtp.logger.removeFilter(held)
+        refused.extend(f"{addr} ({code} {reply.decode(errors='replace') if isinstance(reply, bytes) else reply})"
+                       for addr, (code, reply) in missed.items())
+        return sent or bool(missed)
+
+    smtp.AppriseSMTPController.sendmail = sendmail
+    try:
+        yield
+    finally:
+        smtp.AppriseSMTPController.sendmail = original
+
+
+def report_email(cls):
+    """Whether a plugin class is email that takes HTML, so a summary can go as the full report."""
+    import apprise
+    formats = getattr(cls, "notify_format", ())
+    formats = formats if isinstance(formats, (tuple, list)) else (formats,)
+    return "NotifyEmail" in class_names(cls) and apprise.NotifyFormat.HTML in formats
+
+
+def full_report(plugin):
+    """Whether a plugin is email that sends HTML, so a summary goes as the full report."""
+    import apprise
+    return report_email(type(plugin)) and plugin.resolve_format(apprise.NotifyFormat.HTML) == apprise.NotifyFormat.HTML
+
+
+def text_email(plugin):
+    """Whether email that could take the full report is kept to text by format=text."""
+    import apprise
+    return plugin is not None and report_email(type(plugin)) \
+        and plugin.resolve_format(apprise.NotifyFormat.HTML) != apprise.NotifyFormat.HTML
+
+
+def apprise_log():
+    """A capture of what Apprise warns of, read with logged()."""
+    import apprise
+    return apprise.LogCapture(level=apprise.logging.WARNING, fmt="%(message)s" + LOG_MARK)
+
+
+def logged(captured):
+    """The messages captured, each whole and trimmed."""
+    return [text.strip() for text in captured.getvalue().split(LOG_MARK) if text.strip()]
+
+
 def last_warning(captured, fallback):
-    """The last line Apprise logged, which says why it failed."""
-    errors = [line for line in captured.getvalue().splitlines() if line.strip()]
-    return errors[-1] if errors else fallback
+    """The first line of what Apprise last warned of, which says why it failed; a server's reply
+    can follow it."""
+    messages = logged(captured)
+    return messages[-1].splitlines()[0] if messages else fallback
 
 
 def title_prefix(general, hostname):
@@ -1361,6 +1520,8 @@ def send(channels, prefix, messages, queue, threshold=0):
         ok, error = deliver(channel, title, body, item["type"], report)
         if ok:
             log(syslog.LOG_NOTICE, f"sent \"{item['title']}\" to {name}")
+            if error:
+                log(syslog.LOG_WARNING, f"\"{item['title']}\" to {name}: {error}")
             continue
         tries = item.get("tries", 0) + 1
         delay = RETRY_DELAYS[min(tries, len(RETRY_DELAYS)) - 1]
@@ -1474,7 +1635,7 @@ def run_boot():
     if is_carp_backup(config, unknown=False):  # a startup notice twice beats none
         return
     state = fresh_state()
-    state.get("service", {}).pop("uptime", None)  # a boot is never continuous with the check before it
+    (state.get("service") or {}).pop("uptime", None)  # a boot is never continuous with the check before it
     version = str(firmware_product().get("product_version") or "").strip()
     body = f"Running OPNsense {version}." if version else ""
     found = [message("boot", "info", "Firewall has started", body)]
@@ -1550,13 +1711,15 @@ def run_test(uuid):
     name = channel.get("description", uuid)
     if ok:
         log(syslog.LOG_NOTICE, f"sent test notification to {name}")
-        return {"status": "ok"}
+        if error:
+            log(syslog.LOG_WARNING, f"test notification to {name}: {error}")
+        return {"status": "ok", "message": error} if error else {"status": "ok"}
     log(syslog.LOG_ERR, f"could not send test notification to {name}: {error}")
     return {"status": "failed", "message": error}
 
 
 def archived(config, item, schedule, when, manual=False):
-    """The summary item, archived, with a link to its page added to the short text."""
+    """The summary item, archived, with a link to its page that delivery adds to the short text."""
     try:
         name = archive_report(item["report"], item["uuid"], schedule, when, manual)
     except Exception as exc:  # it is still sent
@@ -1565,8 +1728,7 @@ def archived(config, item, schedule, when, manual=False):
     base = (config["general"].get("reportAddress") or config.get("guiUrl") or "").rstrip("/")
     if not base:
         return dict(item, archive=name)
-    # bracketed: Apprise's Discord can append a ping right after the body
-    return dict(item, body=f"{item['body']}\nFull report: <{base}/ui/notify/report/view/{name}>", archive=name)
+    return dict(item, archive=name, report=dict(item["report"], link=f"{base}/ui/notify/report/view/{name}"))
 
 
 def run_reports():
@@ -1634,7 +1796,9 @@ def run_summary(uuid):
         ok, error = False, f"The summary could not be sent: {exc}"
     if ok:
         log(syslog.LOG_NOTICE, f"sent summary so far to {name}")
-        return {"status": "ok"}
+        if error:
+            log(syslog.LOG_WARNING, f"summary so far to {name}: {error}")
+        return {"status": "ok", "message": error} if error else {"status": "ok"}
     discard(item)
     log(syslog.LOG_ERR, f"could not send summary so far to {name}: {error}")
     return {"status": "failed", "message": error}
@@ -1655,6 +1819,9 @@ def apprise_services():
     for entry in apprise.Apprise().details()["schemas"]:
         protocols = list(entry.get("secure_protocols") or []) + list(entry.get("protocols") or [])
         templates = [str(t) for t in entry["details"]["templates"]]
+        # a port is optional in a URL, though some forms are listed only with one, e.g. Fluxer's bot name
+        templates += [t.replace(":{port}", "") for t in templates
+                      if ":{port}" in t and t.replace(":{port}", "") not in templates]
         if not protocols or not templates:
             continue
         keys: list[list[str]] = [re.findall(r"{(\w+)}", template) for template in templates]
@@ -1663,12 +1830,17 @@ def apprise_services():
         # required, and where the notification goes; the rest are extras
         basic = set(sorted(keys, key=len)[0])
         tokens = {}
+        hidden = {k for c in plugin_classes(protocols[0]) for k in PRIVATE_TOKENS.get(c, ())}
+        # a token another name of which is private, e.g. Revolt's targets, read also as target_channel
+        hidden |= {k for k, t in entry["details"]["tokens"].items()
+                   if any(o.get("private") and o.get("map_to", n) == t.get("map_to", k)
+                          for n, o in entry["details"]["tokens"].items())}
         for key, token in entry["details"]["tokens"].items():
             if key not in used:
                 continue  # e.g. target_user, an alternative spelling of targets
             kind = str(token.get("type", "string"))
             field = {"key": key, "label": str(token.get("name", key)), "type": kind.split(":")[0],
-                     "private": bool(token.get("private")),
+                     "private": bool(token.get("private")) or key in hidden,
                      "basic": key in basic or str(token.get("required")) == "True"
                      or kind.startswith("list"),
                      "map_to": str(token.get("map_to", key))}
@@ -1683,8 +1855,10 @@ def apprise_services():
             secure = [v for v in values if v in (entry.get("secure_protocols") or [])]
             tokens["schema"]["default"] = tokens["schema"].get("default") or (secure or values)[0]
         service_id = protocols[0]
+        # several formats: the message's own is used unless one is chosen, from those it takes
+        several = len(entry["details"]["args"].get("format", {}).get("supported") or ()) > 1
         args = {str(k): v.get("default") for k, v in entry["details"]["args"].items()
-                if v.get("default") is not None and not v.get("alias_of")}
+                if v.get("default") is not None and not v.get("alias_of") and not (k == "format" and several)}
         mapped = {t["map_to"] for t in tokens.values()}
         options = {}
         for key, arg in entry["details"]["args"].items():
@@ -1698,10 +1872,10 @@ def apprise_services():
             if kind.startswith("choice"):
                 # Apprise hands some over as a set; numbers sort as numbers
                 field["values"] = sorted(
-                    (str(v) for v in arg.get("values", ())),
+                    (str(v) for v in (arg["supported"] if key == "format" and several else arg.get("values", ()))),
                     key=lambda v: (not v.lstrip("-").isdigit(),
                                    int(v) if v.lstrip("-").isdigit() else v))
-            if arg.get("default") is not None:
+            if arg.get("default") is not None and not (key == "format" and several):
                 field["default"] = default_text(arg["default"])
             if str(key).lower() in file_args(protocols[0]):
                 # pasted into the dialog and stored with the channel, never shown again
@@ -1713,31 +1887,35 @@ def apprise_services():
         # free-form arguments such as +header or -param, which can carry credentials
         prefixes = tuple(str(k["prefix"]) for k in (entry["details"].get("kwargs") or {}).values()
                          if k.get("prefix"))
-        # query names that carry a secret no option field masks: a private token given by name,
-        # or an alias of one, e.g. Slack's and ntfy's token=
-        private = {str(k) for k, t in entry["details"]["tokens"].items() if t.get("private")}
-        secrets = set(private)
+        # query names that carry a secret no option field masks: a private token or argument given
+        # by name, or an alias of one, e.g. Slack's and ntfy's token= or Exotel's key=
+        private = {str(k) for k, t in entry["details"]["tokens"].items() if t.get("private") or k in hidden}
+        private |= {str(k) for k, a in entry["details"]["args"].items() if a.get("private")}
+        # Apprise reads ?user=, ?pass= and ?password= as credentials
+        secrets = set(private) | {"user", "pass", "password"}
         for key, arg in entry["details"]["args"].items():
             alias = arg.get("alias_of")
             targets = alias if isinstance(alias, (tuple, list)) else (alias,) if alias else ()
             if arg.get("private") or any(str(t) in private for t in targets):
                 secrets.add(str(key).lower())
+        # query names a template fills itself, e.g. Nextcloud Talk's ?secret={secret}
+        filled = {k.lower() for t in templates for k in re.findall(r"[?&](\w+)=\{", t)}
         services[service_id] = {"id": service_id, "name": str(entry["service_name"]),
                                 "setup": str(entry.get("setup_url") or ""), "templates": templates,
                                 "tokens": tokens, "args": args, "options": options, "prefixes": prefixes,
-                                "secrets": secrets}
+                                "secrets": secrets, "filled": filled}
         for protocol in protocols:
             schemas.setdefault(protocol.lower(), service_id)
 
     # options nearly every service has are Apprise's own, so they sort last; its per-send
-    # retry is the exception, dropped because it would fight the queue's own backoff
+    # retry, wait and optional are the exception, dropped because they would fight the queue
     shared: dict = {}
     for service in services.values():
         for key in service["options"]:
             shared[key] = shared.get(key, 0) + 1
     for service in services.values():
         for key in list(service["options"]):
-            if key in ("retry", "wait"):
+            if key in ("retry", "wait", "optional"):
                 del service["options"][key]
             else:
                 service["options"][key]["common"] = shared[key] >= 0.9 * len(services)
@@ -1845,6 +2023,7 @@ def same_url(first, second):
 
 
 def run_services():
+    from apprise.plugins import N_MGR
     services, _ = apprise_services()
     result = []
     for service in sorted(services.values(), key=lambda s: s["name"].lower()):
@@ -1853,13 +2032,18 @@ def run_services():
             fields = fields[1:]  # nothing to choose
         fields += sorted(service["options"].values(), key=lambda f: (f["common"], f["label"].lower()))
         result.append({"id": service["id"], "name": service["name"], "setup": service["setup"],
+                       "email": report_email(N_MGR[service["id"]]),
                        "fields": [{k: v for k, v in f.items() if k not in ("map_to", "common")}
                                   for f in fields]})
     return result
 
 
 def run_describe(uuid):
-    return describe_url(saved_url(uuid))
+    url = saved_url(uuid)
+    described = describe_url(url)
+    if url and text_email(check_url(url)[0]):
+        described["textEmail"] = True
+    return described
 
 
 def same_value(value, default):
@@ -1883,6 +2067,17 @@ def split_query(service, query):
     return values, "&".join(rest)
 
 
+def with_query(url, query):
+    """The URL with a query added; a template may already hold one, e.g. ?secret={secret}."""
+    return url + ("&" if "?" in url else "?") + query if query else url
+
+
+def root_path(service):
+    """Whether a Path of / is given as path=/, the only way the service takes the host root, e.g.
+    Fluxer, whose empty path is /api/."""
+    return service["tokens"].get("path", {}).get("default", "/") != "/"
+
+
 def query_from(service, values, base=None):
     """The query for a service's option fields, leaving out anything at its default. Given the
     URL it goes on, a default is only left out when Apprise reads the URL the same without it:
@@ -1903,11 +2098,14 @@ def query_from(service, values, base=None):
             continue
         part = "%s=%s" % (urllib.parse.quote(key, safe=""), urllib.parse.quote(value, safe=""))
         (defaults if default is not None and same_value(value, default) else parts).append(part)
+    path = str(values.get("path", "")).strip()
+    if root_path(service) and path and not path.strip("/"):
+        parts.append("path=/")
     rest = str(values.get(QUERY_FIELD, "")).lstrip("?")
     for part in defaults if base else []:
         without = "&".join(p for p in parts + [rest] if p)
-        if not same_url(base + "?" + "&".join(p for p in parts + [part, rest] if p),
-                        base + ("?" + without if without else "")):
+        if not same_url(with_query(base, "&".join(p for p in parts + [part, rest] if p)),
+                        with_query(base, without)):
             parts.append(part)
     return "&".join([part for part in parts + [rest] if part])
 
@@ -1939,9 +2137,6 @@ def normalize(url, plugin, services, schemas):
             continue
         keep.append(part)  # only what differs from the service's own defaults
 
-    def joined(head, parts):
-        return head + ("?" + "&".join(parts) if parts else "")
-
     def rendered(candidate):
         again, _ = one_plugin(candidate)
         return again.url(privacy=False) if again is not None else None
@@ -1957,7 +2152,7 @@ def normalize(url, plugin, services, schemas):
         if field.get("type") == "choice" and value not in field.get("values", []):
             for choice in field["values"]:
                 tried = keep[:i] + [f"{key}={urllib.parse.quote(choice, safe='')}"] + keep[i + 1:]
-                if rendered(joined(base, tried)) == native:
+                if rendered(with_query(base, "&".join(tried))) == native:
                     keep = tried
                     break
     # url() leaves some settings out, e.g. Email's from= or emojis=, so next the pasted URL's own
@@ -1966,7 +2161,7 @@ def normalize(url, plugin, services, schemas):
     taken = {key for _, key, _ in query_pairs("&".join(keep))}
     pasted = [text for text, key, _ in query_pairs(url_query(url)) if key in options and key not in taken]
     candidates = [(head, parts) for head in (base, url.partition("?")[0]) for parts in (keep, keep + pasted)]
-    for candidate in dict.fromkeys(joined(head, parts) for head, parts in candidates if not unmatched(parts)):
+    for candidate in dict.fromkeys(with_query(head, "&".join(parts)) for head, parts in candidates if not unmatched(parts)):
         if rendered(candidate) == native and same_settings(url, plugin, candidate):
             return candidate
     # else, e.g. a choice Apprise names in a way no field choice matches: the URL as given, as before
@@ -2006,28 +2201,136 @@ def same_settings(first, plugin, second):
     return all(theirs[name] == mine[name] for name in names if again[name] == mine[name])
 
 
+def apprise1_notes(url):
+    """What Apprise 2 reads differently in a URL written for Apprise 1.13, which the migration
+    rewrites in saved ones (M1_0_1), for an entered URL to say."""
+    results = apprise_results(url) or {}
+    qsd = results.get("qsd") or {}
+    classes = plugin_classes(results.get("schema"))
+    notes = []
+    if "NotifyEmail" in classes and apprise1_pgp(str(qsd.get("pgp") or "")):
+        notes.append("Apprise 2 reads pgp= as no, sign or encrypt; Apprise 1.13 read yes as encrypt.")
+    # as Apprise 1.13: an empty pgpkey= is ignored and pgppub= wins
+    if "NotifyEmail" in classes and qsd.get("pgpkey") and not qsd.get("pgppub"):
+        notes.append("Apprise no longer reads pgpkey=; give the public key as pgppub=.")
+    # version= or v=, or a .../notify/{token} URL, which is version 1
+    if "NotifyAppriseAPI" in classes and not results.get("version"):
+        notes.append("Apprise 2 sends the configuration ID in a header; choose version 1 for an Apprise API "
+                     "server that reads it from the path.")
+    # Apprise 1.13 read no path, in the URL or as path=, and sent to the host root
+    if "NotifyFluxer" in classes and results.get("mode") == "private" and "path" not in qsd:
+        notes.append("Apprise 2 sends to the path a Fluxer URL gives, else /api/; give path=/ for a server at "
+                     "the host root, as Apprise 1.13 used.")
+    if "NotifySimplePush" in classes:
+        notes.append("Simplepush has moved to a new service, where a key for the previous one does not work; "
+                     "give the API Token from the current Simplepush app.")
+    return notes
+
+
+def apprise1_pgp(value):
+    """The PGP mode Apprise 1.13 read from a pgp= value that Apprise 2 refuses, or None: 1.13 took
+    a mode's start as 2 does, else a yes or no (parse_bool, which 2 keeps as it was). The migration
+    reads it the same (M1_0_1), which the tests hold it to."""
+    from apprise.plugins.email.base import PGP_MODES
+    from apprise.utils.parse import parse_bool
+    if value.lower() in ("", "none") or any(mode.startswith(value.lower()) for mode in PGP_MODES):
+        return None
+    return "encrypt" if parse_bool(value) else "no"
+
+
+def handed_over(path, prefix):
+    """(the JSON request the web interface handed over under this name prefix, or None; why not)."""
+    unread = None, "The request could not be read."
+    name = os.path.basename(path)
+    if not name.startswith(prefix):
+        return unread
+    try:
+        with open(os.open(os.path.join(TEMP_DIR, name), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                return unread
+            data = handle.read(REQUEST_MAX + 1)
+        if len(data) > REQUEST_MAX:
+            return None, f"The request is larger than {REQUEST_MAX // (1024 * 1024)} MB."
+        request = json.loads(data)
+    except (OSError, ValueError):
+        return unread
+    return (request, "") if isinstance(request, dict) else unread
+
+
 def run_parse(path):
     """Fields for a URL the user pasted, so the dialog can fill itself in."""
-    try:
-        with open(path) as handle:
-            request = json.load(handle)
-    except (OSError, ValueError):
-        return {"error": "The request could not be read."}
-    if not isinstance(request, dict):
-        return {"error": "The request could not be read."}
+    request, error = handed_over(path, "notify_parse_")
+    if request is None:
+        return {"error": error}
     url = str(request.get("url") or "").strip()
     if not url:
         return {"error": "Enter an Apprise URL to import."}
-    plugin, error = check_url(url)
+    notes = apprise1_notes(url)
+    plugin, error = check_url(url, typed=True)
     if plugin is None:
-        return {"error": error}
+        return {"error": " ".join(filter(None, [error] + notes))}
     services, schemas = apprise_services()
     url = normalize(url, plugin, services, schemas)
     described = describe_url(url, keep_secrets=True)
     if not described.get("service"):
         described["error"] = ("The fields cannot represent this URL exactly, so it is kept as it is. "
                               "Save it as a custom URL.")
+    if notes:
+        described["error"] = " ".join(filter(None, [described.get("error")] + notes))
+    if text_email(plugin):
+        described["textEmail"] = True
     return described
+
+
+def secret_values(url, service, results):
+    """What Apprise reads from a URL as secrets, decoded: the values of the service's private tokens
+    and options, and the query's under a secret's name, a user name and a file's apart. Only those
+    standing alone in the URL count: one that is also, say, the user name shows there anyway, and
+    masking it would point it out."""
+    found: list = []
+    for field in [*service["tokens"].values(), *service["options"].values()]:
+        value = results.get(field["map_to"]) if field["private"] and field["type"] != "file" else None
+        found += value if isinstance(value, (list, tuple, set)) else [value]
+    files = {k for k, f in service["options"].items() if f["type"] == "file"}
+    found += [value for key, value in (results.get("qsd") or {}).items()
+              if key in service["secrets"] and key != "user" and key not in files]
+    found = [urllib.parse.unquote(str(value)) for value in found if value not in (None, "", KEY_MARKER)]
+    text = urllib.parse.unquote(url)
+    return {value for value in found if len(standing(value).findall(text)) <= 1}
+
+
+def standing(*values):
+    """A pattern for any of the values standing alone, not as a part of a longer word or token; the
+    first that matches at a place wins, so give the longest first."""
+    return re.compile(r"(?<![\w-])(?:%s)(?![\w-])" % "|".join(re.escape(value) for value in values))
+
+
+def url_secrets(url):
+    """secret_values of a URL; none when Apprise cannot read it."""
+    try:
+        services, schemas = apprise_services()
+    except ImportError:
+        return set()  # nor send it
+    results = apprise_results(url)
+    service_id = schemas.get(str(results["schema"]).lower()) if results is not None else None
+    return secret_values(url, services[service_id], results) if service_id is not None else set()
+
+
+def masked(text, secrets):
+    """The text with each secret masked where it stands alone, as given or URL-quoted, e.g. a
+    webhook's token in a connection error's address, or PagerTree's integration ID named in its
+    own; read in one pass, the longest first, so one holding another goes whole."""
+    forms = sorted(secrets | {urllib.parse.quote(s, safe="") for s in secrets}, key=len, reverse=True)
+    return standing(*forms).sub("****", text) if forms else text
+
+
+def read_into_field(service, url, results, key):
+    """Whether Apprise reads a query name into one of the service's fields, listed as an alias or
+    not: read again without it, the URL gives a field another value."""
+    without = "&".join(text for text, name, _ in query_pairs(url_query(url)) if name != key)
+    other = apprise_results(with_query(url.split("?", 1)[0], without))
+    return other is None or any(other.get(t["map_to"]) != results.get(t["map_to"]) for t in service["tokens"].values())
 
 
 def describe_url(url, keep_secrets=False):
@@ -2045,9 +2348,20 @@ def describe_url(url, keep_secrets=False):
     fields = saved_values(service, results, [k for k in shown if not tokens[k]["private"]])
     fields["schema"] = url_schema(url)
     secrets = saved_values(service, results, [k for k in shown if tokens[k]["private"]])
-    options, rest = split_query(service, url_query(url))
-    if any(custom_arg(text, service["prefixes"]) or key in service["secrets"] for text, key, _ in query_pairs(rest)):
-        return {"service": "", "custom": True}  # no field masks these, so keep the URL write-only
+    hidden = secret_values(url, service, results)
+    pairs = query_pairs(url_query(url))
+    options = {key: value for _, key, value in pairs if key in service["options"]}
+    rest = [pair for pair in pairs if pair[1] not in service["options"] and pair[1] not in service["filled"]]
+    # the host root, which Apprise takes only as path=/, e.g. Fluxer's, shows as a Path of /
+    roots = [value for _, key, value in rest if key == "path"]
+    if root_path(service) and not fields.get("path", "").strip("/") and roots and roots[-1] and not roots[-1].strip("/"):
+        fields["path"] = "/"
+        rest = [pair for pair in rest if pair[1] != "path"]
+    # a secret by name or a free-form argument, which no field masks, or a name Apprise reads into a
+    # field, e.g. port= or Google Chat's threadkey=, where the query would win over the field
+    if any(custom_arg(text, service["prefixes"]) or key in service["secrets"] or read_into_field(service, url, results, key)
+           for text, key, _ in rest):
+        return {"service": "", "custom": True}
     for key, value in options.items():
         field = service["options"][key]
         if field["type"] == "bool":
@@ -2059,15 +2373,19 @@ def describe_url(url, keep_secrets=False):
         effective = getattr(plugin, field["map_to"], None) if plugin is not None and key not in options else None
         if field["type"] == "choice" and effective in field.get("values", ()) and effective != field.get("default"):
             fields[key] = effective
+    # Apprise copies some secrets into another field, e.g. ntfy's token into its user: that field is
+    # left to the private one, and the URL must rebuild without it
+    fields = {k: v for k, v in fields.items() if not hidden & {v, *v.split(", ")}}
     if rest:
-        fields[QUERY_FIELD] = rest
+        fields[QUERY_FIELD] = "&".join(text for text, _, _ in rest)
     if keep_secrets:
         fields.update(secrets)  # pasted by the user a moment ago, so no point hiding them
+
     # a URL the fields cannot reproduce stays a plain URL, so saving never changes it
     values = {**fields, **secrets}
     rebuilt = compose(service, values)[0]
     query = query_from(service, values, rebuilt)
-    if rebuilt is None or not same_url(rebuilt + ("?" + query if query else ""), url):
+    if rebuilt is None or not same_url(with_query(rebuilt, query), url):
         return {"service": "", "custom": True}  # a URL the fields cannot hold, kept as it is
     return {"service": service_id, "fields": fields, "saved": sorted(secrets)}
 
@@ -2086,7 +2404,14 @@ def compose(service, values):
                 items = split_list(values.get(lists[token["map_to"]], ""))
                 value = items[0] if len(items) == 1 else ""  # a single target fills e.g. {topic}
             if key in ("path", "fullpath"):
-                value = value.lstrip("/")  # the template carries the separator
+                # the template carries the separators, as in {host}/{path}, or not, as Fluxer's {host}{path}{webhook_id}
+                before, _, after = template.partition("{" + key + "}")
+                if before.endswith("/"):
+                    value = value.lstrip("/")
+                elif value.strip("/"):
+                    value = "/" + value.strip("/") + ("/" if after.startswith("{") else "")
+                else:
+                    value = ""
             if not value:
                 missing.append(key)
                 continue
@@ -2121,23 +2446,35 @@ def several_urls(url):
     return "://" in (url or "") and len(parse_urls(url)) > 1
 
 
-def one_plugin(url):
+def one_plugin(url, typed=False, asset=None):
     """(the one plugin Apprise builds from a URL, error text): what is checked and what is sent
-    through; a plugin tripping over the URL still means a bad URL."""
+    through; a plugin tripping over the URL still means a bad URL. typed: all of the URL was just
+    entered, none of it saved."""
     import apprise
-    with apprise.LogCapture(level=apprise.logging.WARNING, fmt="%(message)s") as captured:
+    with apprise_log() as captured:
         try:
-            plugin = apprise.Apprise.instantiate(url)
+            plugin = apprise.Apprise.instantiate(url, asset=asset)
         except Exception:
             plugin = None
     if plugin is None:
-        return None, last_warning(captured, "This is not a valid Apprise URL.")
+        # the reason comes before "Could not load"; a saved URL's quoted value may be a secret
+        lines = logged(captured)
+        if len(lines) > 1 and lines[-1].startswith("Could not load "):
+            reason = lines[-2]
+        else:
+            reason = lines[-1] if lines else ""
+        if not typed:
+            # first quote or parenthesis to the last, so a value holding one goes whole, and a URL
+            # but for its scheme, e.g. in "Unparseable Telegram URL ..."
+            reason = re.sub(r"\s*\(.*\)|\s+'.*'", "", reason, flags=re.S).strip()
+            reason = re.sub(r"\b([A-Za-z][\w+.-]*)://\S*", r"\1://...", reason)
+        return None, reason or "This is not a valid Apprise URL."
     return plugin, ""
 
 
 def refused(url):
     """Why a URL is not given to Apprise at all, or "": a string its add() would split into several
-    services, the later ones unchecked, or one naming a file."""
+    services, the later ones unchecked, one naming a file, or one Apprise would send elsewhere."""
     if several_urls(url):
         return "Give one URL per channel; add a channel for each further service."
     local = local_file_args(url)
@@ -2147,14 +2484,23 @@ def refused(url):
             return f"Give an https:// address for {', '.join(plain)}, or paste its contents in the channel."
         return (f"The URL names a file in {', '.join(local)}; choose its service in the channel and paste its "
                 "contents instead.")
+    # Apprise does not read every IPv6 address, e.g. not one in uppercase or with some zone IDs:
+    # ntfy, Fluxer and LaMetric then take it for no server and send to their cloud, unless told the
+    # mode, and email drops it
+    results = apprise_results(url) or {}
+    host = str(results.get("host") or "")
+    given = re.match(r"[^:]*:[/\\]*(?:[^/\\?]*@)?\[", url or "")
+    if (results.get("mode") == "cloud" and "mode" not in (results.get("qsd") or {}) and re.search(r"[\[\]:%]", host)) \
+            or (given and results and not host):
+        return "Apprise cannot read this server address; give the server's name, or an address in lowercase without a zone ID."
     return ""
 
 
-def check_url(url):
+def check_url(url, typed=False):
     """(apprise plugin, error text) for a URL; one naming a file is refused before Apprise builds
     a plugin from it."""
     error = refused(url)
-    return (None, error) if error else one_plugin(url)
+    return (None, error) if error else one_plugin(url, typed)
 
 
 def from_service(service_id, fields, stored):
@@ -2198,28 +2544,24 @@ def from_service(service_id, fields, stored):
         needed = ", ".join(wanted) if wanted else "the fields this service needs"
         return "", {}, f"Fill in {needed}; see the setup guide if you are unsure."
     query = query_from(service, values, url)
-    return (url + "?" + query if query else url), files, ""
+    return with_query(url, query), files, ""
 
 
-def shown_url(plugin):
-    """The saved URL as shown, not used: as typed, e.g. an address's @ rather than %40, with the
-    secrets Apprise masks; for a webhook receiver (PATH_SECRET) the path is left out too, since
-    there the secret is often the path, which Apprise shows."""
-    shown = urllib.parse.unquote(plugin.url(privacy=True).split("?", 1)[0])
+def shown_url(plugin, url):
+    """The saved URL as shown, not used: as typed, e.g. an address's @ rather than %40, with its
+    secrets masked, also where Apprise leaves one, e.g. Matrix's access token; for a webhook
+    receiver (PATH_SECRET) the path is left out too, since there the secret is often the path."""
+    shown = masked(urllib.parse.unquote(plugin.url(privacy=True).split("?", 1)[0]), url_secrets(url))
     parts = urllib.parse.urlsplit(shown)
-    if any(c.__name__ in PATH_SECRET for c in type(plugin).__mro__) and parts.path.strip("/"):
+    if class_names(type(plugin)) & set(PATH_SECRET) and parts.path.strip("/"):
         shown = urllib.parse.urlunsplit((parts.scheme, parts.netloc, "/...", "", ""))
     return shown
 
 
 def run_build(path):
-    try:
-        with open(path) as handle:
-            request = json.load(handle)
-    except (OSError, ValueError):
-        return {"error": "The request could not be read.", "field": "channel.url"}
-    if not isinstance(request, dict) or not isinstance(request.get("fields") or {}, dict):
-        return {"error": "The request could not be read.", "field": "channel.url"}
+    request, error = handed_over(path, "notify_build_")
+    if request is None or not isinstance(request.get("fields") or {}, dict):
+        return {"error": error or "The request could not be read.", "field": "channel.url"}
     uuid = str(request.get("uuid") or "")
     channel = saved_channel(uuid)
     stored = channel.get("url", "")
@@ -2230,18 +2572,22 @@ def run_build(path):
     files: dict = {}
     if service_id and (fields.get("changed") == "1" or not stored):
         url, files, error = from_service(service_id, fields, stored)
+        typed = not stored  # fields left empty keep the saved values
         target_field = "apprise_service"
     else:
+        typed = bool(str(request.get("url") or "").strip())
         url = str(request.get("url") or "").strip() or stored
         error = "" if url else "Enter an Apprise URL or choose a service."
         target_field = "channel.url"
     if error:
         return {"error": error, "field": target_field}
 
-    plugin, error = check_url(url)
+    plugin, error = check_url(url, typed)
     if plugin is None:
-        return {"error": error, "field": target_field}
-    masked = shown_url(plugin)
+        # a URL written by hand may be one for Apprise 1.13, as an import says
+        notes = apprise1_notes(url) if typed and target_field == "channel.url" else []
+        return {"error": " ".join([error] + notes), "field": target_field}
+    masked = shown_url(plugin, url)
     # keep the stored files the URL still points at, with anything newly pasted on top
     stored_args = stored_file_args(url)
     kept = {key: value for key, value in (channel.get("files") or {}).items() if key in stored_args}
@@ -2266,8 +2612,8 @@ if __name__ == "__main__":
             result = with_lock(30, lambda: (run_test if sys.argv[1] == "test" else run_summary)(sys.argv[2]))
         except Exception as exc:  # an answer, so the dialog can say what went wrong
             result = {"status": "failed", "message": f"{verb}: {exc}"}
-        print(json.dumps(result or {"status": "failed", "message": f"{verb}; a check is still running, so try "
-                                                                     "again in a minute."}))
+        busy = {"status": "failed", "message": f"{verb}; a check is still running, so try again in a minute."}
+        print(json.dumps(result or busy))
     elif len(sys.argv) > 1 and sys.argv[1] == "reports":
         print(json.dumps(run_reports()))
     elif len(sys.argv) > 2 and sys.argv[1] == "report":

@@ -2,13 +2,18 @@
 
 import http.server
 import json
+import re
 import os
+import random
 import shutil
+import socket
+import subprocess
 import sys
 import tempfile
 import threading
 import time as time_module
 import unittest
+import urllib.parse
 
 SCRIPTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "opnsense", "scripts",
                        "OPNsense", "Notify")
@@ -23,7 +28,19 @@ import notify  # noqa: E402
 import summary  # noqa: E402
 
 notify.log = summary.log = lambda *args: None
+notify.TEMP_DIR = tempfile.gettempdir()
 CHANNEL = "11111111-2222-4333-8444-555555555555"  # a model UUID
+
+
+def handed_over(run, request):
+    """What run_build or run_parse answers for a request handed over as the web interface does."""
+    prefix = "notify_build_" if run is notify.run_build else "notify_parse_"
+    with tempfile.NamedTemporaryFile("w", prefix=prefix, dir=notify.TEMP_DIR, delete=False) as handle:
+        json.dump(request, handle)
+    try:
+        return run(handle.name)
+    finally:
+        os.unlink(handle.name)
 
 
 class Case(unittest.TestCase):
@@ -38,12 +55,8 @@ class Case(unittest.TestCase):
 
     def build(self, service, **fields):
         """Save the channel as the dialog would, and keep what was stored."""
-        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
-            json.dump({"uuid": CHANNEL, "service": service, "fields": dict(changed="1", **fields)}, handle)
-        try:
-            result = notify.run_build(handle.name)
-        finally:
-            os.unlink(handle.name)
+        result = handed_over(notify.run_build, {"uuid": CHANNEL, "service": service,
+                                                "fields": dict(changed="1", **fields)})
         if "url" in result:
             self.channel.update(url=result["url"], files=result["files"])
         return result
@@ -53,7 +66,7 @@ class FileArguments(Case):
     def test_only_where_the_service_opens_a_file(self):
         self.assertEqual(notify.file_args("discord"), {"template"})
         self.assertEqual(notify.file_args("guilded"), {"template"})  # a Discord subclass
-        self.assertEqual(notify.file_args("mailtos"), {"pgppub", "pgpkey", "pgpprv"})
+        self.assertEqual(notify.file_args("mailtos"), {"pgppub", "pgpprv"})
         self.assertEqual(notify.file_args("msg91"), set(), "a template ID, not a file")
 
     def test_local_files_are_refused(self):
@@ -89,6 +102,25 @@ class StoredFiles(Case):
         result = self.build("discord", template="http://example.com/t.json", **self.WEBHOOK)
         self.assertIn("https://", result["error"])
 
+    def test_an_address_apprise_would_send_to_the_cloud_is_refused(self):
+        # Apprise leaves the port in the host of some IPv6 addresses, and ntfy, Fluxer and LaMetric
+        # then take it for no address and send to their cloud
+        for url in ("ntfy://[fe80::1%25igb1]:8080/alerts", "ntfys://fe80::1%25igb1:8080/alerts",
+                    "fluxer://[fe80::1%25igb1]:8080/123/token", "lametric://key@[fe80::1%25igb1]:8080",
+                    "ntfys://[FD00::5]:8080/alerts", "ntfy://[::ffff:10.0.0.5]:8080/alerts", "fluxer://[FD00::5]:8080/123/token",
+                    # a zone ID Apprise does not take for one, port or not
+                    "ntfy://[fe80::1%25igb0_vlan10]/alerts", "fluxer://[fe80::1%25em0.100]/123/token", "ntfy://[fd00::5%25em0]/alerts",
+                    # and email, which drops the host
+                    "mailtos://fw:pw@[fe80::1%25igb1]:587?to=a@example.org&from=fw@example.com"):
+            self.assertIn("cannot read this server address", notify.refused(url), url)
+            self.assertEqual(notify.deliver_once({"url": url}, "t", "b", "info")[0], False, url)
+        # where Apprise reads the address, sends where it is told, or reads another host
+        for url in ("ntfy://[fe80::1%25igb1]/alerts", "ntfy://[fd00::5]:8080/alerts", "ntfy://ntfy.example.com/alerts",
+                    "ntfy://alerts", "ntfys://ntfy.sh/alerts", "fluxer://[fd00::5]:8080/123/token",
+                    "json://[FD00::5]:8080/path", "ntfys://[FD00::5]:8080/alerts?mode=cloud", "mailtos://fw:pw@[fd00::25]:587?to=a@example.org",
+                    "ntfy://u@x@[fe80::1%25em0]:8080/topic"):
+            self.assertEqual(notify.refused(url), "", url)
+
     def test_private_keys_are_pasted_not_fetched(self):
         result = self.build("mailtos", user="fw", password="pw", host="smtp.example.com", targets="a@example.com",
                             pgpprv="https://keys.example.com/private.asc")
@@ -102,12 +134,7 @@ class StoredFiles(Case):
         self.assertTrue(result["target"].endswith("/admin@example.com"), result["target"])
 
     def custom(self, url):
-        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
-            json.dump({"uuid": CHANNEL, "service": "", "url": url, "fields": {}}, handle)
-        try:
-            return notify.run_build(handle.name)
-        finally:
-            os.unlink(handle.name)
+        return handed_over(notify.run_build, {"uuid": CHANNEL, "service": "", "url": url, "fields": {}})
 
     def test_a_receivers_path_is_not_shown(self):
         # a webhook receiver's secret is often its path, which Apprise does not mask
@@ -118,6 +145,15 @@ class StoredFiles(Case):
         self.assertEqual(self.custom("xml://hooks.example.com")["target"], "xml://hooks.example.com/")
         self.assertEqual(self.custom("tgram://123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11/12345")["target"],
                          "tgram://1...1/12345/", "elsewhere Apprise masks the secret itself")
+        # a secret Apprise leaves unmasked, e.g. Matrix's access token where its user would stand
+        self.assertEqual(self.custom("matrixs://syt_S3CRETaccessTOKEN@matrix.example.com/!room:example.com")["target"],
+                         "matrixs://****@matrix.example.com/!room:example.com")
+        self.assertEqual(self.custom("sendgrid://abcd:fw@example.com/to@example.com")["target"].split("@")[0],
+                         "sendgrid://a...d:fw", "a sender in the password slot is no secret")
+        # a secret that is also a word, or also the user name, is not pointed out
+        self.assertEqual(self.custom("ntfys://bob:ntfy@ntfy.example.com/alerts")["target"], "ntfys://bob:****@ntfy.example.com/alerts")
+        self.assertEqual(self.custom("ntfys://ntfy.example.com/alerts?user=alerts&password=pw")["target"],
+                         "ntfys://alerts:****@ntfy.example.com/alerts")
 
     def test_a_choice_left_unselected_is_not_a_value(self):
         result = self.build("ntfys", host="ntfy.sh", targets="topic", priority=None)
@@ -154,19 +190,135 @@ class StoredFiles(Case):
 
     def test_a_request_that_is_not_an_object(self):
         for request in ([], {"fields": ["x"]}):
-            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
-                json.dump(request, handle)
+            self.assertIn("error", handed_over(notify.run_build, request))
+            self.assertIn("error", handed_over(notify.run_parse, request))
+
+    def test_only_the_web_interface_handover_is_read(self):
+        url = "json://example.com"
+        with tempfile.TemporaryDirectory() as elsewhere:
+            outside = os.path.join(elsewhere, "notify_parse_x")
+            with open(outside, "w") as handle:
+                json.dump({"url": url}, handle)
+            # read from the web interface's tmp by name, wherever the path points
+            self.assertIn("error", notify.run_parse(outside))
+            self.assertIn("error", notify.run_parse("/etc/hosts"))
+            link = os.path.join(notify.TEMP_DIR, f"notify_parse_link{os.getpid()}")
+            os.symlink(outside, link)
             try:
-                self.assertIn("error", notify.run_build(handle.name))
-                self.assertIn("error", notify.run_parse(handle.name))
+                self.assertIn("error", notify.run_parse(link))
             finally:
-                os.unlink(handle.name)
+                os.unlink(link)
+        with tempfile.NamedTemporaryFile("w", prefix="notify_build_", dir=notify.TEMP_DIR, delete=False) as handle:
+            json.dump({"url": url}, handle)
+        try:
+            self.assertIn("error", notify.run_parse(handle.name), "a build request is not an import")
+        finally:
+            os.unlink(handle.name)
+        self.assertEqual(handed_over(notify.run_parse, {"url": url, "x": "#" * (1024 * 1024)}),
+                         {"error": "The request is larger than 1 MB."})
+        self.assertNotIn("error", handed_over(notify.run_parse, {"url": url}))
+
+    def test_tokens_named_as_secrets_are_private(self):
+        # Apprise leaves some unmarked, e.g. Mastodon's access token (see PRIVATE_TOKENS)
+        import re
+        services, _ = notify.apprise_services()
+        shown = {(service_id, key) for service_id, service in services.items() for key, token in service["tokens"].items()
+                 if not token["private"] and re.search(r"token|key|secret|password|auth", token["label"], re.I)}
+        self.assertEqual(shown, {("splunk", "routing_key")}, "where alerts go in Splunk, not a credential")
+
+    def test_a_linked_or_waiting_handover_is_not_read(self):
+        with tempfile.NamedTemporaryFile("w", dir=notify.TEMP_DIR, delete=False) as handle:
+            json.dump({"url": "json://example.com"}, handle)
+        link = os.path.join(notify.TEMP_DIR, f"notify_parse_hard{os.getpid()}")
+        fifo = os.path.join(notify.TEMP_DIR, f"notify_parse_fifo{os.getpid()}")
+        os.link(handle.name, link)
+        os.mkfifo(fifo)
+        try:
+            self.assertIn("error", notify.run_parse(link), "another name for someone else's file")
+            self.assertIn("error", notify.run_parse(fifo), "a pipe nobody writes to does not hold the check")
+        finally:
+            for path in (handle.name, link, fifo):
+                os.unlink(path)
 
     def test_file_args_checked_for_this_apprise(self):
         import apprise
         self.assertEqual(apprise.__version__, notify.FILE_ARGS_APPRISE,
                          "a new Apprise: check which arguments it opens as files and the internals the URL "
                          "checks call (see FILE_ARGS_APPRISE), then update it")
+
+    def test_only_the_listed_arguments_open_a_file(self):
+        # every service with each argument it lists, and the usual file names, set to a path: what
+        # Apprise then loads as a file must be in FILE_ARGS, so a new Apprise is checked here
+        import builtins
+        import re
+        import apprise
+        names = {arg for args in notify.FILE_ARGS.values() for arg in args} | {
+            "pgpkey", "attach", "file", "path", "cert", "key", "ca", "config", "include"}
+        loaded, current = set(), {}
+        add, opened = apprise.AppriseAttachment.add, builtins.open
+
+        def seen(value):
+            for item in value if isinstance(value, (list, tuple)) else [value]:
+                if isinstance(item, str) and "/NOTIFY-SWEEP/" in item:
+                    loaded.add((current["schema"], item.rsplit("/", 1)[1]))
+                    return True
+            return False
+
+        def spy_add(attachments, value, *args, **kwargs):
+            seen(value)
+            return add(attachments, value, *args, **kwargs)
+
+        def spy_open(file, *args, **kwargs):
+            if seen(file):
+                raise OSError("not opened")
+            return opened(file, *args, **kwargs)
+
+        apprise.AppriseAttachment.add, builtins.open = spy_add, spy_open
+        try:
+            for entry in apprise.Apprise().details(show_disabled=True)["schemas"]:
+                protocols = list(entry.get("secure_protocols") or []) + list(entry.get("protocols") or [])
+                details = entry["details"]
+                bases = []
+                for template in details["templates"] if protocols else []:
+                    values = {}
+                    for key in re.findall(r"{(\w+)}", template):
+                        token = details["tokens"].get(key, {})
+                        choices = token.get("values") or []
+                        values[key] = protocols[0] if key == "schema" else str(choices[0]) if choices else \
+                            "1" if token.get("type") in ("int", "float") else "abc123"
+                    bases.append(template.format(**values))
+                # one its own token checks accept, e.g. Telegram's bot token, so its arguments are reached
+                built = apprise_urls.build(entry, apprise.Apprise.instantiate) if protocols else None
+                for base in bases + ([built] if built else []):
+                    current["schema"] = protocols[0]
+                    for arg in set(details.get("args", {})) | names:
+                        try:
+                            apprise.Apprise.instantiate(f"{base}{'&' if '?' in base else '?'}{arg}=/NOTIFY-SWEEP/{arg}")
+                        except Exception:
+                            pass
+        finally:
+            apprise.AppriseAttachment.add, builtins.open = add, opened
+        self.assertIn(("discord", "template"), loaded, "the sweep sees a file argument")
+        self.assertEqual({(schema, arg) for schema, arg in loaded if arg not in notify.file_args(schema)}, set())
+
+    def test_a_private_file_replaces_a_link_rather_than_follow_it(self):
+        with tempfile.TemporaryDirectory() as folder:
+            outside = os.path.join(folder, "outside")
+            with open(outside, "w") as handle:
+                handle.write("kept")
+            path = os.path.join(folder, "private", "state.json")
+            os.makedirs(os.path.dirname(path), mode=0o700)
+            for only_changed in (False, True):
+                if os.path.lexists(path):
+                    os.unlink(path)
+                os.symlink(outside, path)
+                common.write_private(path, "new", only_changed=only_changed)
+                self.assertFalse(os.path.islink(path))
+                self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+                with open(path) as handle:
+                    self.assertEqual(handle.read(), "new")
+                with open(outside) as handle:
+                    self.assertEqual(handle.read(), "kept")
 
     def test_urls_read_as_apprise_reads_them(self):
         # a # does not end the query for Apprise, and ; splits it as & does
@@ -196,12 +348,7 @@ class StoredFiles(Case):
         self.assertEqual(notify.local_file_args(f"{base}?template=stored#frag"), ["template"])
 
     def imported(self, url):
-        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
-            json.dump({"url": url}, handle)
-        try:
-            return notify.run_parse(handle.name)
-        finally:
-            os.unlink(handle.name)
+        return handed_over(notify.run_parse, {"url": url})
 
     def test_an_import_in_apprise_own_form(self):
         # what Apprise takes under another name lands in the field for it
@@ -233,12 +380,12 @@ class StoredFiles(Case):
         found = self.imported("mailtos://u:p@example.com?from=fw@example.com&to=a@example.com,b@example.com")
         self.assertEqual((found["fields"]["targets"], found["fields"].get("from")),
                          ("a@example.com, b@example.com", "fw@example.com"))
-        found = self.imported("dingtalk://abcdefghij/?optional=yes&rto=3")
-        self.assertEqual((found["fields"].get("optional"), found["fields"].get("rto")), ("yes", "3"))
+        found = self.imported("dingtalk://abcdefghij/?emojis=yes&rto=3")
+        self.assertEqual((found["fields"].get("emojis"), found["fields"].get("rto")), ("yes", "3.0"))
 
     def test_a_bool_spelled_as_apprise_reads_it(self):
         # t, y or on are yes to Apprise (parse_bool), so they are yes in the field's box too
-        self.assertEqual(self.imported("dingtalk://abcdefghij/?optional=t")["fields"].get("optional"), "yes")
+        self.assertEqual(self.imported("dingtalk://abcdefghij/?emojis=t")["fields"].get("emojis"), "yes")
         self.assertEqual(self.imported("apprises://example.com/token?emojis=on")["fields"].get("emojis"), "yes")
         self.assertTrue(notify.same_value("t", True))
         self.assertIn("tts=yes", notify.query_from(notify.apprise_services()[0]["discord"], {"tts": "y"}))
@@ -274,7 +421,8 @@ class StoredFiles(Case):
                     if pasted is None:
                         continue
                     imported, _ = notify.one_plugin(notify.normalize(url, pasted, services, schemas))
-                    attr = field.get("map_to") or key
+                    # store= maps to a store object built anew each time; the setting is persistent_storage
+                    attr = "persistent_storage" if key == "store" else field.get("map_to") or key
                     before = getattr(pasted, attr, missing)
                     after = getattr(imported, attr, missing) if imported is not None else missing
                     if before is missing and after is missing:
@@ -364,13 +512,53 @@ class StoredFiles(Case):
     def test_a_secret_under_another_name_never_reaches_the_browser(self):
         # a token given by its alias is no field, so it would ride along in the query field
         for url in ("slack://#general?token=xoxb-123-456-ABCDEF", "ntfys://ntfy.sh/topic?token=tk_secret",
-                    "dingtalk://token/?secret=abcdef"):
+                    "dingtalk://token/?secret=abcdef", "apprises://example.com/token123?pass=S3CRETpass",
+                    "telnyx://15551234567/15557654321?user=S3CRETkey", "jsons://h/?PASSWORD=x",
+                    # an alias of a private argument, and a name the plugin reads without listing it
+                    "exotel://+15551234567:user@example.com@+15551234567?key=S3CRET",
+                    "gchat://workspace/webhookkey/webhooktoken?threadkey=S3CRET"):
             described = notify.describe_url(url)
             self.assertEqual(described.get("service"), "", url)
             self.assertNotIn("fields", described, url)
+        # a token Apprise masks in its own URL without marking it private
+        for url, key in (("mastodons://AbC123accessTOKEN@mastodon.example.com", "token"),
+                         ("smseagles://AbC123accessTOKEN@sms.example.com/+15551234567", "token")):
+            described = notify.describe_url(url)
+            self.assertNotIn(key, described["fields"], url)
+            self.assertIn(key, described["saved"], url)
         described = notify.describe_url("ntfys://ntfy.sh/topic?foo=bar")
         self.assertEqual((described["service"], described["fields"]["__query"]), ("ntfys", "foo=bar"),
                          "what is no secret still rides along")
+        # a secret Apprise copies into another field, which is left to the private one
+        for url, key in (("ntfys://tk_S3CRETaccessTOKEN@ntfy.example.com/alerts", "user"),
+                         ("matrix://" + ("s3cret" * 11)[:64], "host")):
+            described = notify.describe_url(url)
+            self.assertTrue(described["service"], url)
+            self.assertNotIn(key, described["fields"], url)
+            self.assertNotIn("3CRET", json.dumps(described["fields"]).upper(), url)
+        # a value that is also the secret's but has a place of its own stays, e.g. a user named as the password
+        described = notify.describe_url("ntfys://admin:admin@ntfy.example.com/alerts")
+        self.assertEqual((described["service"], described["fields"]["user"]), ("ntfys", "admin"))
+        # a name Apprise does not read rides along; one it reads into a field keeps the URL as it is
+        self.assertEqual(notify.describe_url("ntfys://ntfy.example.com/alerts?topic=other")["fields"]["__query"], "topic=other")
+        self.assertEqual(notify.describe_url("gotifys://gotify.example.com/Atoken12345?host=x")["fields"]["__query"], "host=x")
+        self.assertEqual(notify.describe_url("ntfys://ntfy.example.com/alerts?port=8443")["service"], "")
+
+    def test_what_apprise_masks_is_private(self):
+        # any token Apprise's own URL masks is kept out of the browser, whether or not it is marked private
+        import inspect
+        from apprise.plugins import N_MGR
+        services, _ = notify.apprise_services()
+        shown = []
+        for service_id, service in services.items():
+            masked = set(re.findall(r"pprint\(\s*self\.(\w+)\s*,\s*privacy", inspect.getsource(N_MGR[service_id].url)))
+            shown += [(service_id, k) for k, t in service["tokens"].items() if not t["private"] and t["map_to"] in masked]
+        self.assertEqual(shown, [], "add them to PRIVATE_TOKENS")
+        self.assertNotIn("user", notify.describe_url("bulkvs://MyBulkUser:S3cretPassw0rd@15551234567/15557654321")["fields"])
+        # and a token Apprise marks private under another name, e.g. Revolt's channel as target_channel
+        described = notify.describe_url("revolt://BOTTOKENabcdefC/targetchan1")
+        self.assertEqual((described["service"], described["fields"].get("targets"), "targets" in described["saved"]),
+                         ("revolt", None, True))
 
     def test_the_dialog_reads_options_as_apprise_does(self):
         service = {"options": {"format": {}, "avatar": {}}}
@@ -417,7 +605,7 @@ class StoredFiles(Case):
         apprise.Apprise.instantiate = lambda *args, **kwargs: self.fail("built before it was refused")
         try:
             for url in ("discord://1/a?template=/etc/master.passwd", "discord://1/a?template=ftp://x/y",
-                        "mailtos://u:p@example.com?pgpkey=ftp://x/y"):
+                        "mailtos://u:p@example.com?pgppub=ftp://x/y"):
                 plugin, error = notify.check_url(url)
                 self.assertIsNone(plugin, url)
                 self.assertIn("names a file in", error, url)
@@ -434,6 +622,11 @@ class StoredFiles(Case):
             self.assertEqual(notify.run_status()["split"], ["both"])
         finally:
             notify.load_config = saved
+
+    def test_a_stored_file_is_no_secret(self):
+        ok, error = notify.deliver({"uuid": CHANNEL, "url": "mailtos://u:pass@example.com?to=a@example.com&pgp=encrypt&pgppub=stored",
+                                    "files": {}}, "t", "b", "info")
+        self.assertEqual((ok, error), (False, "The file for pgppub is not stored with this channel; paste it again."))
 
     def test_old_channels_with_a_path_do_not_send(self):
         ok, error = notify.deliver({"uuid": CHANNEL, "url": "discord://1/a?template=/etc/master.passwd"}, "t", "b", "info")
@@ -464,6 +657,71 @@ class Defaults(Case):
     def test_the_dialog_shows_what_apprise_uses(self):
         url, _ = self.built(schema="mailto")
         self.assertEqual(notify.describe_url(url)["fields"]["mode"], "insecure")
+
+    def test_options_follow_a_template_that_has_a_query(self):
+        # Nextcloud Talk's templates end in ?secret={secret}
+        url, _, error = notify.from_service("nctalks", {"host": "cloud.example.com", "targets": "room1",
+                                                        "secret": "S3cr3t", "silent": "yes"}, "")
+        plugin = notify.check_url(url)[0]
+        self.assertEqual((error, plugin.secret, plugin.silent), ("", "S3cr3t", True), url)
+        self.assertNotIn("S3cr3t", json.dumps(notify.describe_url(url)), "the secret stays write-only")
+
+    def test_a_path_between_fields_keeps_its_slashes(self):
+        # Fluxer's {host}{path}{webhook_id} carries no separators of its own
+        fields = {"host": "fluxer.example.com", "path": "custom/api", "webhook_id": "123456789012345678",
+                  "webhook_token": "abcdefABCDEF1234"}
+        url, _, error = notify.from_service("fluxers", fields, "")
+        self.assertEqual((error, notify.check_url(url)[0].fullpath), ("", "/custom/api/"), url)
+        self.assertTrue(url.startswith("fluxers://fluxer.example.com/custom/api/123456789012345678/"), url)
+
+    def test_a_field_also_in_the_query_keeps_the_url_custom(self):
+        # the query would win over the field, so the fields could not change it
+        for url in ["fluxers://fluxer.example.com/123456789012345678/abcdefABCDEF1234?path=/x",
+                    "mmosts://mm.example.com/abcdefghijklmnopqrstuvwxyz?botname=alerts",
+                    "gotifys://gotify.example.com/Atoken12345?port=8443"]:
+            self.assertEqual(notify.describe_url(url).get("service"), "", url)
+
+    def test_a_template_query_is_read_as_fields(self):
+        url, _, error = notify.from_service("nctalks", {"host": "cloud.example.com", "targets": "room1",
+                                                        "secret": "S3cr3t"}, "")
+        described = notify.describe_url(url)
+        self.assertEqual((error, described.get("service")), ("", "nctalks"), url)
+        self.assertIn("secret", described["saved"])
+
+    def test_a_port_is_optional_where_apprise_lists_it_only_with_one(self):
+        # Fluxer's templates carry a bot name only beside a port; Apprise reads it without one
+        fields = {"host": "fluxer.example.com", "botname": "Firewall", "webhook_id": "123456789012345678",
+                  "webhook_token": "abcdefABCDEF1234"}
+        url, _, error = notify.from_service("fluxers", fields, "")
+        self.assertEqual((error, notify.check_url(url)[0].user), ("", "Firewall"), url)
+
+    def test_a_root_path_is_given_as_apprise_takes_it(self):
+        # Fluxer's empty path is /api/; the host root is path=/, as the 1.0.1 migration saves it
+        fields = {"host": "fluxer.example.com", "webhook_id": "123456789012345678", "webhook_token": "abcdefABCDEF1234"}
+        url, _, error = notify.from_service("fluxers", dict(fields, path="/"), "")
+        self.assertEqual((error, notify.check_url(url)[0].fullpath), ("", "/"), url)
+        saved = "fluxers://fluxer.example.com/123456789012345678/abcdefABCDEF1234?path=/"
+        described = notify.describe_url(saved)
+        self.assertEqual((described["service"], described["fields"]["path"]), ("fluxers", "/"))
+        self.assertNotIn("__query", described["fields"])
+
+    def test_a_service_with_several_formats_matches_the_message_unless_one_is_chosen(self):
+        import apprise
+        services, schemas = notify.apprise_services()
+        self.assertNotIn("default", services["mailtos"]["options"]["format"])
+        self.assertNotIn("format", services["mailtos"]["args"])
+        # Apprise 2 sends anything else in a format it takes, so only those are offered
+        self.assertEqual(services["mailtos"]["options"]["format"]["values"], ["html", "text"])
+        self.assertEqual(services[schemas["tgram"]]["options"]["format"]["values"], ["html", "markdown"])
+        url, plugin = self.built(format="")
+        self.assertNotIn("format=", url)
+        self.assertEqual(plugin.resolve_format(apprise.NotifyFormat.TEXT), apprise.NotifyFormat.TEXT)
+        self.assertNotIn("format", notify.describe_url(url)["fields"])
+        url, plugin = self.built(format="html")
+        self.assertIn("format=html", url)
+        self.assertEqual(plugin.resolve_format(apprise.NotifyFormat.TEXT), apprise.NotifyFormat.HTML)
+        # one format only: the default is what it sends anyway
+        self.assertEqual(services[schemas["gotify"]]["options"]["format"].get("default"), "text")
 
 
 class Escaping(unittest.TestCase):
@@ -1172,6 +1430,366 @@ class Model(unittest.TestCase):
         self.assertEqual(options[0], options[1], "an event added to one list belongs in the other")
 
 
+class Optional(unittest.TestCase):
+    def test_a_failed_send_is_not_taken_as_sent(self):
+        # Apprise counts an optional service's failure as sent, which would skip the queue
+        ok, error = notify.deliver({"uuid": CHANNEL, "url": "json://127.0.0.1:9/?optional=yes"}, "t", "b", "info")
+        self.assertFalse(ok, error)
+        self.assertNotIn("optional", notify.apprise_services()[0]["jsons"]["options"])
+
+
+class SlowService(unittest.TestCase):
+    def test_a_slow_send_is_waited_for(self):
+        # as Apprise 1.13: given up on, it could still arrive, and the queue would send it again
+        import apprise
+
+        class Slow(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                time_module.sleep(2)
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Slow)
+        threading.Thread(target=server.handle_request, daemon=True).start()
+        limit = apprise.AppriseAsset._service_timeout
+        apprise.AppriseAsset._service_timeout = 1.0  # Apprise's 60 s, shortened
+        try:
+            ok, error = notify.deliver({"uuid": CHANNEL, "url": f"json://127.0.0.1:{server.server_port}/"},
+                                       "t", "b", "info")
+        finally:
+            apprise.AppriseAsset._service_timeout = limit
+            server.server_close()
+        self.assertTrue(ok, error)
+
+
+class SendErrors(unittest.TestCase):
+    URL = "lark://S3CRET-12345678-token"
+
+    def failing(self, outcome):
+        import requests
+        from apprise.plugins import lark
+        saved = lark.requests.post
+
+        def post(*args, **kwargs):
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        lark.requests.post = post
+        self.addCleanup(setattr, lark.requests, "post", saved)
+        self.requests = requests
+
+    def test_what_apprise_says_carries_no_secret(self):
+        self.failing(__import__("requests").ConnectionError(
+            "HTTPSConnectionPool(host='open.larksuite.com', port=443): Max retries exceeded with url: "
+            "/open-apis/bot/v2/hook/S3CRET-12345678-token (Caused by NewConnectionError('refused'))"))
+        ok, error = notify.deliver({"uuid": CHANNEL, "url": self.URL}, "t", "b", "info")
+        self.assertFalse(ok)
+        self.assertIn("/open-apis/bot/v2/hook/****", error)
+        self.assertNotIn("S3CRET", error)
+
+    def test_a_secret_is_masked_wherever_it_ends(self):
+        self.assertEqual(notify.masked("404 for url: https://h/hook/S3CRETtoken123.", {"S3CRETtoken123"}),
+                         "404 for url: https://h/hook/****.")
+        # named on its own, e.g. PagerTree's integration ID in its connection error
+        ok, error = self.deliver_failing("pagertree://int_S3CRET123")
+        self.assertEqual((ok, error), (False, "A Connection error occurred sending PagerTree notification to ****."))
+        started = time_module.monotonic()
+        notify.masked("x" * 200000, {"S3CRET"})
+        self.assertLess(time_module.monotonic() - started, 1, "a long reply is read once")
+
+    def deliver_failing(self, url):
+        import requests
+        from apprise.plugins import pagertree
+        saved = pagertree.requests.post
+
+        def refused(*args, **kwargs):
+            raise requests.ConnectionError("refused")
+        pagertree.requests.post = refused
+        try:
+            return notify.deliver({"uuid": CHANNEL, "url": url}, "t", "b", "info")
+        finally:
+            pagertree.requests.post = saved
+
+    def test_an_unreadable_saved_url_is_not_quoted(self):
+        self.assertEqual(notify.one_plugin("tgram://hunter2/-100123")[1], "Unparseable Telegram URL tgram://...")
+
+    def test_a_send_that_went_stays_sent(self):
+        saved = notify.deliver_once, notify.url_secrets
+        notify.deliver_once = lambda *args: (True, "The mail server refused x@example.com (550 no).")
+        notify.url_secrets = lambda url: 1 / 0
+        try:
+            self.assertEqual(notify.deliver({"uuid": CHANNEL, "url": self.URL}, "t", "b", "info"), (True, ""))
+        finally:
+            notify.deliver_once, notify.url_secrets = saved
+
+    def test_a_reply_after_the_reason_is_left_out(self):
+        reply = self.requests_response(502, "<html>\n<body>Bad gateway</body>\n</html>")
+        self.failing(reply)
+        self.assertEqual(notify.deliver({"uuid": CHANNEL, "url": self.URL}, "t", "b", "info"),
+                         (False, "Lark notification failed: 502 - <html>"))
+
+    @staticmethod
+    def requests_response(status, text):
+        import requests
+        response = requests.Response()
+        response.status_code, response._content = status, text.encode()
+        return response
+
+
+class PartlyRefusedEmail(unittest.TestCase):
+    def relay(self, refuse):
+        """A mail server refusing recipients whose address starts with refuse; returns its port and
+        the recipients of each message it took."""
+        server = socket.socket()
+        server.bind(("127.0.0.1", 0))
+        server.listen(5)
+        taken: list = []
+
+        def serve():
+            while True:
+                try:
+                    conn, _ = server.accept()
+                except OSError:
+                    return
+                with conn, conn.makefile("rwb") as stream:
+                    def say(text):
+                        stream.write(text.encode() + b"\r\n")
+                        stream.flush()
+                    say("220 relay")
+                    recipients = []
+                    for line in stream:
+                        command = line.decode().strip().upper()
+                        if command.startswith("RCPT TO"):
+                            refused = command.startswith(f"RCPT TO:<{refuse.upper()}")
+                            say("550 no such user" if refused else "250 ok")
+                            recipients += [] if refused else [command]
+                        elif command == "DATA":
+                            say("354 go")
+                            for data in stream:
+                                if data in (b".\r\n", b".\n"):
+                                    break
+                            taken.append(recipients)
+                            say("250 queued")
+                        elif command == "QUIT":
+                            say("221 bye")
+                            break
+                        else:
+                            say("250 ok")
+        threading.Thread(target=serve, daemon=True).start()
+        self.addCleanup(server.close)
+        return server.getsockname()[1], taken
+
+    def send(self, port, recipients):
+        url = f"mailto://example.com:{port}?smtp=127.0.0.1&mode=insecure&from=fw@example.com&{recipients}"
+        return notify.deliver({"uuid": CHANNEL, "url": url}, "t", "b", "info")
+
+    def test_an_email_some_recipients_got_is_sent(self):
+        # as Apprise 1.13: resending would reach those who have it again
+        port, taken = self.relay("gone@")
+        ok, warning = self.send(port, "to=admin@example.com&bcc=gone@example.com")
+        self.assertTrue(ok, warning)
+        self.assertEqual(len(taken), 1)
+        self.assertIn("gone@example.com (550 no such user)", warning, "with the server's reply")
+        self.assertEqual(self.send(port, "to=gone@example.com")[0], False, "nobody got it")
+
+    def test_a_failed_message_is_why_beside_one_partly_refused(self):
+        port, taken = self.relay("gone")
+        ok, error = self.send(port, "to=gone1@example.com,admin@example.com&cc=gone2@example.com")
+        self.assertFalse(ok)
+        self.assertEqual(len(taken), 1, "the message to admin went")
+        self.assertIn("gone1@example.com", error)
+        self.assertNotIn("gone2", error)
+
+
+class Vpn(unittest.TestCase):
+    def test_a_vpn_with_nothing_configured_is_not_asked(self):
+        asked = []
+        saved = notify.configctl_json
+        notify.configctl_json = lambda *args: asked.append(args[0]) or {}
+        try:
+            for vpn, wanted in [({"wireguard": False, "openvpn": False}, []),
+                                ({"wireguard": True, "openvpn": False}, ["wireguard"]),
+                                ({"wireguard": False, "openvpn": True}, ["openvpn"]),
+                                (None, ["wireguard", "openvpn"])]:
+                asked.clear()
+                config = {} if vpn is None else {"vpn": vpn}
+                self.assertEqual(notify.check_vpn(config, {}), ({}, []), vpn)
+                self.assertEqual(asked, wanted, vpn)
+        finally:
+            notify.configctl_json = saved
+
+    def test_a_peer_still_goes_offline_when_its_vpn_is_removed(self):
+        current, messages = notify.check_vpn({"vpn": {"wireguard": False, "openvpn": False}},
+                                             {"WireGuard wg0 abcdefghijkl": "online"})
+        self.assertEqual((current, [m["title"] for m in messages]), ({}, ["WireGuard wg0 abcdefghijkl is offline"]))
+
+
+class TextEmail(Case):
+    # email kept to text gets the summary as short text with a link, which the dialog warns of
+    def test_only_email_kept_to_text(self):
+        self.text = lambda url: notify.text_email(notify.check_url(url)[0])
+        base = "mailtos://u:p@example.com?to=a@example.com"
+        self.assertTrue(self.text(f"{base}&format=text"))
+        self.assertTrue(self.text(f"{base}&format=html&format=text"), "the last one counts, as in Apprise")
+        self.assertFalse(self.text(base))
+        self.assertFalse(self.text("discord://"), "a URL Apprise refuses")
+        self.assertFalse(self.text(f"{base}&format=markdown"), "email cannot take markdown: HTML")
+        self.assertFalse(self.text("deltachat://u:p@example.com?format=html"),
+                         "an email subclass that takes text only: the short text whatever the format")
+        self.assertFalse(self.text("mailgun://user@example.com/key/a@example.com?format=text"),
+                         "not email to Apprise: it gets the short text anyway")
+
+    def test_said_by_the_dialog(self):
+        self.assertEqual(sorted(s["id"] for s in notify.run_services() if s["email"]), ["mailtos"])
+        self.channel["url"] = "mailtos://u:p@example.com?to=a@example.com&format=text"
+        self.assertTrue(notify.run_describe(CHANNEL).get("textEmail"))
+        self.channel["url"] = "mailtos://u:p@example.com?to=a@example.com"
+        self.assertNotIn("textEmail", notify.run_describe(CHANNEL))
+        self.assertTrue(handed_over(notify.run_parse, {"url": "mailtos://u:p@example.com?to=a@example.com&format=text"})
+                        .get("textEmail"))
+
+
+class RefusedReason(Case):
+    # why Apprise refused a URL, with the value it quotes only where all of the URL was just typed
+    BAD = "stackfield://a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d?token=secret123"
+
+    def request(self, **request):
+        return handed_over(notify.run_parse if "parse" in request else notify.run_build, {"uuid": CHANNEL, **request})
+
+    def test_typed(self):
+        note = "Apprise 2 reads pgp= as no, sign or encrypt; Apprise 1.13 read yes as encrypt."
+        for request in ({"parse": 1}, {}):  # imported, or typed in the box
+            self.assertEqual(self.request(**request, url="mailtos://u:p@example.com?to=a@example.com&pgp=yes")["error"],
+                             "The Email PGP mode specified (yes) is invalid. " + note)
+        self.assertIn("(secret123)", self.request(url=self.BAD)["error"], "a custom URL typed in the box")
+
+    def test_saved(self):
+        self.channel["url"] = self.BAD
+        error = self.request(url="")["error"]
+        self.assertEqual(error, "An invalid Stackfield webhook token was specified.", "the saved URL, left as it was")
+        ok, error = notify.deliver(self.channel, "t", "b", "info")
+        self.assertEqual((ok, error), (False, "An invalid Stackfield webhook token was specified."))
+
+    def test_an_apprise_api_url_without_a_version_is_pointed_out(self):
+        self.assertIn("version 1", self.request(parse=1, url="apprises://h/abc123").get("error", ""))
+        for url in ["apprises://h/abc123?version=2", "apprises://h/abc123?v=1", "json://h/abc123",
+                    "https://h/notify/abc123"]:
+            self.assertNotIn("version 1", self.request(parse=1, url=url).get("error", ""), url)
+
+    def test_a_fluxer_server_without_a_path_is_pointed_out(self):
+        # Apprise 1.13 read no path, in the URL or as path=
+        for url in ["fluxer://fluxer.example.com/123456/token", "fluxer://fluxer.example.com:8080/v1/123456/token"]:
+            self.assertIn("path=/", self.request(parse=1, url=url).get("error", ""), url)
+        for url in ["fluxer://fluxer.example.com/123456/token?path=/", "fluxer://fluxer.example.com/123456/token?path=/v1",
+                    "fluxer://123456/token"]:
+            self.assertNotIn("path=/", self.request(parse=1, url=url).get("error", ""), url)
+
+    def test_saved_value_is_not_shown_in_part(self):
+        for token in ["ab(cd)ef", "abc%0ASECRETTAIL", "abc%E2%80%A8SECRETTAIL", "abc%00SECRETTAIL"]:
+            self.channel["url"] = self.BAD.replace("secret123", token)
+            self.assertEqual(self.request(url="")["error"], "An invalid Stackfield webhook token was specified.", token)
+
+    def test_pgpkey_is_no_longer_read(self):
+        found = self.request(parse=1, url="mailtos://u:p@example.com?to=a@example.com&pgpkey=https://h/k.asc")
+        self.assertIn("pgppub=", found.get("error", ""))
+        self.assertNotIn("pgppub=", self.request(parse=1, url="json://h/x?pgpkey=x").get("error", ""), "email only")
+        # both said at once, though Apprise refuses the URL for its pgp=
+        found = self.request(parse=1, url="mailtos://u:p@example.com/a@example.com?pgpkey=https://h/k.asc&pgp=yes")
+        self.assertIn("(yes) is invalid", found["error"])
+        self.assertIn("pgppub=", found["error"])
+        # Apprise 1.13 also ignored an empty pgpkey= and took pgppub= over it, so nothing changes
+        for query in ["&pgpkey=", "&pgppub=https://h/p.asc&pgpkey=https://h/k.asc"]:
+            found = self.request(parse=1, url="mailtos://u:p@example.com?to=a@example.com" + query)
+            self.assertNotIn("pgppub=", found.get("error", ""), query)
+
+    def test_a_simplepush_key_needs_the_new_service(self):
+        # Apprise 2 talks to Simplepush's new API, where a key for the previous one is no API Token
+        found = self.request(parse=1, url="spush://KEYABC?event=firewall")
+        self.assertIn("API Token", found.get("error", ""))
+
+
+class Migration(unittest.TestCase):
+    """The migration (M1_0_1, in PHP) reads a saved query as Apprise does: each part as parse_qsd
+    reads it, and a pgp= value as Apprise 1.13 did (apprise1_pgp); its rewrites are checked against
+    both Apprises in migration_test.php."""
+    READER = """<?php
+require getenv('BOOTSTRAP');
+$read = function ($name, ...$args) {
+    return (new ReflectionMethod('OPNsense\\Notify\\Migrations\\M1_0_1', $name))->invoke(null, ...$args);
+};
+$out = [];
+foreach (json_decode(file_get_contents('php://stdin'), true) as $text) {
+    [$key, $value] = $read('pair', $text);
+    $out[] = [$key, $value, $read('readByApprise2', $value) ? null : $read('pgpMode', $value)];
+}
+echo json_encode($out);
+"""
+
+    def test_the_migration_reads_a_query_as_apprise_does(self):
+        if not os.environ.get("OPNSENSE_CORE") or not shutil.which("php"):
+            self.skipTest("needs php and an OPNSENSE_CORE checkout")
+        names = ("pgp", "pgpkey", "pgppub", "version", "v", "path")
+        # every character Python's strip() takes, and some it does not
+        spaces = [chr(c) for c in range(0x110000) if chr(c).isspace()] + ["\u180e", "\u200b", "\ufeff", "\u2060"]
+        words = ["pgp", "PGP", "pgpkey", "pgp\u212aey", "PgPpUb", "version", "V", "path", "p+gp", "+pgp"]
+        values = ["", "yes", "Yes", "en", "e", "none", "NONE", "no", "off", "1", "0", "t", "x.asc", "sign", "s"]
+        texts = []
+        for space in spaces:
+            texts += [f"{urllib.parse.quote(space + w + space)}={urllib.parse.quote(space + v + space)}"
+                      for w, v in (("pgp", "yes"), ("pgpkey", "x"), ("version", "2"))]
+        texts += [f"{w}={v}" for w in words for v in values]
+        texts += ["pgp", "pgp=", "=yes", "", "pgp=%FFyes", "pgp%FF=yes", "pgp=%C2%A0yes%FF", "pgp=%E2%80yes",
+                  "pgp=a=b", "%70gp=%20on%20", "pgp=%E1%A0%8Eyes", "pgp=%ED%A0%80yes", "pgp=%F0%9F%98yes"]
+        # bytes that are no UTF-8, or only partly, decoded as Python decodes them
+        chance = random.Random(0)
+        for _ in range(500):
+            junk = bytes(chance.choice([0x20, 0x79, 0x80, 0x9F, 0xA0, 0xBF, 0xC2, 0xE0, 0xED, 0xF0, 0xF4, 0xFF])
+                         for _ in range(chance.randint(1, 6)))
+            texts.append("pgp=" + urllib.parse.quote(junk + b"yes" + junk, safe=""))
+        reader = os.path.join(tempfile.mkdtemp(), "reader.php")
+        self.addCleanup(shutil.rmtree, os.path.dirname(reader))
+        with open(reader, "w") as handle:
+            handle.write(self.READER)
+        bootstrap = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "tools", "tests", "bootstrap.php")
+        # the bootstrap adds its count of checks after the answer
+        found = json.JSONDecoder().raw_decode(subprocess.run(
+            ["php", reader], input=json.dumps(texts), capture_output=True, text=True,
+            env=dict(os.environ, BOOTSTRAP=bootstrap), check=True).stdout)[0]
+        for text, (key, value, mode) in zip(texts, found):
+            _, expected_key, expected_value = (notify.query_pairs(text) or [("", "", "")])[-1]
+            expected = (expected_key if expected_key in names else None, expected_value)
+            self.assertEqual((key if key in names else None, value), expected, text)
+            self.assertEqual(mode, notify.apprise1_pgp(expected_value), text)
+
+
+class Overflow(unittest.TestCase):
+    """What a service receives, through Apprise's own preparation; only the plugins' send is stubbed."""
+    def sent(self, cls, url, body, report=None):
+        from unittest import mock
+        bodies: list = []
+        with mock.patch.object(cls, "send", lambda this, body, title="", **kw: bodies.append(body) or True):
+            ok, error = notify.deliver({"uuid": CHANNEL, "url": url}, "t", body, "info", report)
+        self.assertTrue(ok, error)
+        return bodies
+
+    def test_a_message_that_fits_is_sent_whole(self):
+        # Apprise sizes Matrix anew for each send, and cutting to that size loses the end of Markdown
+        from apprise.plugins.matrix.base import NotifyMatrix
+        body = "Stopped since 12:04 or earlier."
+        self.assertIn(body, self.sent(NotifyMatrix, "matrixs://user:pass@matrix.example.com/#ops?format=markdown", body)[0])
+
+    def test_one_over_the_limit_is_cut_or_split(self):
+        from apprise.plugins.telegram import NotifyTelegram
+        url = "tgram://123456789:abcdefg_hijklmnop/1"
+        self.assertEqual(len(self.sent(NotifyTelegram, url, "x" * 5000)), 1, "an alert cut")
+        self.assertLessEqual(len(self.sent(NotifyTelegram, url, "x" * 5000)[0]), NotifyTelegram.body_maxlen)
+        self.assertGreater(len(self.sent(NotifyTelegram, url, "x" * 5000, {"title": "s"})), 1, "a summary split")
+
+
 class SummaryEmail(unittest.TestCase):
     REPORT = {"title": "Daily summary", "span": "a to b", "sections": [
         {"title": "Latest 1 of 1", "head": ["Time", "Event"], "rows": [["12:00", "Failed login for <b>x</b>"]],
@@ -1242,22 +1860,51 @@ class SummaryEmail(unittest.TestCase):
         try:
             item = dict(notify.message("summary", "info", "Daily summary", "fw · a to b"), uuid=CHANNEL,
                         report=self.REPORT)
-            self.assertNotIn("Full report", notify.archived({"general": {}}, item, "daily", 0)["body"],
-                             "no address known")
+            self.assertNotIn("link", notify.archived({"general": {}}, item, "daily", 0)["report"], "no address known")
             config = {"general": {}, "guiUrl": "https://fw.example.lan"}
             item = notify.archived(config, item, "daily", 0)
-            self.assertEqual(item["body"].splitlines(), [
-                "fw · a to b", f"Full report: <https://fw.example.lan/ui/notify/report/view/{item['archive']}>"],
-                "bracketed, so a ping appended after it stays out of the link")
+            self.assertEqual(item["body"], "fw · a to b", "added on delivery, after anything sent with it")
+            self.assertEqual(item["report"]["link"], f"https://fw.example.lan/ui/notify/report/view/{item['archive']}")
             config["general"]["reportAddress"] = "https://vpn.example.net:8443/"
-            self.assertIn("Full report: <https://vpn.example.net:8443/ui/notify/report/view/",
-                          notify.archived(config, dict(item, body="short"), "daily", 60)["body"])
+            self.assertTrue(notify.archived(config, item, "daily", 60)["report"]["link"]
+                            .startswith("https://vpn.example.net:8443/ui/notify/report/view/"))
             notify.deliver({"uuid": CHANNEL, "url": "tgram://123456789:abcdefg_hijklmnop/1"}, "t", item["body"], "info",
-                           self.REPORT)
+                           item["report"])
         finally:
             summary.REPORTS_DIR = saved
             shutil.rmtree(folder)
         self.assertIsNone(self.calls[0].get("attach"), "a link, not a file")
+
+    def test_the_link_is_a_link_in_the_format_sent(self):
+        import apprise
+        from apprise.conversion import convert_between
+        text, markdown, html = apprise.NotifyFormat.TEXT, apprise.NotifyFormat.MARKDOWN, apprise.NotifyFormat.HTML
+        link = "https://fw_main.example.lan/ui/notify/report/view/x_(1).html"
+        body = "fw · *admin* logged in <b>"
+        report = dict(self.REPORT, link=link)
+
+        def sent(url, body=body):
+            notify.deliver({"uuid": CHANNEL, "url": url}, "t", body, "info", report)
+            return self.calls[-1]["body_format"], self.calls[-1]["body"]
+        # bracketed: Apprise's Discord can append a ping right after the body
+        self.assertEqual(sent("discord://1/abc"), (text, f"{body}\nFull report: <{link}>"))
+        # escaped as Apprise would, where Apprise would escape the link too
+        quoted = link.replace("(", "%28").replace(")", "%29")
+        self.assertEqual(sent("gchat://workspace/key/token"),
+                         (markdown, convert_between(text, markdown, body + "\n") + f"[Full report]({quoted})"))
+        self.assertEqual(sent("tgram://123456789:abcdefg_hijklmnop/1"),
+                         (html, convert_between(text, html, body + "\n") + f'Full report: <a href="{link}">{link}</a>'))
+        # a service that sends HTML as text, e.g. Matrix to Slack, keeps the address
+        from apprise.conversion import html_to_text
+        self.assertIn(link, html_to_text(self.calls[-1]["body"]))
+        # a note added on delivery, e.g. that it is late, comes before the link
+        self.assertTrue(sent("gchat://workspace/key/token", body + "\n\n(Delayed.)")[1].endswith(f"\\(Delayed\\.\\)\n[Full report]({quoted})"))
+        # emojis are read before the text is escaped, as Apprise reads them
+        self.assertIn("\u2705 \U0001f44d", sent("gchat://workspace/key/token?emojis=yes", "fw :white_check_mark: :+1:")[1])
+        # Telegram's legacy Markdown takes the link whole, underscores and all
+        from apprise.plugins.telegram import NotifyTelegram
+        self.assertIn(f"[Full report]({quoted})", NotifyTelegram._commonmark_to_telegram(
+            sent("tgram://123456789:abcdefg_hijklmnop/1?format=markdown")[1], strict=False))
 
 
 class Delivery(unittest.TestCase):
@@ -1670,10 +2317,11 @@ class SummaryFacts(unittest.TestCase):
 
 
 class Services(unittest.TestCase):
-    PATCHED = ("service_states", "carp_states", "booting_or_updating", "is_carp_backup", "time")
+    PATCHED = ("service_states", "carp_states", "booting_or_updating", "is_carp_backup", "time", "SERVICE_READ")
 
     def setUp(self):
         self.saved = {name: getattr(notify, name) for name in self.PATCHED}
+        notify.SERVICE_READ = 0  # a read each check; how often they come is tested on its own
         self.folder = tempfile.mkdtemp()
         self.now, self.uptime, self.carp, self.busy, self.backup = 1_790_000_000, 100_000.0, [], False, False
         self.services = [["unbound/", "Unbound DNS", True]]
@@ -1705,6 +2353,69 @@ class Services(unittest.TestCase):
 
     def reboot(self):
         self.uptime = 30.0
+
+    def test_read_every_other_check_and_still_reported_in_time(self):
+        notify.SERVICE_READ = self.saved["SERVICE_READ"]
+        reads = []
+        listed = notify.service_states
+        notify.service_states = lambda: reads.append(self.uptime) or listed()
+        state, _ = notify.check_service({}, None)
+        state, _ = self.run_checks(state, 6, running=True)
+        self.assertEqual(len(reads), 4, "every other check a minute apart")
+        reads.clear()
+        for step in (60.2, 59.7) * 3:  # cron starts a check a little early or late
+            self.now += step
+            self.uptime += step
+            state, _ = notify.check_service({}, state)
+        self.assertEqual(len(reads), 3, "still every other check")
+        # while a stop is open, every check reads, so its end is seen within a minute
+        self.services[0][2] = False
+        while not reads or not state["services"].get("unbound/", {}).get("down"):
+            state, _ = self.run_checks(state, 1)
+        reads.clear()
+        state, _ = self.run_checks(state, 3)
+        self.assertEqual(len(reads), 3, "every check while stopped")
+        found = []
+        while not found:
+            state, found = self.run_checks(state, 1)
+        self.assertTrue(found[0]["body"].endswith(" or earlier."), "first seen up to 2 minutes after it stopped")
+        state, found = self.run_checks(state, 1, running=True)
+        self.assertEqual(self.titles(found), ["Unbound DNS is running again"], "a minute after it is back")
+        for late in range(2):  # stopped just before a read, and just after one
+            self.services[0][2] = True
+            state, _ = self.run_checks(state, 2 + late, running=True)
+            stopped, found = self.uptime, []
+            while not found:
+                state, found = self.run_checks(state, 1)
+            self.assertIn(self.uptime - stopped, range(240, 361), f"reported {self.uptime - stopped:.0f}s after")
+            state, _ = self.run_checks(state, 3, running=True)
+
+    def test_a_check_between_minutes_keeps_the_reads_in_step(self):
+        # e.g. a gateway alarm: its read must not push the next ones later
+        notify.SERVICE_READ = self.saved["SERVICE_READ"]
+        reads = []
+        listed = notify.service_states
+        notify.service_states = lambda: reads.append(self.uptime) or listed()
+        self.now -= self.now % 60
+        state, _ = notify.check_service({}, None)
+        state, _ = self.run_checks(state, 4, running=True)
+        for offset in range(5, 60, 5):
+            begin = dict(now=self.now, uptime=self.uptime)
+            self.now += offset
+            self.uptime += offset
+            between, _ = notify.check_service({}, state)
+            self.services[0][2] = False  # stopped just after it
+            stopped, found, checked = self.uptime, [], between
+            self.now, self.uptime = begin["now"], begin["uptime"]
+            while not found:
+                checked, found = self.run_checks(checked, 1)
+            self.assertIn(self.uptime - stopped, range(240, 361), f"{offset}s in: reported {self.uptime - stopped:.0f}s after")
+            seen = checked["services"]["unbound/"]["down"]
+            gap = seen - max(r for r in reads if r < seen)
+            checked, found = self.run_checks(checked, 1, running=True)
+            # first seen over a minute and a half after the read before: timed from then, so at least
+            self.assertEqual(found[0]["body"].startswith("Stopped for at least "), gap > 90, (gap, found[0]["body"]))
+            self.services[0][2] = True
 
     def test_stopped_past_the_hold_and_back(self):
         state, messages = notify.check_service({}, None)
@@ -1870,6 +2581,30 @@ class Services(unittest.TestCase):
         self.assertEqual([(m["title"], m["body"][:15]) for m in messages],
                          [("Unbound DNS is running again", "Stopped for 7m."), ("Unbound DNS has stopped", "Stopped since 2")],
                          "the first stop ends as it did, then the second, long past its hold, is its own")
+
+    def test_an_end_kept_while_silent_reads_as_before(self):
+        # a stop first seen late ends "at least"; the end is kept as release 1.5 kept it, so it can still read it
+        state, _ = notify.check_service({}, None)
+        self.now += 300
+        self.uptime += 300  # no check for five minutes
+        state, _ = self.run_checks(state, 7)
+        self.backup = True
+        state, _ = self.run_checks(state, 2, running=True)
+        self.assertEqual([len(end) for end in state["ended"].values()], [2])
+        self.assertEqual(state["late"], ["unbound/"])
+        self.backup = False
+        state, messages = self.run_checks(state, 1, running=True)
+        self.assertEqual([m["body"] for m in messages], ["Stopped for at least 7m."])
+        self.assertEqual((state["ended"], state["late"]), ({}, []))
+
+    def test_an_end_held_is_sent_at_the_next_check(self):
+        notify.SERVICE_READ = self.saved["SERVICE_READ"]
+        state = {"role": "", "hold": 0.0, "uptime": self.uptime, "services": {"unbound/": {"running": True}},
+                 "ended": {"unbound/": ["Unbound DNS", 420]}}
+        self.now += 60 - self.now % 60 + 60 * (round(self.now / 60) % 2 == 0)  # an odd minute
+        self.uptime += 30
+        _, messages = notify.check_service({}, state)
+        self.assertEqual(self.titles(messages), ["Unbound DNS is running again"])
 
     def test_an_end_kept_across_a_reboot(self):
         state, _ = notify.check_service({}, None)
@@ -2058,6 +2793,20 @@ class Hardening(unittest.TestCase):
         finally:
             notify.firmware_product, notify.send = saved
         self.assertEqual(notify.load_state()["service"], {"services": {}}, "stops are timed afresh")
+
+    def test_a_boot_after_services_were_never_read(self):
+        # the first check found no services, so it kept nothing
+        notify.save_state({"stamp": int(notify.time.time()), "service": None})
+        saved = notify.firmware_product, notify.send
+        sent = []
+        notify.firmware_product, notify.send = lambda: {}, lambda *a: sent.append(a) or []
+        notify.is_carp_backup = lambda config, unknown=True: False
+        notify.load_config = lambda: {"general": {"enabled": "1"}, "channels": [], "hostname": "fw"}
+        try:
+            notify.run_boot()
+        finally:
+            notify.firmware_product, notify.send = saved
+        self.assertEqual(len(sent), 1, "the startup notice still goes")
 
     def test_stale_state_files_go(self):
         stale = notify.STATE + ".123.tmp"
