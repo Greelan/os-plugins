@@ -1168,6 +1168,8 @@ class Summaries(unittest.TestCase):
         rows = {part["title"]: part["rows"] for part in item["report"]["sections"]}
         self.assertEqual(rows["Events in the period"], [["Gateway status", "1"]])
         self.assertIn("Latest 1 of 1", rows)
+        self.assertTrue(next(p for p in item["report"]["sections"] if p["title"] == "Latest 1 of 1")["keep"],
+                        "its times kept on one line")
         self.assertEqual(rows["Firewall blocks"], [["WAN", "1,500", "0", "90.0 kB"]])
         self.assertEqual(rows["Block rules matched most"], [["Default deny / state violation rule", "1,500"]])
         self.assertEqual(rows["Traffic"], [["WAN", "2.5 MB", "300.0 kB"]])
@@ -1776,6 +1778,16 @@ class Overflow(unittest.TestCase):
         self.assertTrue(ok, error)
         return bodies
 
+    def test_the_sender_is_named_notify(self):
+        # e.g. the author of a Discord embed, which Discord uses for Markdown
+        from unittest import mock
+        from apprise.plugins.discord import NotifyDiscord
+        seen = []
+        with mock.patch.object(NotifyDiscord, "_send", lambda this, payload, **kw: seen.append(payload) or True):
+            ok, error = notify.deliver({"uuid": CHANNEL, "url": "discord://1/abc?format=markdown"}, "t", "b", "info")
+        self.assertTrue(ok, error)
+        self.assertEqual(seen[0]["embeds"][0]["author"]["name"], "Notify")
+
     def test_a_message_that_fits_is_sent_whole(self):
         # Apprise sizes Matrix anew for each send, and cutting to that size loses the end of Markdown
         from apprise.plugins.matrix.base import NotifyMatrix
@@ -1852,6 +1864,19 @@ class SummaryEmail(unittest.TestCase):
         self.assertEqual(body.count("white-space:nowrap"), 1, "a line on its own may wrap")
         self.assertEqual(body.count("overflow-wrap:anywhere"), 3)
 
+    def test_a_listing_keeps_its_times_whole(self):
+        # a long event, e.g. several IPv6 addresses, wraps itself rather than the time beside it
+        event = "WAN address is now 10.10.10.144, 2403:5810:78cd:10:1266:6aff:fea1:2987, fdfd:2553:8868:10:1266:6aff:fea1:2987"
+        report = {"title": "Daily summary", "span": "a to b", "sections": [
+            {"title": "Latest 1 of 1", "head": ["Time", "Event"], "keep": True, "graphs": [],
+             "rows": [["2026-10-12 20:32", event]]},
+            {"title": "Intrusion detection", "head": ["Signature", "Count"], "graphs": [],
+             "rows": [["ET POLICY a long signature name", "3"]]}]}
+        body = summary.summary_html(report, {})
+        time_cell = re.search(r"<td[^>]*>2026-10-12 20:32</td>", body).group()
+        self.assertIn("white-space:nowrap", time_cell)
+        self.assertEqual(body.count("white-space:nowrap"), 1, "nor the event, nor another listing's first column")
+
     def test_the_short_text_links_to_the_report(self):
         folder = tempfile.mkdtemp()
         saved = summary.REPORTS_DIR
@@ -1908,6 +1933,21 @@ class SummaryEmail(unittest.TestCase):
 
 
 class Delivery(unittest.TestCase):
+    def test_a_retry_is_taken_by_the_check_it_falls_on(self):
+        # checks do not start to the second, so one due a moment after this one starts goes now
+        sent = []
+        saved = notify.deliver
+        notify.deliver = lambda channel, title, body, ntype, report=None: sent.append(title) or (True, "")
+        now = int(time_module.time())
+        channel = {"uuid": CHANNEL, "events": ["config"], "description": "c"}
+        try:
+            pending = notify.send([channel], "", [], [
+                dict(notify.message("config", "info", "due", ""), uuid=CHANNEL, time=now - 100, retry=now + 5),
+                dict(notify.message("config", "info", "later", ""), uuid=CHANNEL, time=now - 100, retry=now + 60)])
+        finally:
+            notify.deliver = saved
+        self.assertEqual((sent, [item["title"] for item in pending]), (["due"], ["later"]))
+
     def test_queued_digest_follows_the_subscription(self):
         found = [notify.message("gateway", "failure", "a", ""), notify.message("ids", "warning", "b", "")]
         item = notify.digest([dict(m, uuid=CHANNEL) for m in found], 2)[0]
@@ -2726,6 +2766,20 @@ class Hardening(unittest.TestCase):
                                       "channels": [{"uuid": CHANNEL, "enabled": "1", "url": "json://a/b",
                                                     "events": ["gateway", "carp"], "summary": "none"}]}
         self.assertEqual(notify.run_status()["events"], ["Gateway status", "carp"], "a label where there is one")
+
+    def test_the_status_lists_what_the_next_check_sends(self):
+        now = int(time_module.time())
+        notify.load_config = lambda: {"general": {"enabled": "1"}, "channels": [
+            {"uuid": CHANNEL, "enabled": "1", "description": "Discord", "events": ["config"], "summary": "none"},
+            {"uuid": "off", "enabled": "0", "description": "Off", "events": ["config"], "summary": "none"}]}
+        notify.save_state({"queue": [
+            {"uuid": CHANNEL, "title": "due", "event": "config", "time": now - 200, "tries": 2, "retry": now + 10},
+            {"uuid": CHANNEL, "title": "later", "event": "config", "time": now - 200, "tries": 3, "retry": now + 300},
+            {"uuid": "off", "title": "disabled", "event": "config", "time": now, "retry": now},
+            {"uuid": "gone", "title": "deleted", "event": "config", "time": now, "retry": now}]})
+        self.assertEqual([(q["title"], q["channel"], q["retry_in"]) for q in notify.run_status()["queued"]],
+                         [("due", "Discord", "at the next check"), ("later", "Discord", "5m")],
+                         "one due a moment after a check is taken by it; a channel gone is dropped")
 
     def test_a_held_lock_is_answered(self):
         import fcntl

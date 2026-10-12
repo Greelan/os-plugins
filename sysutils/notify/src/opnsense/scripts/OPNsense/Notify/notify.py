@@ -233,8 +233,8 @@ MONIT_MONITOR_INIT = 0x2
 SERVICE_HOLD = 240
 # with all services running, they are read every other one-minute check
 SERVICE_READ = 120
-# checks run on a whole interval but not to the second, so a hold that should end on one does
-SERVICE_SLACK = 30
+# checks run on a whole interval but not to the second, so a hold or retry that should end on one does
+CHECK_SLACK = 30
 # a stop first seen this soon after boot, and not seen running since, is one after boot
 SERVICE_BOOT = 1800
 
@@ -701,7 +701,7 @@ def check_service(config, previous):
     last = (previous or {}).get("uptime")
     stopped = any(not entry.get("running") for entry in (previous or {}).get("services", {}).values()) \
         or bool((previous or {}).get("ended"))
-    if last is not None and not stopped and 0 <= time.monotonic() - last < SERVICE_READ - SERVICE_SLACK \
+    if last is not None and not stopped and 0 <= time.monotonic() - last < SERVICE_READ - CHECK_SLACK \
             and round(time.time() / 60) % 2:
         return previous, []
     services = service_states()
@@ -761,7 +761,7 @@ def check_service(config, previous):
             # not seen running since boot: it may not have started, or stopped before a check
             boot = uptime < SERVICE_BOOT and not (continuous and last.get("running"))
             # more than a minute since the last read, so it may have stopped well before
-            late = not continuous or uptime - previous.get("uptime", uptime) > 60 + SERVICE_SLACK
+            late = not continuous or uptime - previous.get("uptime", uptime) > 60 + CHECK_SLACK
             entry = {"down": uptime, "since": uptime, "at": now, "seen": 0, "boot": boot, "late": late,
                      "label": label}
         entry["seen"] += 1
@@ -771,8 +771,8 @@ def check_service(config, previous):
             continue
         if busy():
             entry["since"] = uptime  # the hold starts over once done; the stop keeps its time
-        elif not silent and entry["seen"] >= 2 and uptime >= hold_until - SERVICE_SLACK \
-                and uptime - entry["since"] >= SERVICE_HOLD - SERVICE_SLACK:
+        elif not silent and entry["seen"] >= 2 and uptime >= hold_until - CHECK_SLACK \
+                and uptime - entry["since"] >= SERVICE_HOLD - CHECK_SLACK:
             entry["reported"] = True
             if entry["boot"]:
                 title = f"{label} is not running after boot"
@@ -1303,8 +1303,10 @@ def deliver_once(channel, title, body, ntype, report=None):
     refused_by_server: list = []
     with apprise_log() as captured, partly_sent(refused_by_server):
         # the one plugin the checks looked at (add() would split the string at commas), waited for
-        # as Apprise 1.13 did: a send given up on can still arrive, and would be sent again
-        plugin, error = one_plugin(url, asset=apprise.AppriseAsset(service_timeout=0))
+        # as Apprise 1.13 did: a send given up on can still arrive, and would be sent again; named
+        # Notify where a service names the sender, e.g. a Discord embed's author, not Apprise
+        asset = apprise.AppriseAsset(service_timeout=0, app_id="Notify", app_desc="OPNsense Notify")
+        plugin, error = one_plugin(url, asset=asset)
         notifier = apprise.Apprise()
         if plugin is None or not notifier.add(plugin):
             return False, error or "The URL is not a valid Apprise URL."
@@ -1508,7 +1510,7 @@ def send(channels, prefix, messages, queue, threshold=0):
                                 f"{duration(now - item['time'])}")
             discard(item)
             continue
-        if now < item.get("retry", 0):
+        if now < item.get("retry", 0) - CHECK_SLACK:
             pending.append(item)  # waiting out the backoff
             continue
         title = f"{prefix}: {item['title']}" if prefix else item["title"]
@@ -1654,15 +1656,18 @@ def run_status():
     names = {c["uuid"]: c.get("description", c["uuid"]) for c in channels}
     state = load_state()
     now = int(time.time())
+    enabled = [c for c in channels if c.get("enabled", "0") == "1"]
+    live = {c["uuid"] for c in enabled}
+    # not those of a channel deleted or disabled since, which the next check drops; one due is taken
+    # by the next check, as send() takes it
     queued = [{
         "title": item.get("title", ""),
-        "channel": names.get(item.get("uuid"), item.get("uuid", "")),
+        "channel": names[item["uuid"]],
         "event": item.get("event", ""),
         "age": duration(now - item.get("time", now)),
         "tries": item.get("tries", 0),
-        "retry_in": duration(item.get("retry", now) - now),
-    } for item in state.get("queue", [])]
-    enabled = [c for c in channels if c.get("enabled", "0") == "1"]
+        "retry_in": duration(item["retry"] - now) if item.get("retry", 0) - CHECK_SLACK > now else "at the next check",
+    } for item in state.get("queue", []) if item.get("uuid") in live]
     try:
         # saved before a channel took one URL, so not sent to
         split = [c.get("description", c["uuid"]) for c in enabled if several_urls(c.get("url", ""))]

@@ -558,9 +558,10 @@ def build_summary(config, channel, period, now, shared=None):
     report: list = []
     brief: list = []  # a line per section, for plain text
 
-    def section(heading, head=None, sub=False):
-        """A report part; a sub part belongs to the one before."""
-        report.append({"title": heading, "head": head, "rows": [], "graphs": [], "sub": sub})
+    def section(heading, head=None, sub=False, keep=False):
+        """A report part; a sub part belongs to the one before; keep: its first column is short, e.g.
+        a time, and stays on one line."""
+        report.append({"title": heading, "head": head, "rows": [], "graphs": [], "sub": sub, "keep": keep})
         return report[-1]
 
     def color(index):
@@ -619,7 +620,7 @@ def build_summary(config, channel, period, now, shared=None):
             listed.append(f"{count:,} {label}")
         brief.append("Events: " + (", ".join(listed) or "none"))
         if recent:
-            part = section(f"Latest {len(recent)} of {sum(counts.values())}", ["Time", "Event"], True)
+            part = section(f"Latest {len(recent)} of {sum(counts.values())}", ["Time", "Event"], True, keep=True)
             for item in recent:
                 row(part, [clock(item["time"]), item["title"]])
         for event in [e for e in FACT_SECTIONS if e in channel.get("summaryEvents", [])]:
@@ -937,9 +938,9 @@ def summary_html(report, drawn, embed=False):
         width = max([len(r) for r in part["rows"]] + [1])
         numeric = [i > 0 and all(i >= len(r) or re.fullmatch(r"[\d,]+(\.\d+)?( \S+)?", str(r[i])) for r in part["rows"])
                    for i in range(width)]
-        # a label and value table, e.g. Current status: labels kept on one line, but not a
-        # line on its own, which would run off a narrow screen
-        label = ";white-space:nowrap;padding-right:24px" if not part.get("head") else ""
+        # a label and value table, e.g. Current status, or a listing by time: labels and times kept on
+        # one line, but not a line on its own, which would run off a narrow screen
+        label = ";white-space:nowrap;padding-right:24px" if not part.get("head") or part.get("keep") else ""
         pie = part.get("pie")
         swatches = part.get("swatches", []) if pie and pie["name"] in drawn else []
         if swatches:

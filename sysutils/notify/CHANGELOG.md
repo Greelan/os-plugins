@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.6_1 - 2026-10-12
+
+- A failed notification is retried at the check its delay ends on, not a minute later.
+- Services name the sender Notify instead of Apprise, e.g. as a Discord embed's author.
+
 ## 1.6 - 2026-10-12
 
 - Apprise 2, adding Delta Chat, Mobile Message, Telnyx, WPUSH and YouLMK; Simplepush needs a current API Token and cannot encrypt.
