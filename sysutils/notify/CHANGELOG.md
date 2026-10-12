@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.6 - 2026-10-08
+## 1.6 - 2026-10-12
 
 - Apprise 2, adding Delta Chat, Mobile Message, Telnyx, WPUSH and YouLMK; Simplepush needs a current API Token and cannot encrypt.
 - Saved PGP, Apprise API and Fluxer settings read as before; an imported URL says what Apprise 2 reads differently.
