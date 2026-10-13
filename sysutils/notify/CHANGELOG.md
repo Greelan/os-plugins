@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.6_4 - 2026-10-14
+
+- Apprise 2.0.2, adding GoAlert and OneBot (QQ).
+
 ## 1.6_3 - 2026-10-13
 
 - A summary lists its latest events newest first.
