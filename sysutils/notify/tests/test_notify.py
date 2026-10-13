@@ -1184,7 +1184,8 @@ class Summaries(unittest.TestCase):
                              {"title": "dhclient: exiting.", "time": now - 60, "count": 2}]}
         item = summary.build_summary({}, channel, period, now)
         rows = {part["title"]: part["rows"] for part in item["report"]["sections"]}
-        self.assertEqual([r[1] for r in rows["Latest 3 of 3"]], ["New device on LAN", "dhclient: exiting. (2 times)"])
+        self.assertEqual([r[1] for r in rows["Latest 3 of 3"]], ["dhclient: exiting. (2 times)", "New device on LAN"],
+                         "newest first")
 
     def test_events_listed_per_summary(self):
         channel = {"uuid": CHANNEL, "summary": "weekly", "summaryEvents": ["gateway"]}

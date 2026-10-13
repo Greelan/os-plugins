@@ -643,7 +643,7 @@ def build_summary(config, channel, period, now, shared=None):
         if recent:
             shown = sum(item.get("count", 1) for item in recent)
             part = section(f"Latest {shown:,} of {sum(counts.values()):,}", ["Time", "Event"], True, keep=True)
-            for item in recent:
+            for item in reversed(recent):  # newest first, as core's log pages
                 count = item.get("count", 1)
                 row(part, [clock(item["time"]), f"{item['title']} ({count:,} times)" if count > 1 else item["title"]])
         for event in [e for e in FACT_SECTIONS if e in channel.get("summaryEvents", [])]:

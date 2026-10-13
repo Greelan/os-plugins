@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.6_3 - 2026-10-13
+
+- A summary lists its latest events newest first.
+
 ## 1.6_2 - 2026-10-13
 
 - A new device's notification names it.
