@@ -52,6 +52,8 @@ import base64
 import collections
 import contextlib
 import enum
+import collections
+import datetime
 import functools
 import html
 import http.client
@@ -76,8 +78,9 @@ from common import (FIRMWARE_CHANGES, LINK_UP, addresses, carp_states, carp_vhid
                     firmware_product, interfaces, link_states, log, message, pf_states, prune_stale, quiet,
                     read_firmware, service_states, setting, stale_tmp, system_status, write_private)
 from summary import (REPORT_NAME, REPORTS_DIR, SAMPLE_SECONDS, SUMMARY_TRIES, add_events,  # noqa: E402
-                     archive_report, archived_reports, build_summary, prune_archive, monit_allowed, remove_report,
-                     report_graphs, report_page, standby_periods, subscribed, summary_channels, update_summaries)
+                     archive_report, archived_reports, build_summary, latest, prune_archive, monit_allowed,
+                     remove_report, report_graphs, report_page, standby_periods, subscribed, summary_channels,
+                     update_summaries)
 
 CONFIG = "/conf/config.xml"
 STATE = "/var/db/notify/state.json"
@@ -885,6 +888,7 @@ def check_syslog(config, previous):
     """Local log lines at or above the chosen severity; audit, filterlog and our own log are
     skipped."""
     threshold = setting(config["general"], "logSeverity", 2)
+    kept = latest(config["general"])
     previous = previous or {}
     now, day = int(time.time()), time.strftime("%Y%m%d")
     try:
@@ -911,10 +915,14 @@ def check_syslog(config, previous):
         more, files[name], (count, passed) = follow(path, last, wanted)
         missed, skipped = missed + count, skipped + passed
         for line in lines + more:
-            match = re.match(r"<(\d+)>\d* \S+ \S+ (\S+) \S+ \S+ (?:-|\[.*?\]) ?(.*)", line.strip())
+            match = re.match(r"<(\d+)>\d* (\S+) \S+ (\S+) \S+ \S+ (?:-|\[.*?\]) ?(.*)", line.strip())
             if match:
-                key = (name, match.group(2), match.group(3).strip(), int(match.group(1)) % 8)
-                found[key] = found.get(key, 0) + 1
+                key = (name, match.group(3), match.group(4).strip(), int(match.group(1)) % 8)
+                try:
+                    at = int(datetime.datetime.fromisoformat(match.group(2)).timestamp())
+                except ValueError:
+                    at = now
+                found.setdefault(key, []).append(at)
     # repeats within the hold are counted, not sent
     seen = {k: t for k, t in previous.get("seen", {}).items() if now - t < SYSLOG_HOLD}
     # the most severe sent of each; 0 for one seen before this was kept, so it is held as then
@@ -922,14 +930,17 @@ def check_syslog(config, previous):
     messages: list = []
     extra: list = []
     sent = 0
-    for (name, program, text, severity), count in sorted(found.items(), key=lambda kv: kv[0][3]):
+    for (name, program, text, severity), times in sorted(found.items(), key=lambda kv: kv[0][3]):
+        count = len(times)
+        # each second it was logged in, with how many times, the latest as many as a summary lists
+        logged = sorted(collections.Counter(times).items())[-kept:] if kept else []
         repeat = f"{program}\t{text}"[:300]
         held = repeat in seen and severity >= levels.get(repeat, 0)
         body = f"{SEVERITIES[severity].capitalize()} in the {name} log: {text}"
         if count > 1:
             body += f"\n(Logged {count} times.)"
         found_now = dict(message("syslog", "failure" if severity <= 2 else "warning", f"{program}: {text[:100]}",
-                                 body, {"program": program}), count=count)
+                                 body, {"program": program}), count=count, logged=logged)
         if held or sent >= LOG_MESSAGES:
             if not held:
                 extra.append(f"{program}: {text[:100]}")
@@ -960,22 +971,24 @@ def check_device(config, previous):
     hosts = configctl_json("hostwatch", "dump_full")
     if not isinstance(hosts, dict):
         return previous, []
+    names = config.get("interfaces", {})
     known = list((previous or {}).get("macs", []))
     seen = set(known)
-    messages = []
+    found: dict = {}  # a row per address of each new device
     for row in hosts.get("rows", []):
-        if len(row) < 3 or not row[1]:
-            continue
-        interface, mac, address = row[0], row[1].lower(), row[2]
-        if mac in seen:
-            continue
-        seen.add(mac)
+        if len(row) >= 3 and row[1] and row[1].lower() not in seen:
+            found.setdefault(row[1].lower(), []).append(row)
+    messages = []
+    for mac, rows in found.items():
         known.append(mac)
         if previous is None:
             continue  # first pass records what is already there
-        vendor = row[3] if len(row) > 3 and row[3] else "unknown vendor"
-        messages.append(message("device", "info", f"New device on {interface}",
-                                f"{mac} ({vendor}) at {address}"))
+        # the address it is best found by: IPv4, then global IPv6, then link-local
+        row = min(rows, key=lambda r: (not r[2], ":" in str(r[2]), str(r[2]).lower().startswith("fe80:")))
+        vendor = next((r[3] for r in rows if len(r) > 3 and r[3]), "")
+        device = f"{mac} ({vendor})" if vendor else mac
+        messages.append(message("device", "info", f"New device on {names.get(row[0], row[0])}: {device} at {row[2]}",
+                                f"{mac} ({vendor or 'unknown vendor'}) at {row[2]}"))
     return {"checked": now, "macs": known[-DEVICES_MAX:]}, messages
 
 
@@ -1644,7 +1657,7 @@ def run_boot():
     periods = (state.get("summary") or {}).get("channels") or {}
     for channel in summary_channels(channels):
         if channel["uuid"] in periods:
-            periods[channel["uuid"]] = add_events(periods[channel["uuid"]], channel, found)
+            periods[channel["uuid"]] = add_events(periods[channel["uuid"]], channel, found, latest(general))
     state["queue"] = send(channels, title_prefix(general, hostname), found, state.get("queue", []))
     state["stamp"] = int(time.time())
     save_state(state)

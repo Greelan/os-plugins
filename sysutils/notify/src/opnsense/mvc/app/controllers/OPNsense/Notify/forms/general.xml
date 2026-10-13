@@ -124,6 +124,12 @@
         <help>Day of the month (1 to 31) on which monthly summaries are sent. In a shorter month the summary goes on its last day, so 31 means the end of every month.</help>
     </field>
     <field>
+        <id>notify.general.summaryLatest</id>
+        <label>Events listed per summary</label>
+        <type>text</type>
+        <help>How many of the latest events each summary lists with their times, after counting them all. Enter 0 to show only the counts.</help>
+    </field>
+    <field>
         <id>notify.general.summaryGraphs</id>
         <label>Summary graphs</label>
         <type>dropdown</type>

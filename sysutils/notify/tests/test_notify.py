@@ -794,6 +794,29 @@ class Collectors(Case):
         self.assertEqual(alerts[-1]["title"], f"sig {notify.LOG_LINES + 2}")
         self.assertIn("3 IDS alerts before the latest", messages[0]["body"])
 
+    def test_a_new_device_is_named_in_its_title(self):
+        # as core's `hostwatch dump_full` lists hosts: a row per address, the vendor null when unknown
+        rows = [["vtnet1", "64:4b:f0:70:4b:bf", "10.0.0.15", "CalDigit, Inc"]]
+        saved = notify.configctl_json
+        notify.configctl_json = lambda *args: {"rows": rows} if args == ("hostwatch", "dump_full") else None
+        config = {"interfaces": {"vtnet1": "LAN"}}
+        try:
+            state, messages = notify.check_device(config, None)
+            self.assertEqual(messages, [], "what is there at first is recorded")
+            rows += [["vtnet1", "AA:BB:CC:00:00:01", "fe80::1", "Apple, Inc."],
+                     ["vtnet1", "aa:bb:cc:00:00:01", "2001:db8::1", "Apple, Inc."],
+                     ["vtnet1", "aa:bb:cc:00:00:01", "10.0.0.20", "Apple, Inc."],
+                     ["igb2_vlan99", "9e:15:02:34:ea:59", "fe80::2", None],
+                     ["igb2_vlan99", "9e:15:02:34:ea:59", "2001:db8::2", None]]
+            _, messages = notify.check_device(config, dict(state, checked=0))
+        finally:
+            notify.configctl_json = saved
+        self.assertEqual([(m["title"], m["body"]) for m in messages], [
+            ("New device on LAN: aa:bb:cc:00:00:01 (Apple, Inc.) at 10.0.0.20",
+             "aa:bb:cc:00:00:01 (Apple, Inc.) at 10.0.0.20"),
+            ("New device on igb2_vlan99: 9e:15:02:34:ea:59 at 2001:db8::2",
+             "9e:15:02:34:ea:59 (unknown vendor) at 2001:db8::2")])
+
     def test_auth_reads_the_end_of_yesterday(self):
         config = {"general": {}}
         days = [os.path.join(self.keys, f"audit_{d}.log") for d in ("20260925", "20260926")]
@@ -1152,6 +1175,32 @@ class Summaries(unittest.TestCase):
         period = summary.add_events({}, channel, [gateway, summary.message("config", "info", "x", "")])
         self.assertEqual(period["events"], {"gateway": 1})
 
+    def test_the_latest_events_tally_with_the_counts(self):
+        channel = {"uuid": CHANNEL, "summary": "weekly", "summaryEvents": ["syslog", "device"]}
+        now = int(notify.time.time())
+        # the first as recorded before repeats were listed, with no count
+        period = {"since": now - 3600, "events": {"syslog": 2, "device": 1}, "totals": {},
+                  "recent": [{"title": "New device on LAN", "time": now - 120},
+                             {"title": "dhclient: exiting.", "time": now - 60, "count": 2}]}
+        item = summary.build_summary({}, channel, period, now)
+        rows = {part["title"]: part["rows"] for part in item["report"]["sections"]}
+        self.assertEqual([r[1] for r in rows["Latest 3 of 3"]], ["New device on LAN", "dhclient: exiting. (2 times)"])
+
+    def test_events_listed_per_summary(self):
+        channel = {"uuid": CHANNEL, "summary": "weekly", "summaryEvents": ["gateway"]}
+        now = int(notify.time.time())
+        found = [summary.message("gateway", "failure", f"Gateway {n} is down", "") for n in range(3)]
+        period = summary.add_events({"since": now - 3600, "totals": {}}, channel, found, 2)
+        self.assertEqual([r["title"] for r in period["recent"]], ["Gateway 1 is down", "Gateway 2 is down"])
+        self.assertEqual(summary.add_events({}, channel, found, 0)["recent"], [], "0 lists none")
+
+        def titles(general):
+            item = summary.build_summary({"general": general}, channel, period, now)
+            return [part["title"] for part in item["report"]["sections"]]
+        self.assertIn("Latest 2 of 3", titles({}))
+        self.assertIn("Latest 1 of 3", titles({"summaryLatest": "1"}), "lowered during the period")
+        self.assertEqual(titles({"summaryLatest": "0"}), ["Events in the period"], "only the counts")
+
     def test_report(self):
         summary.configctl_json = lambda *args: [{"id": "02f4", "descr": "Default deny / state violation rule"}] \
             if args == ("filter", "list", "rule_ids") else None
@@ -1398,6 +1447,17 @@ class SummaryTiming(unittest.TestCase):
         caption = summary.graph_caption_html("WAN traffic", graph)
         self.assertIn(f'<span style="color:#f28e2b;opacity:{chart.AREA_SHADE}">&#9632;</span>&nbsp;In', caption,
                       "its square shaded as the area")
+
+    def test_the_firmware_check_time_is_shown_as_other_times(self):
+        os.environ["TZ"] = "Australia/Sydney"
+        notify.time.tzset()
+        # as core's check.sh records it with date(1), the day padded with a space
+        self.assertEqual(summary.firmware_checked({"last_check": "Tue Oct 13 04:12:30 AEDT 2026"}), "2026-10-13 04:12")
+        self.assertEqual(summary.firmware_checked({"last_check": "Sat Oct  3 14:05:00 AEST 2026"}), "2026-10-03 14:05")
+        self.assertEqual(summary.firmware_checked({"last_check": "Tue Oct 13 04:12:30 CEST 2026"}),
+                         "Tue Oct 13 04:12:30 CEST 2026", "another zone kept as written")
+        self.assertEqual(summary.firmware_checked({"last_check": "unknown"}), "unknown")
+        self.assertEqual(summary.firmware_checked(None), "unknown")
 
     def test_brief_status(self):
         lines = ["WAN address: 203.0.113.7, 2001:db8::7, fd00::7", "Gateway WAN: Online, RTT 1.1 ms, loss 0.0 %",
@@ -2219,7 +2279,25 @@ class LogMessages(unittest.TestCase):
         period = summary.add_events({}, channel, messages + [note])
         self.assertEqual(period["events"], {"syslog": 3}, "the repeats count, the note does not")
         self.assertEqual(period["facts"]["syslog"]["program"], {"kernel": 3})
-        self.assertEqual(period["recent"], [], "not listed as a latest event")
+        self.assertEqual([(r["title"], r["count"]) for r in period["recent"]], [("kernel: disk failing", 3)],
+                         "listed as counted")
+
+    def test_a_repeat_is_listed_at_each_time_it_was_logged(self):
+        self.write("system", [self.LINE.format(pri=13, prog="x", text="start")])
+        config = {"general": {}}
+        state, _ = notify.check_syslog(config, None)
+        line = '<10>1 {at} fw.example dhclient 123 - [meta sequenceId="1"] exiting.\n'
+        self.write("system", [line.format(at="2026-10-12T20:30:21+11:00"), line.format(at="2026-10-12T20:31:31+11:00"),
+                              line.format(at="2026-10-12T20:31:31.250000+11:00"), line.format(at="garbled")])
+        before = int(notify.time.time())
+        _, messages = notify.check_syslog(config, state)
+        self.assertEqual(len(messages), 1, "sent once")
+        self.assertIn("(Logged 4 times.)", messages[0]["body"])
+        channel = {"uuid": CHANNEL, "events": ["syslog"], "summaryEvents": ["syslog"]}
+        recent = summary.add_events({}, channel, messages)["recent"]
+        self.assertEqual([(r["time"], r["count"]) for r in recent[:2]], [(1791797421, 1), (1791797491, 2)],
+                         "at the times logged, the same second together")
+        self.assertGreaterEqual(recent[2]["time"], before, "a time it cannot read is when it was read")
 
     def test_the_not_checked_note_is_held(self):
         self.write("system", [])

@@ -53,6 +53,7 @@ from common import (LINK_UP, addresses, carp_states, clock, configctl_json, dura
 # a period counts its channel's events and adds up pf's counters; no logs are read
 
 
+# latest events a summary lists, unless Events listed per summary says otherwise
 SUMMARY_RECENT = 10
 SUMMARY_RULES = 5
 # values kept per fact; the rarest go
@@ -129,8 +130,13 @@ def in_summary(channel, item):
     return item["event"] in channel.get("summaryEvents", []) and monit_allowed(channel, item)
 
 
-def add_events(period, channel, messages):
-    """The period with the channel's summary events counted."""
+def latest(general):
+    """How many of the latest events a summary lists."""
+    return max(setting(general, "summaryLatest", SUMMARY_RECENT), 0)
+
+
+def add_events(period, channel, messages, shown=SUMMARY_RECENT):
+    """The period with the channel's summary events counted, and the latest shown listed."""
     # notes are not events; count stands for repeats
     items = [m for m in messages if in_summary(channel, m) and not m.get("note")]
     if not items:
@@ -138,7 +144,11 @@ def add_events(period, channel, messages):
     counts = dict(period.get("events", {}))
     for item in items:
         counts[item["event"]] = counts.get(item["event"], 0) + item.get("count", 1)
-    recent = period.get("recent", []) + [{"time": m["time"], "title": m["title"]} for m in items if not m.get("quiet")]
+    # each as counted, held repeats too, so the list tallies with the counts; a log message at each
+    # time it was logged
+    found = [{"time": at, "title": m["title"], "count": count}
+             for m in items for at, count in m.get("logged") or [(m["time"], m.get("count", 1))]]
+    recent = period.get("recent", []) + sorted(found, key=lambda r: r["time"])
     facts = {event: {key: dict(values) for key, values in kinds.items()}
              for event, kinds in period.get("facts", {}).items()}
     for item in items:
@@ -149,7 +159,7 @@ def add_events(period, channel, messages):
                 kept = sorted(tally.items(), key=lambda kv: -kv[1])[:FACTS_MAX]
                 tally.clear()
                 tally.update(kept)
-    return dict(period, events=counts, recent=recent[-SUMMARY_RECENT:], facts=facts)
+    return dict(period, events=counts, recent=recent[-shown:] if shown else [], facts=facts)
 
 
 def pf_interfaces():
@@ -355,7 +365,7 @@ def update_summaries(config, channels, previous, messages, now):
             peaks["load"] = max(peaks.get("load", 0), load)
         if states is not None and states[0] >= peaks.get("states", 0):
             peaks.update(states=states[0], statesLimit=states[1])
-        period = add_events(dict(period, totals=totals, peaks=peaks), channel, messages)
+        period = add_events(dict(period, totals=totals, peaks=peaks), channel, messages, latest(config["general"]))
         if period["since"] < boundaries[channel["uuid"]] <= now:
             due.append((channel, period))
             # this reading also opens the next period
@@ -453,6 +463,15 @@ def root_disk():
     return None
 
 
+def firmware_checked(firmware):
+    """When the last firmware check ran, shown as other times are; core records date(1)'s output."""
+    checked = str((firmware or {}).get("last_check") or "unknown")
+    try:
+        return clock(time.mktime(time.strptime(checked, "%a %b %d %H:%M:%S %Z %Y")))
+    except (ValueError, OverflowError):
+        return checked  # e.g. unknown, or taken in another zone or locale
+
+
 def current_status(config, now):
     """Status lines: uplink addresses, gateways, links, services, CARP, firmware, certificates."""
     names, lines = config.get("interfaces", {}), []
@@ -483,7 +502,7 @@ def current_status(config, now):
     if carp:
         lines.append(f"CARP: {', '.join(f'{carp.count(s)} {s}' for s in sorted(set(carp)))}")
     firmware = read_firmware()
-    checked = str((firmware or {}).get("last_check") or "unknown")
+    checked = firmware_checked(firmware)
     if firmware is not None and firmware.get("connection") != "ok":
         lines.append(f"Firmware: The last update check failed (checked {checked})")
     elif firmware is not None:
@@ -610,6 +629,8 @@ def build_summary(config, channel, period, now, shared=None):
 
     if channel.get("summaryEvents"):
         counts, recent = period.get("events", {}), period.get("recent", [])
+        kept = latest(config.get("general", {}))
+        recent = recent[-kept:] if kept else []  # also when lowered during the period
         part = section("Events in the period", ["Event", "Count"])
         if not counts:
             row(part, ["None"])
@@ -620,9 +641,11 @@ def build_summary(config, channel, period, now, shared=None):
             listed.append(f"{count:,} {label}")
         brief.append("Events: " + (", ".join(listed) or "none"))
         if recent:
-            part = section(f"Latest {len(recent)} of {sum(counts.values())}", ["Time", "Event"], True, keep=True)
+            shown = sum(item.get("count", 1) for item in recent)
+            part = section(f"Latest {shown:,} of {sum(counts.values()):,}", ["Time", "Event"], True, keep=True)
             for item in recent:
-                row(part, [clock(item["time"]), item["title"]])
+                count = item.get("count", 1)
+                row(part, [clock(item["time"]), f"{item['title']} ({count:,} times)" if count > 1 else item["title"]])
         for event in [e for e in FACT_SECTIONS if e in channel.get("summaryEvents", [])]:
             heading, kinds = FACT_SECTIONS[event]
             for key, label in kinds:

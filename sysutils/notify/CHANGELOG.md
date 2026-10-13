@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.6_2 - 2026-10-13
+
+- A new device's notification names it.
+- A summary's latest events include held and repeated log messages, each at the time it was logged.
+- Events listed per summary, on the General tab, sets how many of the latest events a summary lists.
+
 ## 1.6_1 - 2026-10-12
 
 - A failed notification is retried at the check its delay ends on, not a minute later.

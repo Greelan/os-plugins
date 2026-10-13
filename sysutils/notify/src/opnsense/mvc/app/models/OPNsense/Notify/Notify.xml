@@ -134,6 +134,13 @@
                     <all>All interfaces</all>
                 </OptionValues>
             </summaryGraphs>
+            <summaryLatest type="IntegerField">
+                <Default>10</Default>
+                <Required>Y</Required>
+                <MinimumValue>0</MinimumValue>
+                <MaximumValue>100</MaximumValue>
+                <ValidationMessage>Enter a number between 0 and 100.</ValidationMessage>
+            </summaryLatest>
             <reportAddress type="TextField">
                 <Mask>/^https?:\/\/[^\s\/?#@]+(\/[^\s?#]*)?$/</Mask>
                 <ValidationMessage>Enter an address such as https://fw.example.lan:8443.</ValidationMessage>
