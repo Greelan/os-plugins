@@ -52,7 +52,6 @@ import base64
 import collections
 import contextlib
 import enum
-import collections
 import datetime
 import functools
 import html
@@ -130,12 +129,15 @@ LOCK = "/var/run/notify.lock"
 # apprise1_notes), and that Apprise.notify still applies emojis before convert_between (see
 # with_link); and that plugins still hold their settings as attributes, which an import compares
 # (see same_settings).
-FILE_ARGS_APPRISE = "2.0.1"
+FILE_ARGS_APPRISE = "2.1.0"
 FILE_ARGS = {
     "NotifyDiscord": ("template",), "NotifyTelegram": ("template",), "NotifySlack": ("template",),
     "NotifyWorkflows": ("template",), "NotifyFCM": ("keyfile",), "NotifyVapid": ("keyfile", "subfile"),
     "NotifyEmail": ("pgppub", "pgpprv"),
 }
+# services Apprise offers although each URL fails without one of these modules, which it only
+# recommends; left out while none is installed, as OPNsense ships neither of AMQP's
+NEEDS_ONE_OF = {"NotifyAMQP": ("pika", "proton")}
 # tokens Apprise masks in its own URL without marking them private, e.g. Mastodon's access token or
 # a login; kept out of the browser as the private ones are. The tests read them from Apprise's url()
 PRIVATE_TOKENS = {
@@ -1154,6 +1156,13 @@ def plugin_classes(schema):
     return class_names(N_MGR[schema]) if schema in N_MGR else set()
 
 
+def usable(schema):
+    """Whether the service behind a schema has a module it needs (NEEDS_ONE_OF)."""
+    import importlib.util
+    return all(any(importlib.util.find_spec(m) for m in modules)
+               for name, modules in NEEDS_ONE_OF.items() if name in plugin_classes(schema))
+
+
 def class_names(cls):
     """Names of a plugin class and its bases, as the tables here name services."""
     return {c.__name__ for c in cls.__mro__}
@@ -1840,7 +1849,7 @@ def apprise_services():
         # a port is optional in a URL, though some forms are listed only with one, e.g. Fluxer's bot name
         templates += [t.replace(":{port}", "") for t in templates
                       if ":{port}" in t and t.replace(":{port}", "") not in templates]
-        if not protocols or not templates:
+        if not protocols or not templates or not usable(protocols[0]):
             continue
         keys: list[list[str]] = [re.findall(r"{(\w+)}", template) for template in templates]
         used = {key for form in keys for key in form}
@@ -2567,7 +2576,7 @@ def from_service(service_id, fields, stored):
 
 def shown_url(plugin, url):
     """The saved URL as shown, not used: as typed, e.g. an address's @ rather than %40, with its
-    secrets masked, also where Apprise leaves one, e.g. Matrix's access token; for a webhook
+    secrets masked, also where Apprise leaves one; for a webhook
     receiver (PATH_SECRET) the path is left out too, since there the secret is often the path."""
     shown = masked(urllib.parse.unquote(plugin.url(privacy=True).split("?", 1)[0]), url_secrets(url))
     parts = urllib.parse.urlsplit(shown)

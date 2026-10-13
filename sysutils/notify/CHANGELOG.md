@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.7 - 2026-10-25
+
+- Apprise 2.1.0, adding Better Stack, GitHub, GoAlert, Gorush, ilert, incident.io, LFG Alarm, OneBot (QQ), Squadcast, Zalo and Zoho Cliq; Amazon Chime is gone, as it is no longer in service.
+
 ## 1.6_3 - 2026-10-13
 
 - A summary lists its latest events newest first.
