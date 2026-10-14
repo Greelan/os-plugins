@@ -3,6 +3,7 @@
 ## 1.7 - 2026-10-25
 
 - Apprise 2.1.0, adding Better Stack, GitHub, GoAlert, Gorush, ilert, incident.io, LFG Alarm, OneBot (QQ), Squadcast, Zalo and Zoho Cliq; Amazon Chime is gone, as it is no longer in service.
+- Markdown 3.11.2, so a Matrix notification keeps the text after an unclosed end tag, e.g. in a failed login's user name.
 
 ## 1.6_3 - 2026-10-13
 
