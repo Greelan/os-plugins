@@ -3,6 +3,7 @@
 ## 1.6_4 - 2026-10-14
 
 - Apprise 2.0.2, adding GoAlert and OneBot (QQ).
+- Markdown 3.11.2, so a Matrix notification keeps the text after an unclosed end tag, e.g. in a failed login's user name.
 
 ## 1.6_3 - 2026-10-13
 
