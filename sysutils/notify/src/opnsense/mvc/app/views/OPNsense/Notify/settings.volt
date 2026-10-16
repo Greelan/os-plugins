@@ -185,7 +185,7 @@
                     const $box = $control.find('input, textarea').addBack('input, textarea');
                     const $link = $('<a href="#" class="text-danger">');
                     const label = () => $link.empty().append($('<i class="fa fa-times-circle"></i>'), ' ',
-                        $('<small>').text($flag.val() === '1' ? "{{ lang._('Undo') }}" : "{{ lang._('Remove') }}"));
+                        $('<small>').text($flag.val() === '1' ? "{{ lang._('Cancel Clear') }}" : "{{ lang._('Clear Saved') }}"));
                     label();
                     const mark = function (removing) {
                         $flag.val(removing ? '1' : '');
