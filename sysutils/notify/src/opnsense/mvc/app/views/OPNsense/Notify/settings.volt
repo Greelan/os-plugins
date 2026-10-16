@@ -403,6 +403,10 @@
                     onBeforeRenderDialog: appriseDialog
                 },
                 commands: {
+                    /* a clone gets none of the secrets, and core's copy skips onBeforeRenderDialog */
+                    copy: {
+                        classname: undefined
+                    },
                     test: {
                         method: sendCommand('/api/notify/service/test/', 'fa-paper-plane', "{{ lang._('Test notification') }}",
                             "{{ lang._('The test notification was sent.') }}", "{{ lang._('The test notification could not be sent.') }}"),

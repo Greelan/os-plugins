@@ -4,6 +4,7 @@
 
 - Apprise 2.0.2, adding GoAlert and OneBot (QQ).
 - Markdown 3.11.2, so a Matrix notification keeps the text after an unclosed end tag, e.g. in a failed login's user name.
+- Channels can no longer be cloned, since a clone got none of the secrets and showed the service fields of the last channel opened.
 
 ## 1.6_3 - 2026-10-13
 
