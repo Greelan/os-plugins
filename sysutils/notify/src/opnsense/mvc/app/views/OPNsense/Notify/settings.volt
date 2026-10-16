@@ -85,7 +85,7 @@
          * Code that sets the value triggers change, as setFormData() does.
          */
         function appriseReveal($input) {
-            const $eye = $('<span class="form-control-feedback text-muted">')
+            const $eye = $('<span class="form-control-feedback text-muted hidden">')
                 .attr('title', "{{ lang._('Show or hide') }}")
                 /* the themes place it for a label above the input */
                 .css({top: 0, bottom: 0, height: 'auto', display: 'flex', 'align-items': 'center', 'justify-content': 'center', cursor: 'pointer'})
@@ -97,16 +97,38 @@
                     $input.attr('type', hidden ? 'text' : 'password');
                     $eye.find('i').toggleClass('fa-eye', !hidden).toggleClass('fa-eye-slash', hidden);
                 });
+            let inline = null;
+            /* room for the eye inside the input, which keeps its size. It is made as the input is
+               clicked or focused, so a password manager places its own icon clear of the eye. */
+            const makeRoom = function () {
+                if (inline === null && $input.is(':visible')) {
+                    const width = $input.outerWidth();
+                    inline = {'width': $input[0].style.width, 'padding-right': $input[0].style.paddingRight};
+                    $input.css('padding-right', parseFloat($input.css('padding-right')) + parseFloat($eye.css('width')));
+                    $input.outerWidth(width).parent().css('width', width);
+                }
+            };
+            const freeRoom = function () {
+                if (inline !== null && $input.val() === '' && !$input.is(':focus')) {
+                    $input.css(inline).parent().css('width', '');
+                    inline = null;
+                }
+            };
             const sync = function () {
                 if ($input.val() === '') {
                     $input.attr('type', 'password');
-                    $eye.find('i').addClass('fa-eye').removeClass('fa-eye-slash');
+                    $eye.addClass('hidden').find('i').addClass('fa-eye').removeClass('fa-eye-slash');
+                    freeRoom();
+                } else if (!$input.is(':visible')) {
+                    /* e.g. an import fills the dialog before it shows, and only a shown input has a size */
+                    $input.closest('.modal').one('shown.bs.modal', sync);
+                } else {
+                    makeRoom();
+                    $eye.toggleClass('hidden', inline === null);
                 }
-                /* as wide as the input, which the themes cap */
-                $input.parent().css('max-width', $input.css('max-width'));
-                $eye.toggleClass('hidden', $input.val() === '');
             };
-            $input.wrap($('<div class="has-feedback">')).after($eye).on('input change', sync);
+            $input.wrap($('<div style="position: relative;">')).after($eye)
+                .on('mousedown focus', makeRoom).on('blur', freeRoom).on('input change', sync);
             sync();
             return $input.parent();
         }
@@ -114,7 +136,8 @@
         /* core renders the URL masked; it is worth seeing what an import just put there */
         function appriseRevealUrl() {
             const $input = $('#channel\\.url');
-            if (!$input.parent().hasClass('has-feedback')) {
+            /* once only, and not where core has an eye of its own */
+            if (!$input.next('.form-control-feedback').length) {
                 appriseReveal($input);
             }
         }
