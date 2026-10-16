@@ -143,14 +143,14 @@
                     $control = $('<textarea class="form-control" rows="6" spellcheck="false" style="font-family: monospace;">')
                         .attr('id', id).val(value === 'stored' ? '' : value)
                         .attr('placeholder', saved.includes(field.key)
-                            ? "{{ lang._('Saved, leave empty to keep') }}"
+                            ? '********'
                             : (field.hint || "{{ lang._('Paste the file') }}"));
                 } else {
                     $control = $('<input class="form-control">').attr('id', id)
                         .attr('type', field.private ? 'password' : 'text')
                         .attr('autocomplete', field.private ? 'new-password' : 'off').val(value);
                     if (field.private && value === '' && saved.includes(field.key)) {
-                        $control.attr('placeholder', "{{ lang._('Saved, leave empty to keep') }}");
+                        $control.attr('placeholder', '********');
                     } else if (field.type === 'list') {
                         $control.attr('placeholder', "{{ lang._('Separate entries with commas') }}");
                     }
@@ -170,8 +170,7 @@
                     label();
                     const mark = function (removing) {
                         $flag.val(removing ? '1' : '');
-                        $box.attr('placeholder', removing
-                            ? "{{ lang._('Removed when saved') }}" : "{{ lang._('Saved, leave empty to keep') }}");
+                        $box.attr('placeholder', removing ? null : '********');
                         label();
                         appriseMarkChanged();
                     };
@@ -259,9 +258,8 @@
             const chosen = apprise.service || (apprise.url || apprise.custom ? '__custom' : '');
             $select.val(chosen).selectpicker('refresh');
             $('#apprise_note').text(apprise.error || '');
-            /* the stored URL is never sent back, so say what an empty box means */
-            $('#channel\\.url').attr('placeholder', apprise.custom
-                ? "{{ lang._('Saved, leave empty to keep') }}" : null);
+            /* the stored URL is never sent back, so show that one is saved */
+            $('#channel\\.url').attr('placeholder', apprise.custom ? '********' : null);
             appriseRenderFields(chosen, apprise.fields || {}, apprise.saved || []);
 
             /* the saved URL, which an empty box keeps, or the one imported */
