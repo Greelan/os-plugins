@@ -79,25 +79,44 @@
             );
         }
 
-        /* a button that shows or hides what is typed in a masked input */
-        function appriseRevealButton($input) {
-            return $('<span class="input-group-btn">').append($('<button type="button" class="btn btn-default">')
+        /*
+         * An eye inside a masked input that shows what is typed. It is only there while the input holds
+         * text, so it is not taken for a way to see a saved value; emptied, the input is masked again.
+         * Code that sets the value triggers change, as setFormData() does.
+         */
+        function appriseReveal($input) {
+            const $eye = $('<span class="form-control-feedback text-muted">')
                 .attr('title', "{{ lang._('Show or hide') }}")
-                .append($('<i class="fa fa-eye">'))
+                /* the themes place it for a label above the input */
+                .css({top: 0, bottom: 0, height: 'auto', display: 'flex', 'align-items': 'center', 'justify-content': 'center', cursor: 'pointer'})
+                .append($('<i class="fa fa-eye"></i>'))
+                /* the caret stays in the input */
+                .on('mousedown', event => event.preventDefault())
                 .on('click', function () {
                     const hidden = $input.attr('type') === 'password';
                     $input.attr('type', hidden ? 'text' : 'password');
-                    $(this).find('i').toggleClass('fa-eye', !hidden).toggleClass('fa-eye-slash', hidden);
-                }));
+                    $eye.find('i').toggleClass('fa-eye', !hidden).toggleClass('fa-eye-slash', hidden);
+                });
+            const sync = function () {
+                if ($input.val() === '') {
+                    $input.attr('type', 'password');
+                    $eye.find('i').addClass('fa-eye').removeClass('fa-eye-slash');
+                }
+                /* as wide as the input, which the themes cap */
+                $input.parent().css('max-width', $input.css('max-width'));
+                $eye.toggleClass('hidden', $input.val() === '');
+            };
+            $input.wrap($('<div class="has-feedback">')).after($eye).on('input change', sync);
+            sync();
+            return $input.parent();
         }
 
         /* core renders the URL masked; it is worth seeing what an import just put there */
         function appriseRevealUrl() {
             const $input = $('#channel\\.url');
-            if ($input.closest('.input-group').length) {
-                return;
+            if (!$input.parent().hasClass('has-feedback')) {
+                appriseReveal($input);
             }
-            $input.wrap($('<div class="input-group">')).after(appriseRevealButton($input));
         }
 
         function appriseMarkChanged() {
@@ -114,7 +133,7 @@
             if (service === undefined) {
                 return;
             }
-            $('#channel\\.url').val('');
+            $('#channel\\.url').val('').change();
             if (service.setup) {
                 $('#apprise_setup').append($('<a target="_blank" rel="noopener noreferrer">')
                     .attr('href', service.setup).text("{{ lang._('Setup guide for %s') }}".replace('%s', service.name)));
@@ -156,7 +175,7 @@
                     }
                     if (field.private) {
                         /* masked by default, but typing a webhook id blind is no fun */
-                        $control = $('<div class="input-group">').append($control, appriseRevealButton($control));
+                        $control = appriseReveal($control);
                     }
                 }
                 if (field.clearable && saved.includes(field.key)) {
@@ -176,7 +195,7 @@
                     };
                     $link.on('click', function (event) {
                         event.preventDefault();
-                        $box.val('');
+                        $box.val('').change();
                         mark($flag.val() !== '1');
                     });
                     $box.on('input', function () {
@@ -251,7 +270,7 @@
                 apprise = appriseImported;
                 appriseImported = null;
                 if (apprise.url) {
-                    $('#channel\\.url').val(apprise.url);
+                    $('#channel\\.url').val(apprise.url).change();
                 }
                 appriseMarkChanged();
             }
