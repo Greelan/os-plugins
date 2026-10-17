@@ -42,15 +42,18 @@
                 if (!$input.length) {
                     return;
                 }
-                const $show = $('<button type="button" class="btn btn-default">')
-                    .attr('title', "{{ lang._('Show or hide') }}")
-                    .append($('<i class="fa fa-eye"></i>'))
-                    .on('click', function () {
-                        const hidden = $input.attr('type') === 'password';
-                        $input.attr('type', hidden ? 'text' : 'password');
-                        $(this).find('i').toggleClass('fa-eye', !hidden).toggleClass('fa-eye-slash', hidden);
-                    });
-                $input.wrap($('<div class="input-group">')).after($('<span class="input-group-btn">').append($show));
+                // cores with addPasswordShowUI() put an eye in the field already
+                if (typeof addPasswordShowUI !== 'function') {
+                    const $show = $('<button type="button" class="btn btn-default">')
+                        .attr('title', "{{ lang._('Show or hide') }}")
+                        .append($('<i class="fa fa-eye"></i>'))
+                        .on('click', function () {
+                            const hidden = $input.attr('type') === 'password';
+                            $input.attr('type', hidden ? 'text' : 'password');
+                            $(this).find('i').toggleClass('fa-eye', !hidden).toggleClass('fa-eye-slash', hidden);
+                        });
+                    $input.wrap($('<div class="input-group">')).after($('<span class="input-group-btn">').append($show));
+                }
                 if (saved !== true) {
                     return;
                 }
@@ -72,7 +75,7 @@
                         mark(false);
                     }
                 });
-                $input.closest('.input-group').after($('<div class="blocky-secret" style="margin-top: 0.3em;">').append($link));
+                $input.parent().after($('<div class="blocky-secret" style="margin-top: 0.3em;">').append($link));
             });
         });
         return {
@@ -87,7 +90,7 @@
                 saveFormToEndpoint(endpoint, formId, function () {
                     $.each(pending, function (ref, removing) {
                         if (removing) {
-                            input(ref).attr('placeholder', '').closest('.input-group').siblings('.blocky-secret').remove();
+                            input(ref).attr('placeholder', '').parent().siblings('.blocky-secret').remove();
                             delete pending[ref];
                         }
                     });

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4_14 - 2026-10-17
+
+- On a core that shows an eye inside password fields, the Redis passwords and query log target use it instead of an eye button of their own.
+
 ## 1.4_13 - 2026-10-10
 
 - A query log connection string cannot name a file for Blocky to read, such as allowAllFiles or sslkey; such options go in a file: value.
