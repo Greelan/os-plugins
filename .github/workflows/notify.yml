@@ -1,6 +1,7 @@
 name: notify
 
-# Email the maintainer about a new blocky release or newer vendored libraries.
+# Email the maintainer about a new blocky release, a new revision of the blocky port
+# (Go bumps in ports raise its PORTREVISION) or newer vendored libraries.
 
 on:
   schedule:
@@ -13,7 +14,8 @@ permissions:
 
 jobs:
   notify:
-    # email once per new blocky release and once per set of newer vendored libraries
+    # email once per new blocky release, once per blocky port version and once per set of
+    # newer vendored libraries
     runs-on: ubuntu-latest
     env:
       # the sender, as a repository variable or secret; the address falls back to MAIL_FROM
@@ -70,6 +72,63 @@ jobs:
       - name: Record state
         if: steps.v.outputs.version != '' && steps.seen.outputs.cache-hit != 'true'
         run: touch .notified .init
+      # the build takes the port's PORTREVISION plus BLOCKY_REVISION as the package revision,
+      # but only builds on push or dispatch, so a ports bump alone never ships
+      - name: Resolve the blocky port's version
+        id: port
+        run: |
+          mk=$(curl -fsSL https://raw.githubusercontent.com/freebsd/freebsd-ports/main/dns/blocky/Makefile) || exit 0
+          dist=$(printf '%s\n' "${mk}" | sed -n 's/^DISTVERSION=[[:space:]]*\([^[:space:]#]*\).*/\1/p' | head -1)
+          rev=$(printf '%s\n' "${mk}" | sed -n 's/^PORTREVISION=[[:space:]]*\([^[:space:]#]*\).*/\1/p' | head -1)
+          [ -n "${dist}" ] || exit 0
+          {
+            echo "distversion=${dist}"
+            echo "revision=${rev:-0}"
+            echo "version=${dist}_${rev:-0}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Have we checked the port before?
+        id: portinit
+        if: steps.port.outputs.version != ''
+        uses: actions/cache@v5
+        with:
+          path: .port-init
+          key: blocky-port-notify-init
+
+      - name: Already emailed this port version?
+        id: portseen
+        if: steps.port.outputs.version != ''
+        uses: actions/cache@v5
+        with:
+          path: .port-notified
+          key: blocky-port-notified-${{ steps.port.outputs.version }}
+
+      - name: Email the maintainer about the port
+        # only a changed port version, and never on the first-ever run (just seed then)
+        if: steps.port.outputs.version != '' && steps.portinit.outputs.cache-hit == 'true' && steps.portseen.outputs.cache-hit != 'true'
+        uses: dawidd6/action-send-mail@v22
+        with:
+          server_address: ${{ secrets.MAIL_SERVER }}
+          # STARTTLS; secure means TLS from the start, as on port 465
+          server_port: 587
+          secure: false
+          require_tls: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          from: ${{ env.MAIL_FROM_NAME && format('{0} <{1}>', env.MAIL_FROM_NAME, env.MAIL_FROM_EMAIL) || env.MAIL_FROM_EMAIL }}
+          to: ${{ secrets.MAIL_TO }}
+          subject: "blocky port now ${{ steps.port.outputs.distversion }}, PORTREVISION ${{ steps.port.outputs.revision }}"
+          body: |
+            dns/blocky in ports: ${{ steps.port.outputs.distversion }}, PORTREVISION ${{ steps.port.outputs.revision }}
+            https://cgit.freebsd.org/ports/log/dns/blocky
+
+            The package revision is PORTREVISION + dns/blocky/BLOCKY_REVISION. Run the build workflow to publish the rebuild.
+            If PORTREVISION went down (a new DISTVERSION resets it), raise BLOCKY_REVISION first so the package revision does not go backwards.
+
+      - name: Record port state
+        if: steps.port.outputs.version != '' && steps.portseen.outputs.cache-hit != 'true'
+        run: touch .port-notified .port-init
+
       - name: Check vendored libraries
         id: vendored
         run: |
