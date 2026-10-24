@@ -390,6 +390,18 @@ class StoredFiles(Case):
         self.assertTrue(notify.same_value("t", True))
         self.assertIn("tts=yes", notify.query_from(notify.apprise_services()[0]["discord"], {"tts": "y"}))
 
+    def test_emojis_unset_is_not_no(self):
+        # Apprise reads no emojis= as unset (the asset's None), not as the False its details give;
+        # Discord tells them apart, escaping :name: only for no
+        self.assertEqual([notify.one_plugin(f"discord://1/abc{q}")[0].interpret_emojis for q in ("", "?emojis=no")],
+                         [None, False])
+        discord = notify.apprise_services()[0]["discord"]
+        self.assertNotIn("default", discord["options"]["emojis"], "the dialog offers Not set")
+        self.assertEqual([notify.query_from(discord, {"emojis": v}, "discord://1/abc") for v in ("", "no", "yes")],
+                         ["", "emojis=no", "emojis=yes"])
+        self.assertEqual(self.imported("discord://1/abc?emojis=no")["fields"].get("emojis"), "no")
+        self.assertNotIn("emojis", self.imported("discord://1/abc")["fields"])
+
     def test_text_without_a_scheme_is_not_several_urls(self):
         self.assertFalse(notify.several_urls("my webhook token"))
         self.assertIn("Unsupported URL", notify.check_url("my webhook token")[1])

@@ -146,6 +146,9 @@ PRIVATE_TOKENS = {
     "NotifyBulkVS": ("user",), "NotifySMSC": ("user",), "NotifySerwerSMS": ("user",), "NotifyRocketChat": ("webhook",),
     "NotifyPagerDuty": ("source", "component"), "NotifyVoipms": ("from_phone",),
 }
+# options Apprise reads as unset when left out, not as the default its details give, e.g. emojis:
+# Discord escapes :name: only for no
+UNSET_ARGS = ("emojis",)
 # files that may instead be fetched from an https address; private keys are never fetched
 REMOTE_FILE_ARGS = ("template", "pgppub")
 # what each file holds, as the dialog labels it and hints at it: (plugin class or None, argument)
@@ -1885,7 +1888,7 @@ def apprise_services():
         # several formats: the message's own is used unless one is chosen, from those it takes
         several = len(entry["details"]["args"].get("format", {}).get("supported") or ()) > 1
         args = {str(k): v.get("default") for k, v in entry["details"]["args"].items()
-                if v.get("default") is not None and not v.get("alias_of") and not (k == "format" and several)}
+                if v.get("default") is not None and k not in UNSET_ARGS and not v.get("alias_of") and not (k == "format" and several)}
         mapped = {t["map_to"] for t in tokens.values()}
         options = {}
         for key, arg in entry["details"]["args"].items():
@@ -1902,7 +1905,7 @@ def apprise_services():
                     (str(v) for v in (arg["supported"] if key == "format" and several else arg.get("values", ()))),
                     key=lambda v: (not v.lstrip("-").isdigit(),
                                    int(v) if v.lstrip("-").isdigit() else v))
-            if arg.get("default") is not None and not (key == "format" and several):
+            if arg.get("default") is not None and not (key == "format" and several) and key not in UNSET_ARGS:
                 field["default"] = default_text(arg["default"])
             if str(key).lower() in file_args(protocols[0]):
                 # pasted into the dialog and stored with the channel, never shown again
@@ -2119,8 +2122,6 @@ def query_from(service, values, base=None):
             if value == "":
                 continue
             value = "yes" if parse_bool(value, bool(default)) else "no"
-            if default is None and value == "no":
-                continue  # an unticked box Apprise has no default for says nothing
         if value == "":
             continue
         part = "%s=%s" % (urllib.parse.quote(key, safe=""), urllib.parse.quote(value, safe=""))
