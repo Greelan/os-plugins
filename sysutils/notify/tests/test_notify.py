@@ -145,9 +145,9 @@ class StoredFiles(Case):
         self.assertEqual(self.custom("xml://hooks.example.com")["target"], "xml://hooks.example.com/")
         self.assertEqual(self.custom("tgram://123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11/12345")["target"],
                          "tgram://1...1/12345/", "elsewhere Apprise masks the secret itself")
-        # a secret Apprise leaves unmasked, e.g. Matrix's access token where its user would stand
+        # Matrix's access token where its user would stand, which Apprise masks as well
         self.assertEqual(self.custom("matrixs://syt_S3CRETaccessTOKEN@matrix.example.com/!room:example.com")["target"],
-                         "matrixs://****@matrix.example.com/!room:example.com")
+                         "matrixs://s...N@matrix.example.com/!room:example.com")
         self.assertEqual(self.custom("sendgrid://abcd:fw@example.com/to@example.com")["target"].split("@")[0],
                          "sendgrid://a...d:fw", "a sender in the password slot is no secret")
         # a secret that is also a word, or also the user name, is not pointed out
@@ -390,6 +390,18 @@ class StoredFiles(Case):
         self.assertTrue(notify.same_value("t", True))
         self.assertIn("tts=yes", notify.query_from(notify.apprise_services()[0]["discord"], {"tts": "y"}))
 
+    def test_emojis_unset_is_not_no(self):
+        # Apprise reads no emojis= as unset (the asset's None), not as the False its details give;
+        # Discord tells them apart, escaping :name: only for no
+        self.assertEqual([notify.one_plugin(f"discord://1/abc{q}")[0].interpret_emojis for q in ("", "?emojis=no")],
+                         [None, False])
+        discord = notify.apprise_services()[0]["discord"]
+        self.assertNotIn("default", discord["options"]["emojis"], "the dialog offers Not set")
+        self.assertEqual([notify.query_from(discord, {"emojis": v}, "discord://1/abc") for v in ("", "no", "yes")],
+                         ["", "emojis=no", "emojis=yes"])
+        self.assertEqual(self.imported("discord://1/abc?emojis=no")["fields"].get("emojis"), "no")
+        self.assertNotIn("emojis", self.imported("discord://1/abc")["fields"])
+
     def test_text_without_a_scheme_is_not_several_urls(self):
         self.assertFalse(notify.several_urls("my webhook token"))
         self.assertIn("Unsupported URL", notify.check_url("my webhook token")[1])
@@ -467,6 +479,21 @@ class StoredFiles(Case):
         self.assertGreater(reached, 100, "Apprise's services were reached")
         self.assertEqual(unbuilt, [], "a service no URL could be built for")
         self.assertEqual(wrong, [])
+
+    def test_a_service_needing_a_missing_module_is_not_offered(self):
+        # Apprise offers AMQP, but without pika or python-qpid-proton every URL of it fails
+        import importlib.util
+        find_spec = importlib.util.find_spec
+        try:
+            for installed in (None, "pika", "proton"):
+                importlib.util.find_spec = lambda name, *args: object() if name == installed else None
+                notify.apprise_services.cache_clear()
+                self.assertEqual("amqp" in notify.apprise_services()[1], installed is not None, installed)
+        finally:
+            importlib.util.find_spec = find_spec
+            notify.apprise_services.cache_clear()
+        if not any(find_spec(m) for m in ("pika", "proton")):
+            self.assertIsNone(notify.check_url("amqp://user:pass@broker.example.com/exchange")[0])
 
     def test_an_import_kept_as_given_unless_apprise_reads_it_the_same(self):
         url = "discord://123456789/abcdefghijklmnop"

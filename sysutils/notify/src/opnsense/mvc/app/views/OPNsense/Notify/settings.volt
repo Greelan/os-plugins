@@ -79,25 +79,67 @@
             );
         }
 
-        /* a button that shows or hides what is typed in a masked input */
-        function appriseRevealButton($input) {
-            return $('<span class="input-group-btn">').append($('<button type="button" class="btn btn-default">')
+        /*
+         * An eye inside a masked input that shows what is typed. It is only there while the input holds
+         * text, so it is not taken for a way to see a saved value; emptied, the input is masked again.
+         * Code that sets the value triggers change, as setFormData() does.
+         */
+        function appriseReveal($input) {
+            const $eye = $('<span class="form-control-feedback text-muted hidden">')
                 .attr('title', "{{ lang._('Show or hide') }}")
-                .append($('<i class="fa fa-eye">'))
+                /* the themes place it for a label above the input */
+                .css({top: 0, bottom: 0, height: 'auto', display: 'flex', 'align-items': 'center', 'justify-content': 'center', cursor: 'pointer'})
+                .append($('<i class="fa fa-eye"></i>'))
+                /* the caret stays in the input */
+                .on('mousedown', event => event.preventDefault())
                 .on('click', function () {
                     const hidden = $input.attr('type') === 'password';
                     $input.attr('type', hidden ? 'text' : 'password');
-                    $(this).find('i').toggleClass('fa-eye', !hidden).toggleClass('fa-eye-slash', hidden);
-                }));
+                    $eye.find('i').toggleClass('fa-eye', !hidden).toggleClass('fa-eye-slash', hidden);
+                });
+            let inline = null;
+            /* room for the eye inside the input, which keeps its size. It is made as the input is
+               clicked or focused, so a password manager places its own icon clear of the eye. */
+            const makeRoom = function () {
+                if (inline === null && $input.is(':visible')) {
+                    const width = $input.outerWidth();
+                    inline = {'width': $input[0].style.width, 'padding-right': $input[0].style.paddingRight};
+                    $input.css('padding-right', parseFloat($input.css('padding-right')) + parseFloat($eye.css('width')));
+                    $input.outerWidth(width).parent().css('width', width);
+                }
+            };
+            const freeRoom = function () {
+                if (inline !== null && $input.val() === '' && !$input.is(':focus')) {
+                    $input.css(inline).parent().css('width', '');
+                    inline = null;
+                }
+            };
+            const sync = function () {
+                if ($input.val() === '') {
+                    $input.attr('type', 'password');
+                    $eye.addClass('hidden').find('i').addClass('fa-eye').removeClass('fa-eye-slash');
+                    freeRoom();
+                } else if (!$input.is(':visible')) {
+                    /* e.g. an import fills the dialog before it shows, and only a shown input has a size */
+                    $input.closest('.modal').one('shown.bs.modal', sync);
+                } else {
+                    makeRoom();
+                    $eye.toggleClass('hidden', inline === null);
+                }
+            };
+            $input.wrap($('<div style="position: relative;">')).after($eye)
+                .on('mousedown focus', makeRoom).on('blur', freeRoom).on('input change', sync);
+            sync();
+            return $input.parent();
         }
 
         /* core renders the URL masked; it is worth seeing what an import just put there */
         function appriseRevealUrl() {
             const $input = $('#channel\\.url');
-            if ($input.closest('.input-group').length) {
-                return;
+            /* once only, and not where core has an eye of its own */
+            if (!$input.next('.form-control-feedback').length) {
+                appriseReveal($input);
             }
-            $input.wrap($('<div class="input-group">')).after(appriseRevealButton($input));
         }
 
         function appriseMarkChanged() {
@@ -114,7 +156,7 @@
             if (service === undefined) {
                 return;
             }
-            $('#channel\\.url').val('');
+            $('#channel\\.url').val('').change();
             if (service.setup) {
                 $('#apprise_setup').append($('<a target="_blank" rel="noopener noreferrer">')
                     .attr('href', service.setup).text("{{ lang._('Setup guide for %s') }}".replace('%s', service.name)));
@@ -136,6 +178,13 @@
                     /* a custom URL may spell a choice its own way, e.g. priority=High, which Apprise reads the same */
                     const choice = field.values.find(v => v.toLowerCase() === String(value).toLowerCase());
                     $control.val(choice ?? (field.default === undefined ? '' : field.values[0]));
+                } else if (field.type === 'bool' && field.default === undefined) {
+                    /* Apprise reads it left out apart from no, e.g. emojis, so a box cannot say which */
+                    $control = $('<select class="form-control">').attr('id', id).append(
+                        $('<option value="">').text("{{ lang._('Not set') }}"),
+                        $('<option value="yes">').text("{{ lang._('Yes') }}"),
+                        $('<option value="no">').text("{{ lang._('No') }}"));
+                    $control.val(['yes', 'no'].includes(String(value)) ? String(value) : '');
                 } else if (field.type === 'bool') {
                     $control = $('<input type="checkbox">').attr('id', id).prop('checked', ['1', 'yes', 'true'].includes(String(value).toLowerCase()));
                 } else if (field.type === 'file') {
@@ -143,20 +192,20 @@
                     $control = $('<textarea class="form-control" rows="6" spellcheck="false" style="font-family: monospace;">')
                         .attr('id', id).val(value === 'stored' ? '' : value)
                         .attr('placeholder', saved.includes(field.key)
-                            ? "{{ lang._('Saved, leave empty to keep') }}"
+                            ? '********'
                             : (field.hint || "{{ lang._('Paste the file') }}"));
                 } else {
                     $control = $('<input class="form-control">').attr('id', id)
                         .attr('type', field.private ? 'password' : 'text')
                         .attr('autocomplete', field.private ? 'new-password' : 'off').val(value);
                     if (field.private && value === '' && saved.includes(field.key)) {
-                        $control.attr('placeholder', "{{ lang._('Saved, leave empty to keep') }}");
+                        $control.attr('placeholder', '********');
                     } else if (field.type === 'list') {
                         $control.attr('placeholder', "{{ lang._('Separate entries with commas') }}");
                     }
                     if (field.private) {
                         /* masked by default, but typing a webhook id blind is no fun */
-                        $control = $('<div class="input-group">').append($control, appriseRevealButton($control));
+                        $control = appriseReveal($control);
                     }
                 }
                 if (field.clearable && saved.includes(field.key)) {
@@ -166,18 +215,17 @@
                     const $box = $control.find('input, textarea').addBack('input, textarea');
                     const $link = $('<a href="#" class="text-danger">');
                     const label = () => $link.empty().append($('<i class="fa fa-times-circle"></i>'), ' ',
-                        $('<small>').text($flag.val() === '1' ? "{{ lang._('Undo') }}" : "{{ lang._('Remove') }}"));
+                        $('<small>').text($flag.val() === '1' ? "{{ lang._('Cancel Clear') }}" : "{{ lang._('Clear Saved') }}"));
                     label();
                     const mark = function (removing) {
                         $flag.val(removing ? '1' : '');
-                        $box.attr('placeholder', removing
-                            ? "{{ lang._('Removed when saved') }}" : "{{ lang._('Saved, leave empty to keep') }}");
+                        $box.attr('placeholder', removing ? null : '********');
                         label();
                         appriseMarkChanged();
                     };
                     $link.on('click', function (event) {
                         event.preventDefault();
-                        $box.val('');
+                        $box.val('').change();
                         mark($flag.val() !== '1');
                     });
                     $box.on('input', function () {
@@ -252,16 +300,15 @@
                 apprise = appriseImported;
                 appriseImported = null;
                 if (apprise.url) {
-                    $('#channel\\.url').val(apprise.url);
+                    $('#channel\\.url').val(apprise.url).change();
                 }
                 appriseMarkChanged();
             }
             const chosen = apprise.service || (apprise.url || apprise.custom ? '__custom' : '');
             $select.val(chosen).selectpicker('refresh');
             $('#apprise_note').text(apprise.error || '');
-            /* the stored URL is never sent back, so say what an empty box means */
-            $('#channel\\.url').attr('placeholder', apprise.custom
-                ? "{{ lang._('Saved, leave empty to keep') }}" : null);
+            /* the stored URL is never sent back, so show that one is saved */
+            $('#channel\\.url').attr('placeholder', apprise.custom ? '********' : null);
             appriseRenderFields(chosen, apprise.fields || {}, apprise.saved || []);
 
             /* the saved URL, which an empty box keeps, or the one imported */
@@ -403,6 +450,10 @@
                     onBeforeRenderDialog: appriseDialog
                 },
                 commands: {
+                    /* a clone gets none of the secrets, and core's copy skips onBeforeRenderDialog */
+                    copy: {
+                        classname: undefined
+                    },
                     test: {
                         method: sendCommand('/api/notify/service/test/', 'fa-paper-plane', "{{ lang._('Test notification') }}",
                             "{{ lang._('The test notification was sent.') }}", "{{ lang._('The test notification could not be sent.') }}"),

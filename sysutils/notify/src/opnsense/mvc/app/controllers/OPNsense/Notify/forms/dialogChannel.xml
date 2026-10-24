@@ -22,7 +22,7 @@
         <label>Custom URL</label>
         <type>password</type>
         <advanced>true</advanced>
-        <help><![CDATA[Where to send notifications, used when Service is set to Custom URL, which is where Import puts a URL the fields cannot represent. An Apprise URL, e.g. tgram://bottoken/chatid, pover://userkey@apptoken or ntfys://topic. See the <a href="https://appriseit.com/services/" target="_blank" rel="noopener noreferrer">Apprise services</a> for every supported service, its URL format and the options a URL can carry, or build one with the <a href="https://appriseit.com/tools/url-builder/" target="_blank" rel="noopener noreferrer">Apprise URL builder</a>. The URL holds credentials, so it is never shown again; leave it empty to keep the saved URL.]]></help>
+        <help><![CDATA[Where to send notifications, used when Service is set to Custom URL, which is where Import puts a URL the fields cannot represent. An Apprise URL, e.g. tgram://bottoken/chatid, pover://userkey@apptoken or ntfys://topic. See the <a href="https://appriseit.com/services/" target="_blank" rel="noopener noreferrer">Apprise services</a> for every supported service, its URL format and the options a URL can carry, or build one with the <a href="https://appriseit.com/tools/url-builder/" target="_blank" rel="noopener noreferrer">Apprise URL builder</a>. The URL holds credentials, so it is never shown again.]]></help>
         <grid_view>
             <ignore>true</ignore>
         </grid_view>
