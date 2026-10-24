@@ -178,6 +178,13 @@
                     /* a custom URL may spell a choice its own way, e.g. priority=High, which Apprise reads the same */
                     const choice = field.values.find(v => v.toLowerCase() === String(value).toLowerCase());
                     $control.val(choice ?? (field.default === undefined ? '' : field.values[0]));
+                } else if (field.type === 'bool' && field.default === undefined) {
+                    /* Apprise reads it left out apart from no, e.g. emojis, so a box cannot say which */
+                    $control = $('<select class="form-control">').attr('id', id).append(
+                        $('<option value="">').text("{{ lang._('Not set') }}"),
+                        $('<option value="yes">').text("{{ lang._('Yes') }}"),
+                        $('<option value="no">').text("{{ lang._('No') }}"));
+                    $control.val(['yes', 'no'].includes(String(value)) ? String(value) : '');
                 } else if (field.type === 'bool') {
                     $control = $('<input type="checkbox">').attr('id', id).prop('checked', ['1', 'yes', 'true'].includes(String(value).toLowerCase()));
                 } else if (field.type === 'file') {
