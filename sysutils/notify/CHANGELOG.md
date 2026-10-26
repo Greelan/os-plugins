@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7_1 - 2026-10-31
+
+- A summary's graph shows rates to one decimal, so a low rate no longer reads 0.
+- From core 26.7.8, Monit's status is read through core, and a login's source is the address core logs at the end of the line, not one written into the user name.
+
 ## 1.7 - 2026-10-25
 
 - Apprise 2.1.0, adding Better Stack, GitHub, GoAlert, Gorush, ilert, incident.io, LFG Alarm, OneBot (QQ), Squadcast, Zalo and Zoho Cliq; Amazon Chime is gone, as it is no longer in service.

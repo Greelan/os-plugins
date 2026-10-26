@@ -56,6 +56,7 @@ import datetime
 import functools
 import html
 import http.client
+import ipaddress
 import json
 import os
 import re
@@ -551,6 +552,20 @@ def check_firmware(config, previous):
     return state, [message("firmware", "info", "Firmware updates are available", "\n".join(lines))]
 
 
+def login_source(line):
+    """Where a login came from. From 26.7.8 on core ends its own lines with the address, or with -
+    when there is none; that end is preferred, as the user name before it is the caller's to choose."""
+    ending = re.search(r" at (\S+)$", line)
+    if ending:
+        if ending.group(1) == "-":
+            return ""
+        with contextlib.suppress(ValueError):
+            ipaddress.ip_address(ending.group(1))
+            return ending.group(1)
+    found = re.search(r"\bfrom '?([0-9A-Fa-f.:]+)", line)
+    return found.group(1) if found else ""
+
+
 def check_auth(config, previous):
     logins = config["general"].get("authLogins", "0") == "1"
     previous, path, lines = previous or {}, audit_log(), []
@@ -565,8 +580,7 @@ def check_auth(config, previous):
         body = line.strip()
         lowered = body.lower()
         user = re.search(r"\buser '?([^'\s]+)", body, re.I)
-        source = re.search(r"\bfrom '?([0-9A-Fa-f.:]+)", body)
-        facts = {"user": user.group(1) if user else "", "source": source.group(1) if source else ""}
+        facts = {"user": user.group(1) if user else "", "source": login_source(body)}
         if any(hint in lowered for hint in AUTH_LOCKOUT):
             messages.append(message("auth", "failure", "Login blocked", body, dict(facts, outcome="Blocked")))
         elif any(hint in lowered for hint in AUTH_FAILURE):
@@ -649,9 +663,14 @@ class UnixHTTPConnection(http.client.HTTPConnection):
         self.sock.connect(self.path)
 
 
-def check_monit(config, previous):
-    if not os.path.exists(MONIT_SOCKET):
-        return previous, []
+def monit_status(config):
+    """Monit's status XML, or None. From 26.7.8 on core's action reads it; before that, or when the
+    action has no answer (its JSON cannot carry e.g. a program check's output that is not UTF-8),
+    Monit's socket is asked with the httpd credentials, as core's status page used to."""
+    if "monit fetch" in (configctl_json("configd", "actions", "json") or {}):
+        answer = configctl_json("monit", "fetch", "xml")
+        if isinstance(answer, dict) and answer.get("http_code") == 200 and answer.get("response"):
+            return answer["response"]
     headers = {}
     credentials = config.get("monit", {})
     username, password = credentials.get("username", ""), credentials.get("password", "")
@@ -662,10 +681,20 @@ def check_monit(config, previous):
         connection = UnixHTTPConnection(MONIT_SOCKET)
         connection.request("GET", "/_status?format=xml", headers=headers)
         response = connection.getresponse()
-        if response.status != 200:
-            return previous, []
-        root = ET.fromstring(response.read())
-    except (OSError, http.client.HTTPException, ET.ParseError):
+        return response.read() if response.status == 200 else None
+    except (OSError, http.client.HTTPException):
+        return None
+
+
+def check_monit(config, previous):
+    if not os.path.exists(MONIT_SOCKET):
+        return previous, []
+    status = monit_status(config)
+    try:
+        root = ET.fromstring(status) if status else None
+    except ET.ParseError:
+        root = None
+    if root is None:
         return previous, []
     current, messages = {}, []
     for service in root.findall("service"):

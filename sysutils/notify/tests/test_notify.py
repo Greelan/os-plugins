@@ -860,6 +860,71 @@ class Collectors(Case):
         self.assertEqual([m["body"] for m in messages],
                          ["user admin: authentication failed", "user root: authentication failed"])
 
+    def test_auth_source_is_the_address_core_ends_its_line_with(self):
+        # as AuthenticationFactory logs from 26.7.8 on: the remote address last, or - without one
+        self.addCleanup(setattr, notify, "audit_log", notify.audit_log)
+        path = os.path.join(self.keys, "audit_20261030.log")
+        notify.audit_log = lambda: path
+        with open(path, "w") as handle:
+            handle.write("start\n")
+        state, _ = notify.check_auth({"general": {"authLogins": "1"}}, None)
+        using = r"[using OPNsense\Auth\Services\WebGui + OPNsense\Auth\Local]"
+        header = '<38>1 2026-10-30T10:00:00+11:00 fw.example audit 4242 - [meta sequenceId="1"] '
+        with open(path, "a") as handle:
+            handle.writelines(header + line + "\n" for line in [
+                f"user admin authenticated successfully for WebGui {using} at 192.0.2.10",
+                f"user root could not authenticate for WebGui. {using} at 2001:db8::5",
+                "user x from 203.0.113.66 could not authenticate for OpenVPN. [using - + -] at -",
+                f"user admin could not authenticate for WebGui. {using}",  # before 26.7.8
+                "user carol: authentication failed from 198.51.100.7"])
+        _, messages = notify.check_auth({"general": {"authLogins": "1"}}, state)
+        self.assertEqual([m["facts"].get("source") for m in messages],
+                         ["192.0.2.10", "2001:db8::5", None, None, "198.51.100.7"])
+
+    MONIT_XML = ('<?xml version="1.0" encoding="ISO-8859-1"?><monit><service type="3"><name>unbound</name>'
+                 '<status>512</status><status_hint>0</status_hint><monitor>1</monitor></service></monit>')
+
+    def monit(self, actions, fetched, config=None):
+        """check_monit's messages for a service gone missing, and the socket requests it made."""
+        for name in ("MONIT_SOCKET", "configctl_json", "UnixHTTPConnection"):
+            self.addCleanup(setattr, notify, name, getattr(notify, name))
+        notify.MONIT_SOCKET = os.path.join(self.keys, "monit.sock")
+        open(notify.MONIT_SOCKET, "w").close()
+        answers = {("configd", "actions", "json"): actions, ("monit", "fetch", "xml"): fetched}
+        notify.configctl_json = lambda *args: answers.get(args)
+        requests, body = [], self.MONIT_XML.encode()
+
+        class Socket:
+            def __init__(self, path):
+                pass
+
+            def request(self, method, url, headers):
+                requests.append(headers)
+
+            def getresponse(self):
+                return type("Response", (), {"status": 200, "read": lambda self: body})()
+
+        notify.UnixHTTPConnection = Socket
+        _, messages = notify.check_monit(config or {}, {"unbound": ""})
+        return [(m["title"], m["body"]) for m in messages], requests
+
+    def test_monit_status_comes_through_core_action(self):
+        messages, requests = self.monit({"monit fetch": {}},
+                                        {"response": self.MONIT_XML, "http_code": 200, "error": None})
+        self.assertEqual(messages, [("Monit: unbound", "Does not exist")])
+        self.assertEqual(requests, [], "the socket is left to core")
+
+    def test_monit_status_comes_from_the_socket_before_core_has_the_action(self):
+        messages, requests = self.monit({"firmware poll": {}}, None, {"monit": {"username": "u", "password": "p"}})
+        self.assertEqual(messages, [("Monit: unbound", "Does not exist")])
+        self.assertEqual(requests, [{"Authorization": "Basic dTpw"}])
+
+    def test_monit_status_comes_from_the_socket_when_core_action_has_no_answer(self):
+        # e.g. a program check's output that is not UTF-8, which the action's JSON cannot carry
+        messages, requests = self.monit({"monit fetch": {}}, None)
+        self.assertEqual(messages, [("Monit: unbound", "Does not exist")])
+        self.assertEqual(len(requests), 1)
+
     def test_status_dropping_below_the_level_is_resolved(self):
         self.addCleanup(setattr, notify, "system_status", notify.system_status)
         item = {"statusCode": 0, "title": "Disk", "message": "low"}
@@ -1384,8 +1449,8 @@ class SummaryTiming(unittest.TestCase):
         self.assertEqual(calls[0], ("health", "fetch", "wan-packets.rrd"))
         self.assertEqual(image[:8], b"\x89PNG\r\n\x1a\n")
         self.assertEqual(chart.struct.unpack(">II", image[16:24]), chart.GRAPH_SIZE)
-        self.assertEqual(graph["legend"], [("In", "#e15759", "peak 30 packets/s, average 22 packets/s", "area"),
-                                           ("Out", "#76b7b2", "peak 5 packets/s, average 4 packets/s", "line")],
+        self.assertEqual(graph["legend"], [("In", "#e15759", "peak 30.0 packets/s, average 22.5 packets/s", "area"),
+                                           ("Out", "#76b7b2", "peak 5.0 packets/s, average 3.5 packets/s", "line")],
                          "IPv4 and IPv6 added")
 
     def test_stale_health_data_is_logged(self):
@@ -1498,7 +1563,11 @@ class SummaryTiming(unittest.TestCase):
         self.assertIn("Gateways: WAN down", summary.brief_status(["Gateway WAN: down"]), "none online")
 
     def test_rates(self):
-        self.assertEqual(summary.rate(950, "bits"), "950 bit/s")
+        self.assertEqual(summary.rate(950, "bits"), "950.0 bit/s")
+        self.assertEqual(summary.rate(0.4, "packets"), "0.4 packets/s", "a low rate is not rounded to 0")
+        self.assertEqual(summary.rate(0.004, "packets"), "<0.1 packets/s", "nor a lower one")
+        self.assertEqual(summary.rate(0, "packets"), "0.0 packets/s")
+        self.assertEqual(summary.rate(999.96, "bits"), "1.0 kbit/s", "not 1000.0 bit/s")
         self.assertEqual(summary.rate(212_400_000, "bits"), "212.4 Mbit/s")
         self.assertEqual(summary.rate(3_120, "states"), "3,120")
         self.assertEqual(summary.rate(12.4, "percent"), "12%")

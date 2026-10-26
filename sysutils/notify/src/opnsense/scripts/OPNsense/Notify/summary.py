@@ -900,8 +900,10 @@ def rate(value, unit):
         return f"{value:,.0f}"
     word = "bit/s" if unit == "bits" else "packets/s"
     for prefix in ("", "k", "M", "G"):
-        if value < 1000 or prefix == "G":
-            return f"{value:.0f} {word}" if not prefix else f"{value:.1f} {prefix}{word}"
+        if round(value, 1) < 1000 or prefix == "G":
+            if 0 < value and round(value, 1) == 0:
+                return f"<0.1 {word}"
+            return f"{value:.1f} {prefix}{word}"
         value /= 1000
     return ""
 
