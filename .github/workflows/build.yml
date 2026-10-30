@@ -125,8 +125,10 @@ jobs:
           sudo apt-get install -y php-cli php-curl
           pip install jinja2
           git clone --depth 1 https://github.com/opnsense/core "${RUNNER_TEMP}/opnsense-core"
-          # an S3 server for the S3 backup provider's tests
-          curl -sSfL -o "${RUNNER_TEMP}/rclone.zip" https://downloads.rclone.org/rclone-current-linux-amd64.zip
+          # an S3 server for the S3 backup provider's tests, pinned like blocky
+          rclone=v1.75.1
+          curl -sSfL -o "${RUNNER_TEMP}/rclone.zip" "https://downloads.rclone.org/${rclone}/rclone-${rclone}-linux-amd64.zip"
+          echo "982b5aa772841168f8e380f139e9e787b2a105403e32b94da8676a0e1c0a13ab  ${RUNNER_TEMP}/rclone.zip" | sha256sum -c -
           unzip -q -j "${RUNNER_TEMP}/rclone.zip" '*/rclone' -d "${RUNNER_TEMP}/rclone"
           # the pinned blocky, to validate what the template renders; without it the harness skips
           BLOCKY=
