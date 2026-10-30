@@ -18,6 +18,8 @@ HARNESS = os.path.join(HERE, "s3_harness.php")
 RCLONE = os.environ.get("RCLONE") or shutil.which("rclone")
 CORE = os.environ.get("OPNSENSE_CORE")
 SECRET = "s3cr3t/Key+With=Symbols"
+DOTS = "\ue000" * 8  # what the page shows for a saved secret
+AHEAD = int(time.time()) + 365 * 86400  # names from a clock that ran a year ahead
 
 
 def free_port():
@@ -60,6 +62,9 @@ class Hostile(http.server.BaseHTTPRequestHandler):
             self.answer(200, b"<html>ok</html>")
         elif self.mode == "delete-501":
             self.answer(501, b"<Error><Code>NotImplemented</Code><Message>no</Message></Error>")
+        elif self.mode == "delete-partial":
+            self.answer(200, b"<DeleteResult><Error><Key>fw/config-1727000002.xml</Key><Code>AccessDenied</Code>"
+                             b"<Message>no</Message></Error></DeleteResult>")
         else:
             self.answer(403, b"<Error><Code>AccessDenied</Code><Message>no</Message></Error>")
 
@@ -136,7 +141,7 @@ class S3(unittest.TestCase):
         self.assertEqual(sorted(answers[8]), sorted(kept), "the bucket holds only what is kept")
 
     def test_new_backup_survives_names_from_a_clock_ahead(self):
-        answers = self.run_steps([["put", f"fw2/config-199999999{i}.xml"] for i in range(1, 4)] +
+        answers = self.run_steps([["put", f"fw2/config-{AHEAD + i}.xml"] for i in range(1, 4)] +
                                  [["upload", self.local("config-1727000009.xml")]], prefix="fw2")
         self.assertIn("config-1727000009.xml", answers[-1])
 
@@ -177,10 +182,9 @@ class S3(unittest.TestCase):
         self.assertIn("Could not reach", self.run_steps([["list", "fw/"]], trusted=False)[0]["error"])
 
     def test_invalid_settings_stop_before_anything_is_sent(self):
-        answers = self.run_steps([["upload", self.local("config-1727000010.xml")], ["list", "fw8/"]],
-                                 region="", prefix="fw8")
-        self.assertIn("The S3 settings are not valid: region:", answers[0]["error"], "names the setting")
-        self.assertEqual(answers[1], [], "nothing sent")
+        error = self.run_steps([["upload", self.local("config-1727000010.xml")]], region="", prefix="fw8")[0]["error"]
+        self.assertIn("The S3 settings are not valid: region:", error, "names the setting")
+        self.assertEqual(self.run_steps([["list", "fw8/"]], prefix="fw8")[0], [], "nothing sent")
         error = self.run_steps([["upload", self.local("config-1727000011.xml")]], endpoint="localhost:99999")[0]["error"]
         self.assertIn("endpoint: Enter a port from 1 to 65535.", error)
         self.assertEqual(error.count("endpoint"), 1, "one message for the port")
@@ -214,10 +218,10 @@ class S3(unittest.TestCase):
         self.assertEqual(answers[0][0], "config-1790000400.xml")
 
     def test_names_from_a_clock_ahead_go_first(self):
-        answers = self.run_steps([["put", f"fw12/config-199999999{i}.xml"] for i in range(1, 3)] +
+        answers = self.run_steps([["put", f"fw12/config-{AHEAD + i}.xml"] for i in range(1, 3)] +
                                  [["put", "fw12/config-1727000008.xml"],
                                   ["upload", self.local("config-1727000009.xml")]], prefix="fw12")
-        self.assertEqual(answers[-1], ["config-1727000009.xml", "config-1727000008.xml", "config-1999999992.xml"])
+        self.assertEqual(answers[-1], ["config-1727000009.xml", "config-1727000008.xml", f"config-{AHEAD + 2}.xml"])
 
     def test_keep_all_asks_for_the_one_backup(self):
         answers = self.run_steps([["upload", self.local("config-1727000020.xml")],
@@ -229,12 +233,37 @@ class S3(unittest.TestCase):
 
     def test_page_gets_values_and_no_secrets(self):
         fields = self.run_steps([["fields"]], endpoint='"><script>x</script>')[0]
-        self.assertEqual(fields["endpoint"], '"><script>x</script>', "the page escapes it")
-        # a saved secret is only marked as saved, so its box shows dots
-        self.assertEqual((fields["secretKey"], fields["password"], fields["passwordconfirm"]),
-                         ("(saved)", "(saved)", "(saved)"))
+        self.assertEqual(fields["endpoint"]["value"], '"><script>x</script>', "the page escapes it")
         empty = self.run_steps([["fields"]], secretKey="", password="")[0]
-        self.assertEqual((empty["secretKey"], empty["password"], empty["passwordconfirm"]), ("", "", ""))
+        for name in ("secretKey", "password", "passwordconfirm"):
+            # a saved secret is only marked as saved, so its box shows dots
+            self.assertEqual((fields[name]["value"], empty[name]["value"]), (DOTS, ""), name)
+
+    def test_setup_keeps_saved_secrets_and_names_the_setting(self):
+        page = {"enabled": "1", "endpoint": f"localhost:{self.port}", "region": "us-east-1", "bucket": "bucket",
+                "prefix": "fw", "accessKey": "AKIDTEST", "secretKey": "", "backupcount": "3", "password": "",
+                "passwordconfirm": ""}
+        dots = dict(page, secretKey=DOTS, password=DOTS, passwordconfirm=DOTS)
+        old = dict(page, secretKey="(saved)", password="(saved)", passwordconfirm="(saved)")
+        # typed with the cursor among the dots, or after them
+        typed = dict(page, password=DOTS[:3] + "new" + DOTS[3:], passwordconfirm=DOTS + "new")
+        answers = self.run_steps([["setup", dots], ["setup", old], ["setup", page], ["setup", typed],
+                                  ["setup", dict(page, region="", backupcount="abc")]])
+        self.assertEqual(answers[0], {"messages": [], "secretKey": SECRET, "password": "pw"}, "the dots keep them")
+        self.assertEqual(answers[1], answers[0], "so does a page from 1.0, which shows them as (saved)")
+        self.assertEqual(answers[2], answers[0], "and empty boxes")
+        self.assertEqual(answers[3], {"messages": [], "secretKey": SECRET, "password": "new"}, "only what is typed")
+        self.assertEqual(answers[4]["messages"], [
+            "Region: A value is required.",
+            "Backup Count: Enter how many backups to keep, up to 1000, or 0 to keep them all.",
+        ], "each named, once")
+
+    def test_a_failed_nightly_backup_is_logged(self):
+        # core's nightly run (php CLI) on 26.7 and before stops at a provider that throws
+        answers = self.run_steps([["backup"], ["log"]], region="")
+        self.assertEqual(answers[0], [], "the providers after this one still run")
+        self.assertEqual(len(answers[1]), 1)
+        self.assertIn("s3-backup: The S3 settings are not valid: region:", answers[1][0])
 
     def hostile(self, mode, steps, **settings):
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -259,10 +288,16 @@ class S3(unittest.TestCase):
     def test_odd_answers_to_a_delete(self):
         # the listing holds the running backup and two older ones; one is to go
         running = self.local("config-1727000004.xml")
+        stored = "The backup is stored, but older backups were not removed: "
         answer = self.hostile("delete-html", [["upload", running]], backupcount="1")[0]
-        self.assertIn("something other than a delete result", answer["error"], "a 2xx that is no DeleteResult fails")
+        self.assertIn(stored + "S3 answered with something other than a delete result", answer["error"],
+                      "a 2xx that is no DeleteResult fails")
         answer = self.hostile("delete-403", [["upload", running]], backupcount="1")[0]
-        self.assertIn("AccessDenied", answer["error"], "a refusal is reported, not worked around")
+        self.assertIn(stored + "S3 answered HTTP 403 AccessDenied", answer["error"],
+                      "a refusal is reported, not worked around")
+        answers = self.hostile("delete-partial", [["upload", running], ["log"]], backupcount="1")
+        self.assertIn(stored + "S3 could not remove fw/config-1727000002.xml: AccessDenied: no", answers[0]["error"])
+        self.assertEqual(answers[1], ["s3-backup: removed fw/config-1727000003.xml"], "what did go is logged")
         answer = self.hostile("delete-501", [["upload", running]], backupcount="1")[0]
         self.assertEqual(answer, ["config-1727000004.xml"], "no DeleteObjects: one DELETE each")
 

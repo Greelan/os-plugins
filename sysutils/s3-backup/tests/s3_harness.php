@@ -22,6 +22,15 @@ namespace Phalcon\Filter {
     }
 }
 
+namespace OPNsense\Backup {
+    /* the provider's log lines, for the log step */
+    function syslog($priority, $message)
+    {
+        $GLOBALS['s3_log'][] = $message;
+        return true;
+    }
+}
+
 namespace {
 require __DIR__ . '/../../../tools/tests/bootstrap.php';
 
@@ -30,7 +39,7 @@ require getenv('OPNSENSE_CORE') . '/src/opnsense/mvc/app/config/AppConfig.php';
 $conf = sys_get_temp_dir() . '/s3-harness-' . getmypid();
 @mkdir($conf);
 file_put_contents("{$conf}/config.xml", "<?xml version=\"1.0\"?>\n<opnsense/>\n");
-new OPNsense\Core\AppConfig(['application' => ['configDir' => $conf], 'globals' => ['simulate_mode' => '1']]);
+new OPNsense\Core\AppConfig(['application' => ['configDir' => $conf], 'globals' => ['simulate_mode' => '1', 'owner' => '']]);
 
 /* core's Config as far as the upload uses it: the local backups, newest first */
 class StubConfig
@@ -87,7 +96,22 @@ foreach ($spec['steps'] as $step) {
                 $answer = $call('upload', new StubConfig($step[1]));
                 break;
             case 'fields':
-                $answer = array_column($call('getConfigurationFields'), 'value', 'name');
+                $answer = array_column($call('getConfigurationFields'), null, 'name');
+                break;
+            case 'setup':
+                /* as the page posts it, then what the secrets hold */
+                $answer = [
+                    'messages' => $provider->setConfiguration($step[1]),
+                    'secretKey' => $settings->secretKey->getValue(),
+                    'password' => $settings->password->getValue(),
+                ];
+                break;
+            case 'backup':
+                $answer = $provider->backup();
+                break;
+            case 'log':
+                $answer = $GLOBALS['s3_log'] ?? [];
+                $GLOBALS['s3_log'] = [];
                 break;
         }
     } catch (Exception $e) {
@@ -96,4 +120,8 @@ foreach ($spec['steps'] as $step) {
     echo json_encode($answer) . "\n";
 }
 $GLOBALS['test_checks'] = count($spec['steps']);
+array_map('unlink', glob("{$conf}/backup/*"));
+@rmdir("{$conf}/backup");
+array_map('unlink', glob("{$conf}/*"));
+@rmdir($conf);
 }

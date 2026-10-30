@@ -41,13 +41,16 @@ class S3 extends Base implements IBackupProvider
 {
     /* the model's write-only fields, never sent back to the page */
     private const SECRETS = ['secretKey', 'password', 'passwordconfirm'];
-    /* what the page gets in place of a saved secret, so its box shows dots; sent back, it keeps the secret */
-    private const SAVED = '(saved)';
+    /* the dots the page shows for a saved secret: a character no keyboard types, which is removed from
+     * what is posted back, leaving only what was typed, wherever the cursor was */
+    private const SAVED = "\u{E000}";
+    /* what a page from 1.0 shows in place of a saved secret; posted back, it still keeps the secret */
+    private const SAVED_1_0 = '(saved)';
     /* names core gives backups: config-<microtime>[_<hrtime>].xml */
     private const BACKUP_NAME = '/^config-[0-9]+(\.[0-9]+)?(_[0-9]+)?\.xml$/D';
     /* a revision time, which core rounds to two decimals, and the backup it writes with it are this close */
     private const SAME_SAVE = 0.01;
-    /* a hostile endpoint cannot keep a backup busy or fill memory */
+    /* a hostile endpoint cannot list endlessly or fill memory; each request has its own timeout */
     private const MAX_PAGES = 100;
     private const MAX_RESPONSE = 8 * 1024 * 1024;
 
@@ -128,7 +131,7 @@ class S3 extends Base implements IBackupProvider
                 'name' => 'backupcount',
                 'type' => 'text',
                 'label' => gettext('Backup Count'),
-                'help' => gettext('How many backups to keep in the bucket. Older ones are deleted; 0 keeps them all.'),
+                'help' => gettext('How many backups to keep in the folder. Older ones are deleted; 0 keeps them all.'),
             ],
             [
                 'name' => 'password',
@@ -150,7 +153,7 @@ class S3 extends Base implements IBackupProvider
         foreach ($fields as &$field) {
             if (in_array($field['name'], self::SECRETS)) {
                 $name = $field['name'] == 'passwordconfirm' ? 'password' : $field['name'];
-                $field['value'] = $this->model->$name->getValue() !== '' ? self::SAVED : '';
+                $field['value'] = $this->model->$name->getValue() !== '' ? str_repeat(self::SAVED, 8) : '';
             } else {
                 /* the page escapes them */
                 $field['value'] = (string)$this->model->getNodeByReference($field['name']);
@@ -177,12 +180,20 @@ class S3 extends Base implements IBackupProvider
             return [gettext('You do not have the permission to perform this action.')];
         }
         foreach (self::SECRETS as $name) {
-            if (($conf[$name] ?? '') === self::SAVED) {
-                $conf[$name] = ''; /* untouched, so the write-only field keeps what it has */
-            }
+            /* without the dots, a box left as it was is empty, so the write-only field keeps what it has */
+            $value = $conf[$name] ?? '';
+            $conf[$name] = $value === self::SAVED_1_0 ? '' : str_replace(self::SAVED, '', $value);
         }
         $this->setModelProperties($this->model, $conf);
-        $messages = $this->validateModel($this->model);
+        /* core's own messages, e.g. for a required field, do not say which field they are about */
+        $labels = array_column($this->getConfigurationFields(), 'label', 'name');
+        $messages = [];
+        foreach ($this->model->performValidation() as $message) {
+            $field = $message->getField();
+            $messages[] = sprintf('%s: %s', $labels[$field] ?? $field, $message->getMessage());
+        }
+        /* an integer field gives the same message for each of its checks */
+        $messages = array_values(array_unique($messages));
         if (($conf['password'] ?? '') !== ($conf['passwordconfirm'] ?? '')) {
             $messages[] = gettext("The supplied 'Password' and 'Confirm' field values must match.");
         }
@@ -214,10 +225,15 @@ class S3 extends Base implements IBackupProvider
             return $this->upload($cnf);
         } catch (\Throwable $e) {
             syslog(LOG_ERR, 's3-backup: ' . $e->getMessage());
-            /* the page shows the reason; the nightly run carries on with the other providers */
+            /* the page shows the reason; the nightly run carries on with the other providers, as its
+             * script only catches a provider's error from opnsense/core#11054 on */
             if (PHP_SAPI !== 'cli') {
                 /* the page only catches Exception */
-                throw $e instanceof \Exception ? $e : new \Exception($e->getMessage(), 0, $e);
+                throw $e instanceof \Exception ? $e : new \Exception(
+                    gettext('The S3 backup failed unexpectedly; the system log has the details.'),
+                    0,
+                    $e
+                );
             }
             return [];
         }
@@ -257,15 +273,22 @@ class S3 extends Base implements IBackupProvider
         }
 
         /* newest first; a name stamped in the future, from a clock that ran ahead, counts as oldest,
-         * as core's own list leaves it out, and the backup just sent always stays */
+         * so it goes first, and the backup just sent always stays */
         $now = microtime(true);
         usort($remote, function ($a, $b) use ($now) {
             return [self::stamp($b) <= $now, self::stamp($b), $b] <=> [self::stamp($a) <= $now, self::stamp($a), $a];
         });
         $remote = array_merge([$name], array_values(array_diff($remote, [$name])));
         if ($keep > 0) {
-            foreach (array_chunk(array_slice($remote, $keep), self::MAX_DELETE) as $old) {
-                $this->delete($folder, $old);
+            try {
+                foreach (array_chunk(array_slice($remote, $keep), self::MAX_DELETE) as $old) {
+                    $this->delete($folder, $old);
+                }
+            } catch (\Exception $e) {
+                throw new \Exception(sprintf(
+                    gettext('The backup is stored, but older backups were not removed: %s'),
+                    $e->getMessage()
+                ));
             }
             $remote = array_slice($remote, 0, $keep);
         }
@@ -291,16 +314,16 @@ class S3 extends Base implements IBackupProvider
             }
             $response = null;
         }
+        $failed = [];
         if ($response !== null) {
             foreach ($this->parse($response, 'DeleteResult')->Error ?? [] as $error) {
-                $this->fail(sprintf(
-                    gettext('S3 could not remove %s: %s'),
-                    self::clean((string)$error->Key),
-                    self::clean((string)$error->Code . ': ' . (string)$error->Message)
-                ));
+                $failed[(string)$error->Key] = self::clean((string)$error->Code . ': ' . (string)$error->Message);
             }
         }
         foreach ($names as $name) {
+            if (isset($failed[$folder . $name])) {
+                continue;
+            }
             if ($response === null) {
                 try {
                     $this->request('DELETE', $folder . $name);
@@ -311,6 +334,9 @@ class S3 extends Base implements IBackupProvider
                 }
             }
             syslog(LOG_NOTICE, 's3-backup: removed ' . $folder . $name);
+        }
+        foreach ($failed as $key => $reason) {
+            $this->fail(sprintf(gettext('S3 could not remove %s: %s'), self::clean((string)$key), $reason));
         }
     }
 

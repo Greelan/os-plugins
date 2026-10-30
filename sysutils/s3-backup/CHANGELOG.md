@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1 - 2026-10-30
+
+- A new secret access key or password typed among the dots of the saved one is stored as typed, without the dots.
+- When older backups cannot be removed, the message says the new one is stored, and those that were removed are logged.
+- A setting the page refuses is named, once.
+
 ## 1.0_5 - 2026-10-03
 
 - Backups upload to a bucket with Object Lock.
