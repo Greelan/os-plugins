@@ -11,7 +11,10 @@
 set -e
 
 SELF=$(cd "$(dirname "$0")/.." && pwd)
+. "${SELF}/tools/stamps.subr"
 ABI=$(pkg config abi)
+# the FreeBSD the repository is for: nothing in it may be built for a newer one
+BASE=$(uname -U)
 STAGE="${SELF}/stage"
 OUT="${SELF}/repo/${ABI}"
 rm -rf "${STAGE}" "${OUT}"; mkdir -p "${STAGE}" "${OUT}"
@@ -72,6 +75,7 @@ if [ -n "${BLOCKY_VERSION}" ]; then
 fi
 rm -f "${PUBLISHED}"
 
+stamps_check "${BASE}" "${STAGE}"
 cp "${STAGE}"/*.pkg "${OUT}/" 2>/dev/null || true
 pkg repo "${OUT}" ${REPO_SIGNING_KEY:+"${REPO_SIGNING_KEY}"}
 
@@ -105,6 +109,9 @@ if [ -n "${DEV_REPO_URL}" ]; then
         done
     fi
     rm -rf "${tmp}"
+    # e.g. another branch's package, which no firewall on this base could install
+    stamps_drop_above "${BASE}" "${DEV}"
+    stamps_check "${BASE}" "${DEV}"
     pkg repo "${DEV}" ${REPO_SIGNING_KEY:+"${REPO_SIGNING_KEY}"}
 fi
 
