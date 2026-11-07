@@ -128,7 +128,9 @@ jobs:
           pip install jinja2
           git clone --depth 1 https://github.com/opnsense/core "${RUNNER_TEMP}/opnsense-core"
           # an S3 server for the S3 backup provider's tests, at the version the repository ships (the port's)
-          rclone=$(curl -sSfL https://cgit.freebsd.org/ports/plain/net/rclone/Makefile | sed -n 's/^DISTVERSION=[[:space:]]*//p')
+          rclone=$(curl -sSfL https://cgit.freebsd.org/ports/plain/net/rclone/Makefile |
+                sed -n 's/^DISTVERSION=[[:space:]]*\([^[:space:]#]*\).*/\1/p' | head -1)
+          [ -n "${rclone}" ] || { echo "cannot read DISTVERSION from the net/rclone port" >&2; exit 1; }
           mkdir -p "${RUNNER_TEMP}/rclone" && cd "${RUNNER_TEMP}/rclone"
           curl -sSfLO "https://downloads.rclone.org/v${rclone}/rclone-v${rclone}-linux-amd64.zip"
           curl -sSfLO "https://downloads.rclone.org/v${rclone}/SHA256SUMS"

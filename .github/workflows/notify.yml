@@ -140,12 +140,12 @@ jobs:
           series=$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
                 "https://api.github.com/repos/opnsense/tools/contents/config?ref=master" |
                 python3 -c 'import json, sys; print("\n".join(e["name"] for e in json.load(sys.stdin) if e["type"] == "dir"))' |
-                sort -V | tail -1) || exit 0
+                grep -E '^[0-9]+\.[0-9]+$' | sort -V | tail -1) || exit 0
           [ -n "${series}" ] || exit 0
           os=$(curl -fsSL "https://raw.githubusercontent.com/opnsense/tools/master/config/${series}/build.conf" |
                 sed -n 's/^OS?=[[:space:]]*\([^[:space:]#]*\).*/\1/p' | head -1) || exit 0
           [ -n "${os}" ] || exit 0
-          releases=$(sed -n 's/^ *release: \[\(.*\)\]$/\1/p' .github/workflows/build.yml | tr -d '"')
+          releases=$(sed -n 's/^[[:space:]]*release:[[:space:]]*\[\([^]]*\)\].*/\1/p' .github/workflows/build.yml | tr -d '"')
           {
             echo "series=${series}"
             echo "os=${os}"
