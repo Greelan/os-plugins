@@ -1,6 +1,6 @@
 #!/bin/sh
-# Build every plugin, plus blocky at BLOCKY_VERSION, into a per-ABI pkg repository at
-# repo/<ABI>/. With DEV_REPO_URL set, build a second repository at repo-dev/<ABI>/
+# Build every plugin, plus blocky at BLOCKY_VERSION and rclone when a plugin depends on it,
+# into a per-ABI pkg repository at repo/<ABI>/. With DEV_REPO_URL set, build a second repository at repo-dev/<ABI>/
 # holding the same packages layered onto what that channel already has. Invoked by the
 # build workflow.
 #
@@ -54,14 +54,19 @@ for mk in "${SELF}"/*/*/Makefile; do
     find "${pdir}/work" -name '*.pkg' -exec cp {} "${STAGE}/" \;
 done
 
+# rclone, when a plugin depends on it
+RCLONE=
+grep -h '^PLUGIN_DEPENDS' "${SELF}"/*/*/Makefile | grep -qw rclone && RCLONE=1
+
+# ports tree: mounted on the FreeBSD 15 image, absent on 14 (never remove it)
+if { [ -n "${BLOCKY_VERSION}" ] || [ -n "${RCLONE}" ]; } && [ ! -e /usr/ports/Mk/bsd.port.mk ]; then
+    git clone --depth 1 https://git.FreeBSD.org/ports.git /usr/ports
+fi
+
 # blocky, from the port pinned to BLOCKY_VERSION, at the port's own revision plus
 # BLOCKY_REVISION: a rebuild picks up a ports revision, and a change of ours within
 # the same blocky version raises BLOCKY_REVISION (back to 0 with the next version)
 if [ -n "${BLOCKY_VERSION}" ]; then
-    # ports tree: mounted on the FreeBSD 15 image, absent on 14 (never remove it)
-    if [ ! -e /usr/ports/Mk/bsd.port.mk ]; then
-        git clone --depth 1 https://git.FreeBSD.org/ports.git /usr/ports
-    fi
     ours=
     [ -f "${SELF}/dns/blocky/BLOCKY_REVISION" ] &&
         ours=$(tr -d ' \n' < "${SELF}/dns/blocky/BLOCKY_REVISION")
@@ -71,6 +76,14 @@ if [ -n "${BLOCKY_VERSION}" ]; then
     [ "${revision}" -eq 0 ] || version="${version}_${revision}"
     if ! reuse "blocky-$(echo "${version}" | sed 's/[.]/\\./g')\.pkg"; then
         sh "${SELF}/tools/build-blocky-port.sh" "${BLOCKY_VERSION}" "${revision}" "${STAGE}"
+    fi
+fi
+
+# rclone as the port has it, version and revision: a ports bump is a rebuild
+if [ -n "${RCLONE}" ]; then
+    version=$(make -C /usr/ports/net/rclone -V PKGVERSION)
+    if ! reuse "rclone-$(echo "${version}" | sed 's/[.]/\\./g')\.pkg"; then
+        sh "${SELF}/tools/build-port.sh" net/rclone "${STAGE}"
     fi
 fi
 rm -f "${PUBLISHED}"
