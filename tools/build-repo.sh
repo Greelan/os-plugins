@@ -24,13 +24,22 @@ rm -rf "${STAGE}" "${OUT}"; mkdir -p "${STAGE}" "${OUT}"
 PUBLISHED=$(mktemp)
 if [ -z "${FORCE_BUILD}" ] && [ -n "${PROD_REPO_URL}" ]; then
     site=$(mktemp -d)
-    # without the listing every package would be rebuilt and republished: stop instead
-    if ! fetch -qo "${site}/packagesite.pkg" "${PROD_REPO_URL}/${ABI}/packagesite.pkg"; then
-        echo "cannot read ${PROD_REPO_URL}/${ABI}; run with force for a repository's first build" >&2
-        exit 1
+    # without the listing every package would be rebuilt and republished: stop instead, unless
+    # this major has no repository yet (its first build, which republishes no other major)
+    if ! err=$(fetch -qo "${site}/packagesite.pkg" "${PROD_REPO_URL}/${ABI}/packagesite.pkg" 2>&1); then
+        case "${err}" in
+        *": Not Found")
+            echo ">>> ${PROD_REPO_URL}/${ABI} has no repository yet: building it in full"
+            ;;
+        *)
+            echo "cannot read ${PROD_REPO_URL}/${ABI}: ${err}" >&2
+            exit 1
+            ;;
+        esac
+    else
+        tar -xf "${site}/packagesite.pkg" -C "${site}" packagesite.yaml
+        sed -n 's/.*"repopath":"\([^"]*\)".*/\1/p' "${site}/packagesite.yaml" > "${PUBLISHED}"
     fi
-    tar -xf "${site}/packagesite.pkg" -C "${site}" packagesite.yaml
-    sed -n 's/.*"repopath":"\([^"]*\)".*/\1/p' "${site}/packagesite.yaml" > "${PUBLISHED}"
     rm -rf "${site}"
 fi
 # fetch the published file whose name matches $1 (an extended regex) into the stage;
