@@ -1,0 +1,55 @@
+# The FreeBSD version a package is built for (its FreeBSD_version annotation). pkg refuses one
+# built for a newer FreeBSD than the firewall runs, and one such package fails the whole
+# catalogue (libpkg is_valid_os_version), so a repository holds none above its base.
+# Sourced by build-repo.sh; PKG names the pkg to run.
+
+# the package's FreeBSD_version, nothing when it has none
+pkg_stamp()
+{
+	${PKG:-pkg} query -F "$1" '%At %Av' | awk '$1 == "FreeBSD_version" { print $2; exit }'
+}
+
+# true when the package is built for a FreeBSD above base, or its stamp is no number
+stamp_above()
+{
+	local stamp
+	stamp=$(pkg_stamp "$1")
+	case "${stamp}" in
+	"") return 1 ;;
+	*[!0-9]*) return 0 ;;
+	esac
+	[ "${stamp}" -gt "$2" ]
+}
+
+# fail, naming each package in the directories built for a FreeBSD above base
+stamps_check()
+{
+	local base dir pkg status
+	base=$1
+	shift
+	status=0
+	for dir in "$@"; do
+		for pkg in "${dir}"/*.pkg; do
+			[ -f "${pkg}" ] || continue
+			if stamp_above "${pkg}" "${base}"; then
+				echo "${pkg}: built for $(pkg_stamp "${pkg}"), above this base ${base}" >&2
+				status=1
+			fi
+		done
+	done
+	return ${status}
+}
+
+# remove each package in the directory built for a FreeBSD above base
+stamps_drop_above()
+{
+	local pkg
+	for pkg in "$2"/*.pkg; do
+		[ -f "${pkg}" ] || continue
+		if stamp_above "${pkg}" "$1"; then
+			echo "dropped $(basename "${pkg}"): built for $(pkg_stamp "${pkg}"), above this base $1"
+			rm -f "${pkg}"
+		fi
+	done
+	return 0
+}

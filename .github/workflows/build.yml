@@ -57,6 +57,8 @@ jobs:
             xargs -0 -r -n1 python3 -m py_compile
       - name: Shell syntax
         run: find . -name '*.sh' -print0 | xargs -0 -r -n1 sh -n
+      - name: CI script tests
+        run: python3 -m unittest discover -s tools/tests -p 'test_*.py'
       # the scripts carry no annotations, so check the bodies rather than the signatures
       - name: Python types
         run: |
