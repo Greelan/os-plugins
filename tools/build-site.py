@@ -37,26 +37,24 @@ def page(body, title=None, built=False):
 
 
 def built_packages():
-    """name -> {version: [abi, ...]} for everything in the built repository."""
+    """name -> {version, ...} for everything in the built repository."""
     found = {}
     for abi_dir in sorted(glob.glob(os.path.join(REPO, "*"))):
-        abi = os.path.basename(abi_dir)
-        if not os.path.isdir(abi_dir) or abi == "changelog":
+        if not os.path.isdir(abi_dir) or os.path.basename(abi_dir) == "changelog":
             continue
         for pkg in glob.glob(os.path.join(abi_dir, "*.pkg")):
             name, _, version = os.path.basename(pkg)[:-len(".pkg")].rpartition("-")
             if name:
-                found.setdefault(name, {}).setdefault(version, []).append(abi)
+                found.setdefault(name, set()).add(version)
     return found
 
 
 def package_list(names, found):
-    """Versions and architectures built for these package names."""
+    """Versions built for these package names."""
     items = []
     for name in names:
-        for version, abis in sorted(found.get(name, {}).items()):
-            items.append('<li><code>{}</code> {} <span class="abi">{}</span></li>'.format(
-                html.escape(name), html.escape(version), html.escape(", ".join(sorted(abis)))))
+        for version in sorted(found.get(name, ())):
+            items.append('<li><code>{}</code> {}</li>'.format(html.escape(name), html.escape(version)))
     return '<ul class="pkgs">\n%s\n</ul>' % "\n".join(items) if items else ""
 
 
