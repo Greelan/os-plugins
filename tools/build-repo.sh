@@ -6,8 +6,9 @@
 #
 # A package PROD_REPO_URL already publishes under the same name and version is fetched
 # from there, never rebuilt: a rebuild differs byte for byte (it records the commit), and
-# a firewall that cached the published file then fails its checksum. FORCE_BUILD=1
-# rebuilds everything anyway.
+# a firewall that cached the published file then fails its checksum. One built for a newer
+# FreeBSD than this VM's is built again: no firewall on this base could install it.
+# FORCE_BUILD=1 rebuilds everything anyway.
 set -e
 
 SELF=$(cd "$(dirname "$0")/.." && pwd)
@@ -37,9 +38,16 @@ fi
 reuse() {
     path=$(grep -E "(^|/)$1\$" "${PUBLISHED}" | head -1)
     [ -n "${path}" ] || return 1
-    if ! fetch -qo "${STAGE}/$(basename "${path}")" "${PROD_REPO_URL}/${ABI}/${path}"; then
+    got="${STAGE}/$(basename "${path}")"
+    if ! fetch -qo "${got}" "${PROD_REPO_URL}/${ABI}/${path}"; then
         echo "cannot fetch published ${path}" >&2
         exit 1
+    fi
+    # built for a newer FreeBSD than this base, so no firewall on it can have installed it
+    if stamp_above "${got}" "${BASE}"; then
+        echo ">>> Rebuilding $(basename "${path}"): built for $(pkg_stamp "${got}"), above this base ${BASE}"
+        rm -f "${got}"
+        return 1
     fi
     echo ">>> Reusing published $(basename "${path}")"
 }
@@ -116,9 +124,16 @@ if [ -n "${DEV_REPO_URL}" ]; then
                 # same version stays, since firewalls may have cached it
                 newer=$(pkg version -t "$(pkg_version "${file}")" "$(pkg_version "${mine}")")
                 [ "${newer}" = "<" ] || { [ -n "${FORCE_BUILD}" ] && [ "${newer}" = "=" ]; } && continue
-                rm -f "${mine}"
             fi
-            fetch -qo "${DEV}/${file}" "${DEV_REPO_URL}/${ABI}/${path}" || rm -f "${DEV}/${file}"
+            fetch -qo "${tmp}/${file}" "${DEV_REPO_URL}/${ABI}/${path}" || { rm -f "${tmp}/${file}"; continue; }
+            # this base cannot install it, so this build's copy stays, even at the same version
+            if stamp_above "${tmp}/${file}" "${BASE}"; then
+                echo ">>> Dropping ${file} from the channel: built for $(pkg_stamp "${tmp}/${file}"), above this base ${BASE}"
+                rm -f "${tmp}/${file}"
+                continue
+            fi
+            [ -z "${mine}" ] || rm -f "${mine}"
+            mv "${tmp}/${file}" "${DEV}/${file}"
         done
     fi
     rm -rf "${tmp}"
