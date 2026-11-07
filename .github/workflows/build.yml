@@ -127,11 +127,13 @@ jobs:
           sudo apt-get install -y php-cli php-curl
           pip install jinja2
           git clone --depth 1 https://github.com/opnsense/core "${RUNNER_TEMP}/opnsense-core"
-          # an S3 server for the S3 backup provider's tests, pinned like blocky
-          rclone=v1.75.1
-          curl -sSfL -o "${RUNNER_TEMP}/rclone.zip" "https://downloads.rclone.org/${rclone}/rclone-${rclone}-linux-amd64.zip"
-          echo "982b5aa772841168f8e380f139e9e787b2a105403e32b94da8676a0e1c0a13ab  ${RUNNER_TEMP}/rclone.zip" | sha256sum -c -
-          unzip -q -j "${RUNNER_TEMP}/rclone.zip" '*/rclone' -d "${RUNNER_TEMP}/rclone"
+          # an S3 server for the S3 backup provider's tests, at the version the repository ships (the port's)
+          rclone=$(curl -sSfL https://cgit.freebsd.org/ports/plain/net/rclone/Makefile | sed -n 's/^DISTVERSION=[[:space:]]*//p')
+          mkdir -p "${RUNNER_TEMP}/rclone" && cd "${RUNNER_TEMP}/rclone"
+          curl -sSfLO "https://downloads.rclone.org/v${rclone}/rclone-v${rclone}-linux-amd64.zip"
+          curl -sSfLO "https://downloads.rclone.org/v${rclone}/SHA256SUMS"
+          grep "  rclone-v${rclone}-linux-amd64.zip$" SHA256SUMS | sha256sum -c -
+          unzip -q -j "rclone-v${rclone}-linux-amd64.zip" '*/rclone' -d . && cd "${GITHUB_WORKSPACE}"
           # the pinned blocky, to validate what the template renders; without it the harness skips
           BLOCKY=
           if [ -n "${HARNESS}" ]; then
