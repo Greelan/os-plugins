@@ -154,7 +154,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        release: ["14", "15"]
+        # per FreeBSD major, the base of the older supported OPNsense series on it; raise it when
+        # that series is dropped, remove the entry to freeze the major
+        release: ["14.3", "15.1"]
     steps:
       - uses: actions/checkout@v7
 
@@ -240,27 +242,4 @@ jobs:
           AWS_DEFAULT_REGION: auto
           R2_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
           CHANNEL: ${{ github.event_name == 'push' && 'both' || github.event.inputs.channel }}
-        run: |
-          # everything revalidates: pages and repo metadata both keep their names
-          CACHE="public, max-age=60, must-revalidate"
-          # prod root; keep --delete out of the dev/ prefix
-          sync_prod() {
-            aws s3 sync repo/ "s3://${R2_BUCKET}/" \
-              --endpoint-url "${R2_ENDPOINT}" --delete --exclude "dev/*" \
-              --cache-control "${CACHE}" --no-progress
-          }
-          # dev channel = its own repository, already layered onto what the channel held
-          sync_dev() {
-            if ! ls repo-dev/*/*.pkg >/dev/null 2>&1; then
-              echo "no dev repository was built; leaving the channel alone" >&2
-              return 0
-            fi
-            aws s3 sync repo-dev/ "s3://${R2_BUCKET}/dev/" \
-              --endpoint-url "${R2_ENDPOINT}" --delete \
-              --cache-control "${CACHE}" --no-progress
-          }
-          case "${CHANNEL}" in
-            dev) sync_dev ;;
-            prod) sync_prod ;;
-            both) sync_prod; sync_dev ;;
-          esac
+        run: sh tools/sync-r2.sh "${CHANNEL}"
