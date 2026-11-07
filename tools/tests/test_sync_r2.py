@@ -42,7 +42,8 @@ class SyncR2(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = []
         if os.path.exists(self.log):
-            calls = [line.rstrip("\n").split("\t")[:-1] for line in open(self.log)]
+            with open(self.log) as log:
+                calls = [line.rstrip("\n").split("\t")[:-1] for line in log]
         return result, calls
 
     @staticmethod

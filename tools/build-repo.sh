@@ -1,8 +1,8 @@
 #!/bin/sh
 # Build every plugin, plus blocky at BLOCKY_VERSION and rclone when a plugin depends on it,
-# into a per-ABI pkg repository at repo/<ABI>/. With DEV_REPO_URL set, build a second repository at repo-dev/<ABI>/
-# holding the same packages layered onto what that channel already has. Invoked by the
-# build workflow.
+# into a per-ABI pkg repository at repo/<ABI>/. With DEV_REPO_URL set, build a second
+# repository at repo-dev/<ABI>/ holding the same packages layered onto what that channel
+# already has. Invoked by the build workflow.
 #
 # A package PROD_REPO_URL already publishes under the same name and version is fetched
 # from there, never rebuilt: a rebuild differs byte for byte (it records the commit), and
@@ -129,7 +129,15 @@ if [ -n "${DEV_REPO_URL}" ]; then
                 newer=$(pkg version -t "$(pkg_version "${file}")" "$(pkg_version "${mine}")")
                 [ "${newer}" = "<" ] || { [ -n "${FORCE_BUILD}" ] && [ "${newer}" = "=" ]; } && continue
             fi
-            fetch -qo "${tmp}/${file}" "${DEV_REPO_URL}/${ABI}/${path}" || { rm -f "${tmp}/${file}"; continue; }
+            if ! fetch -qo "${tmp}/${file}" "${DEV_REPO_URL}/${ABI}/${path}"; then
+                rm -f "${tmp}/${file}"
+                if [ -n "${mine}" ]; then
+                    echo ">>> Keeping this build's $(basename "${mine}"): cannot fetch the channel's ${file}"
+                else
+                    echo ">>> Leaving out ${file}: cannot fetch it from the channel"
+                fi
+                continue
+            fi
             # this base cannot install it, so this build's copy stays, even at the same version
             if stamp_above "${tmp}/${file}" "${BASE}"; then
                 echo ">>> Dropping ${file} from the channel: built for $(pkg_stamp "${tmp}/${file}"), above this base ${BASE}"
@@ -141,8 +149,6 @@ if [ -n "${DEV_REPO_URL}" ]; then
         done
     fi
     rm -rf "${tmp}"
-    # e.g. another branch's package, which no firewall on this base could install
-    stamps_drop_above "${BASE}" "${DEV}"
     stamps_check "${BASE}" "${DEV}"
     pkg repo "${DEV}" ${REPO_SIGNING_KEY:+"${REPO_SIGNING_KEY}"}
 fi

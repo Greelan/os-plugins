@@ -8,6 +8,7 @@ import unittest
 STAMPS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "stamps.subr")
 STUB = """#!/bin/sh
 # pkg query -F <file> '%At %Av'
+[ "$(cat "$3.stamp" 2>/dev/null)" = unreadable ] && exit 1
 echo "repo_type binary"
 [ -f "$3.stamp" ] && echo "FreeBSD_version $(cat "$3.stamp")"
 exit 0
@@ -37,7 +38,7 @@ class Stamps(unittest.TestCase):
 
     def run_function(self, *args):
         return subprocess.run(["sh", "-c", '. "$STAMPS"; "$@"', "sh", *args], capture_output=True, text=True,
-                              cwd=self.tmp.name, env=dict(os.environ, PKG=self.pkg, STAMPS=STAMPS))
+                              cwd=self.tmp.name, env=dict(os.environ, STAMPS_PKG=self.pkg, STAMPS=STAMPS))
 
     def test_reads_the_stamp(self):
         path = self.package("blocky-0.35.0_5.pkg", "1405000")
@@ -68,14 +69,29 @@ class Stamps(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("a.pkg: built for 14.5", result.stderr)
 
-    def test_drop_above_removes_and_logs(self):
+    def test_unreadable_package_fails(self):
+        self.package("a.pkg", "unreadable")
+        result = self.run_function("stamps_check", "1403000", self.dir)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("a.pkg: built for (unreadable)", result.stderr)
+
+    def test_empty_stamp_fails(self):
+        self.package("a.pkg", "")
+        result = self.run_function("stamps_check", "1403000", self.dir)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("a.pkg: built for -", result.stderr)
+
+    def test_zero_stamp_fails(self):
+        self.package("a.pkg", "0")
+        self.assertEqual(self.run_function("stamps_check", "1403000", self.dir).returncode, 1)
+
+    def test_a_stray_pkg_variable_is_not_used(self):
         self.package("a.pkg", "1405000")
-        self.package("b.pkg", "1403000")
-        result = self.run_function("stamps_drop_above", "1403000", self.dir)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(os.path.exists(os.path.join(self.dir, "a.pkg")))
-        self.assertTrue(os.path.exists(os.path.join(self.dir, "b.pkg")))
-        self.assertIn("dropped a.pkg", result.stdout)
+        env = dict(os.environ, PKG="/nonexistent", STAMPS_PKG=self.pkg, STAMPS=STAMPS)
+        result = subprocess.run(["sh", "-c", '. "$STAMPS"; stamps_check 1403000 "$1"', "sh", self.dir],
+                                capture_output=True, text=True, env=env)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("built for 1405000", result.stderr)
 
 
 if __name__ == "__main__":
