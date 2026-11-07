@@ -17,6 +17,8 @@ pkg update
 
 Plugins are then installed from the web UI under **System > Firmware > Plugins**. Find the relevant package and click **+**.
 
+Plugins support the current and previous OPNsense series.
+
 ## Plugins
 
 ### os-blocky-greelan

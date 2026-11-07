@@ -1,7 +1,8 @@
 name: notify
 
 # Email the maintainer about a new blocky release, a new revision of the blocky port
-# (Go bumps in ports raise its PORTREVISION) or newer vendored libraries.
+# (Go bumps in ports raise its PORTREVISION), a new OPNsense series and its FreeBSD base, or
+# newer vendored libraries.
 
 on:
   schedule:
@@ -14,8 +15,8 @@ permissions:
 
 jobs:
   notify:
-    # email once per new blocky release, once per blocky port version and once per set of
-    # newer vendored libraries
+    # email once per new blocky release, once per blocky port version, once per OPNsense series
+    # and base, and once per set of newer vendored libraries
     runs-on: ubuntu-latest
     env:
       # the sender, as a repository variable or secret; the address falls back to MAIL_FROM
@@ -128,6 +129,69 @@ jobs:
       - name: Record port state
         if: steps.port.outputs.version != '' && steps.portseen.outputs.cache-hit != 'true'
         run: touch .port-notified .port-init
+
+      # opnsense/tools has a config per series about a month before its release; its OS?= is the
+      # FreeBSD base the build matrix may need (a new major) or move to (a dropped series)
+      - name: Resolve the newest OPNsense series
+        id: series
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          series=$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
+                "https://api.github.com/repos/opnsense/tools/contents/config?ref=master" |
+                python3 -c 'import json, sys; print("\n".join(e["name"] for e in json.load(sys.stdin) if e["type"] == "dir"))' |
+                sort -V | tail -1) || exit 0
+          [ -n "${series}" ] || exit 0
+          os=$(curl -fsSL "https://raw.githubusercontent.com/opnsense/tools/master/config/${series}/build.conf" |
+                sed -n 's/^OS?=[[:space:]]*\([^[:space:]#]*\).*/\1/p' | head -1) || exit 0
+          [ -n "${os}" ] || exit 0
+          releases=$(sed -n 's/^ *release: \[\(.*\)\]$/\1/p' .github/workflows/build.yml | tr -d '"')
+          {
+            echo "series=${series}"
+            echo "os=${os}"
+            echo "releases=${releases}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Have we checked the OPNsense series before?
+        id: seriesinit
+        if: steps.series.outputs.series != ''
+        uses: actions/cache@v5
+        with:
+          path: .series-init
+          key: opnsense-series-init
+
+      - name: Already emailed this series and base?
+        id: seriesseen
+        if: steps.series.outputs.series != ''
+        uses: actions/cache@v5
+        with:
+          path: .series-notified
+          key: opnsense-series-${{ steps.series.outputs.series }}-${{ steps.series.outputs.os }}
+
+      - name: Email the maintainer about the OPNsense series
+        # only a new series or base, and never on the first-ever run (just seed then)
+        if: steps.series.outputs.series != '' && steps.seriesinit.outputs.cache-hit == 'true' && steps.seriesseen.outputs.cache-hit != 'true'
+        uses: dawidd6/action-send-mail@v22
+        with:
+          server_address: ${{ secrets.MAIL_SERVER }}
+          # STARTTLS; secure means TLS from the start, as on port 465
+          server_port: 587
+          secure: false
+          require_tls: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          from: ${{ env.MAIL_FROM_NAME && format('{0} <{1}>', env.MAIL_FROM_NAME, env.MAIL_FROM_EMAIL) || env.MAIL_FROM_EMAIL }}
+          to: ${{ secrets.MAIL_TO }}
+          subject: "New OPNsense series: ${{ steps.series.outputs.series }} on FreeBSD ${{ steps.series.outputs.os }}"
+          body: |
+            OPNsense ${{ steps.series.outputs.series }} (FreeBSD ${{ steps.series.outputs.os }}) is in opnsense/tools. The build matrix in .github/workflows/build.yml has: ${{ steps.series.outputs.releases }}.
+            https://github.com/opnsense/tools/tree/master/config/${{ steps.series.outputs.series }}
+
+            A new FreeBSD major needs a matrix entry before ${{ steps.series.outputs.series }} ships; when it ships, drop the oldest supported series (freeze its major or raise its pin).
+
+      - name: Record series state
+        if: steps.series.outputs.series != '' && steps.seriesseen.outputs.cache-hit != 'true'
+        run: touch .series-notified .series-init
 
       - name: Check vendored libraries
         id: vendored
