@@ -124,7 +124,7 @@ jobs:
         env:
           HARNESS: ${{ steps.harness.outputs.run }}
         run: |
-          sudo apt-get install -y php-cli php-curl
+          sudo apt-get install -y php-cli
           pip install jinja2
           git clone --depth 1 https://github.com/opnsense/core "${RUNNER_TEMP}/opnsense-core"
           # an S3 server for the S3 backup provider's tests, at the version the repository ships (the port's)

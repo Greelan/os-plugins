@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2 - 2026-11-09
+
+- Backups are sent with rclone, which is installed with the plugin.
+- A new Provider setting tells rclone which service it talks to, e.g. AWS or Cloudflare, so it uses that service's own settings. After the upgrade it is Other, or GCS for a Google Cloud Storage endpoint: set it to your service under System > Configuration > Backups.
+- Other is for services rclone does not list. With it, Ceph, Linode and endpoints behind a proxy that rewrites the Accept-Encoding header, such as Cloudflare's, can refuse uploads with SignatureDoesNotMatch.
+- A backup counts as stored only once the bucket lists it.
+- An endpoint whose certificate names it only in the common name, or that offers only RSA key exchange, is refused.
+- UCloud US3 fails with "rclone knows no S3 provider named US3." until rclone fixes it.
+
 ## 1.1 - 2026-10-30
 
 - A new secret access key or password typed among the dots of the saved one is stored as typed, without the dots.

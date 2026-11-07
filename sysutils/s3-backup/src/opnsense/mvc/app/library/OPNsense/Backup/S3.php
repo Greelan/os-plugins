@@ -31,37 +31,28 @@ namespace OPNsense\Backup;
 
 use OPNsense\Core\ACL;
 use OPNsense\Core\Config;
+use OPNsense\Core\Shell;
 
 /**
- * Configuration backups to S3-compatible object storage, signed with AWS Signature Version 4
- * and addressed path-style (https://endpoint/bucket/key), which every S3 service accepts.
+ * Configuration backups to S3-compatible object storage, through rclone.
  * @package OPNsense\Backup
  */
 class S3 extends Base implements IBackupProvider
 {
     /* the model's write-only fields, never sent back to the page */
     private const SECRETS = ['secretKey', 'password', 'passwordconfirm'];
-    /* the dots the page shows for a saved secret: a character no keyboard types, which is removed from
-     * what is posted back, leaving only what was typed, wherever the cursor was */
+    /* the dots shown for a saved secret: a character no keyboard types, stripped from what is posted back */
     private const SAVED = "\u{E000}";
-    /* what a page from 1.0 shows in place of a saved secret; posted back, it still keeps the secret */
+    /* 1.0's stand-in for a saved secret; posted back, it keeps the secret */
     private const SAVED_1_0 = '(saved)';
     /* names core gives backups: config-<microtime>[_<hrtime>].xml */
     private const BACKUP_NAME = '/^config-[0-9]+(\.[0-9]+)?(_[0-9]+)?\.xml$/D';
     /* a revision time, which core rounds to two decimals, and the backup it writes with it are this close */
     private const SAME_SAVE = 0.01;
-    /* a hostile endpoint cannot list endlessly or fill memory; each request has its own timeout */
-    private const MAX_PAGES = 100;
+    /* the most of an rclone call's output or log that is read */
     private const MAX_RESPONSE = 8 * 1024 * 1024;
-
-    /* the most keys one DeleteObjects request takes */
-    private const MAX_DELETE = 1000;
-
-    /* one handle for the run, so requests share a connection */
-    private $curl = null;
-    /* HTTP status and S3 error code of the last answer, 0 and '' when none came */
-    private $status = 0;
-    private $code = '';
+    /* the start of this provider's temporary file names */
+    private const TEMP_PREFIX = 's3-backup-';
 
     private $model = null;
 
@@ -89,6 +80,19 @@ class S3 extends Base implements IBackupProvider
                     'Host name of the S3 service, optionally with a port, e.g. s3.eu-central-1.amazonaws.com,' .
                     ' s3.us-west-004.backblazeb2.com or ACCOUNT_ID.r2.cloudflarestorage.com. HTTPS is always ' .
                     'used.'
+                ),
+            ],
+            [
+                'name' => 'provider',
+                'type' => 'text',
+                'label' => gettext('Provider'),
+                'help' => sprintf(
+                    gettext(
+                        "rclone's name for the S3 service, e.g. AWS, Cloudflare, GCS, Wasabi, DigitalOcean, Hetzner " .
+                        "or Minio; Other for any other. It applies that service's ways. %sThe names rclone knows%s."
+                    ),
+                    '<a href="https://rclone.org/s3/#s3-provider" target="_blank">',
+                    '</a>'
                 ),
             ],
             [
@@ -155,8 +159,8 @@ class S3 extends Base implements IBackupProvider
                 $name = $field['name'] == 'passwordconfirm' ? 'password' : $field['name'];
                 $field['value'] = $this->model->$name->getValue() !== '' ? str_repeat(self::SAVED, 8) : '';
             } else {
-                /* the page escapes them */
-                $field['value'] = (string)$this->model->getNodeByReference($field['name']);
+                /* the page escapes them, with legacy_html_escape_form_data() */
+                $field['value'] = $this->model->getNodeByReference($field['name'])->getValue();
             }
         }
         return $fields;
@@ -184,6 +188,10 @@ class S3 extends Base implements IBackupProvider
             $value = $conf[$name] ?? '';
             $conf[$name] = $value === self::SAVED_1_0 ? '' : str_replace(self::SAVED, '', $value);
         }
+        /* a page from 1.1 has no provider box */
+        if (!isset($conf['provider'])) {
+            unset($conf['provider']);
+        }
         $this->setModelProperties($this->model, $conf);
         /* core's own messages, e.g. for a required field, do not say which field they are about */
         $labels = array_column($this->getConfigurationFields(), 'label', 'name');
@@ -194,6 +202,26 @@ class S3 extends Base implements IBackupProvider
         }
         /* an integer field gives the same message for each of its checks */
         $messages = array_values(array_unique($messages));
+        /* rclone runs an unknown provider as Other, so only one it lists is taken, spelled as listed; a
+         * disabled backup needs no rclone, so it always saves */
+        $provider = $this->model->provider->getValue();
+        if ($this->model->enabled->isEqual('1') && preg_match('/^[A-Za-z0-9]{1,32}$/D', $provider)) {
+            try {
+                $known = array_values(array_filter($this->providers(), function ($name) use ($provider) {
+                    return strcasecmp($name, $provider) == 0;
+                }));
+                if (empty($known)) {
+                    $messages[] = sprintf('%s: %s', $labels['provider'], sprintf(
+                        gettext('rclone knows no S3 provider named %s.'),
+                        $provider
+                    ));
+                } else {
+                    $this->model->provider = $known[0];
+                }
+            } catch (\Exception $e) {
+                $messages[] = $e->getMessage();
+            }
+        }
         if (($conf['password'] ?? '') !== ($conf['passwordconfirm'] ?? '')) {
             $messages[] = gettext("The supplied 'Password' and 'Confirm' field values must match.");
         }
@@ -209,7 +237,7 @@ class S3 extends Base implements IBackupProvider
      */
     public function isEnabled()
     {
-        return (string)$this->model->enabled == '1';
+        return $this->model->enabled->isEqual('1');
     }
 
     /**
@@ -225,8 +253,7 @@ class S3 extends Base implements IBackupProvider
             return $this->upload($cnf);
         } catch (\Throwable $e) {
             syslog(LOG_ERR, 's3-backup: ' . $e->getMessage());
-            /* the page shows the reason; the nightly run carries on with the other providers, as its
-             * script only catches a provider's error from opnsense/core#11054 on */
+            /* thrown for the page only: the nightly script catches it only from opnsense/core#11054 on */
             if (PHP_SAPI !== 'cli') {
                 /* the page only catches Exception */
                 throw $e instanceof \Exception ? $e : new \Exception(
@@ -253,9 +280,11 @@ class S3 extends Base implements IBackupProvider
 
         $folder = $this->folder();
         $keep = (int)$this->model->backupcount->getValue();
-        /* with nothing to delete, the names of this save's second are all that is asked for, however
-         * large the folder */
-        $remote = $this->listBackups($folder, $keep == 0 ? 'config-' . (int)self::stamp($name) : '');
+        /* with nothing to delete, only names within a second of this save are kept from the listing */
+        $second = (int)self::stamp($name);
+        $remote = $this->listBackups($folder, $keep != 0 ? [] : array_map(function ($offset) use ($second) {
+            return 'config-' . ($second + $offset) . '*';
+        }, [-1, 0, 1]));
         /* the same save under core's name and under its revision time */
         foreach (in_array($name, $remote) ? [] : $remote as $other) {
             if (abs(self::stamp($other) - self::stamp($name)) < self::SAME_SAVE) {
@@ -268,7 +297,23 @@ class S3 extends Base implements IBackupProvider
             if ($data === null) {
                 throw new \Exception(gettext('The configuration could not be encrypted.'));
             }
-            $this->request('PUT', $folder . $name, [], $data);
+            $this->put($folder . $name, $data);
+            /* an answer that is not S3's, e.g. a login page, can pass for a stored upload */
+            try {
+                $listed = $this->listBackups($folder, [$name]);
+            } catch (\Exception $e) {
+                $this->fail(sprintf(
+                    gettext('The backup %s was sent, but the bucket could not be listed: %s'),
+                    $folder . $name,
+                    $e->getMessage()
+                ));
+            }
+            if (!in_array($name, $listed)) {
+                $this->fail(sprintf(
+                    gettext('The backup %s was sent, but the bucket does not list it.'),
+                    $folder . $name
+                ));
+            }
             syslog(LOG_NOTICE, 's3-backup: uploaded ' . $folder . $name);
         }
 
@@ -281,12 +326,13 @@ class S3 extends Base implements IBackupProvider
         $remote = array_merge([$name], array_values(array_diff($remote, [$name])));
         if ($keep > 0) {
             try {
-                foreach (array_chunk(array_slice($remote, $keep), self::MAX_DELETE) as $old) {
+                $old = array_slice($remote, $keep);
+                if (!empty($old)) {
                     $this->delete($folder, $old);
                 }
             } catch (\Exception $e) {
                 throw new \Exception(sprintf(
-                    gettext('The backup is stored, but older backups were not removed: %s'),
+                    gettext('The backup is stored, but removing older backups failed: %s'),
                     $e->getMessage()
                 ));
             }
@@ -297,46 +343,56 @@ class S3 extends Base implements IBackupProvider
     }
 
     /**
-     * Remove backups in one DeleteObjects request; S3 answers 200 and lists any key it could not remove.
-     * A service that says it has no DeleteObjects, e.g. Google Cloud Storage once, gets one DELETE per backup.
+     * Store data under a key of the bucket.
+     */
+    private function put($key, $data)
+    {
+        $file = self::tempFile($data);
+        try {
+            /* no HEAD, so no read permission needed, and no ETag check, as it is no MD5 under KMS: S3 checks
+             * the Content-MD5 rclone sends. Typed as bytes, as in 1.1, not as XML by its name */
+            $result = $this->rclone(
+                ['copyto', $file, $this->path($key), '--no-check-dest', '--ignore-checksum', '--header-upload',
+                    'Content-Type: application/octet-stream'],
+                $this->remote()
+            );
+        } finally {
+            @unlink($file);
+        }
+        if ($result['error'] !== '') {
+            $this->fail($result['error']);
+        }
+    }
+
+    /**
+     * Remove backups from a folder; each one the listing after no longer holds is logged, and one it
+     * still holds fails, saying why.
      */
     private function delete($folder, $names)
     {
-        $body = '<?xml version="1.0" encoding="UTF-8"?><Delete><Quiet>true</Quiet>';
-        foreach ($names as $name) {
-            $body .= '<Object><Key>' . htmlspecialchars($folder . $name, ENT_XML1) . '</Key></Object>';
-        }
+        $list = self::tempFile(implode("\n", $names) . "\n");
         try {
-            $response = $this->request('POST', '', ['delete' => ''], $body . '</Delete>');
+            /* by name, so rclone does not list the folder first */
+            $result = $this->rclone(
+                ['delete', $this->path($folder), '--files-from-raw', $list, '--no-traverse'],
+                $this->remote()
+            );
+        } finally {
+            @unlink($list);
+        }
+        /* the listing decides: rclone takes any 2xx as deleted; S3 can answer 404 for one already gone */
+        try {
+            $listed = $this->listBackups($folder);
         } catch (\Exception $e) {
-            if (!in_array($this->status, [405, 501]) && !in_array($this->code, ['NotImplemented', 'MethodNotAllowed'])) {
-                throw $e;
-            }
-            $response = null;
+            $this->fail(sprintf(gettext('The bucket could not be listed afterwards: %s'), $e->getMessage()));
         }
-        $failed = [];
-        if ($response !== null) {
-            foreach ($this->parse($response, 'DeleteResult')->Error ?? [] as $error) {
-                $failed[(string)$error->Key] = self::clean((string)$error->Code . ': ' . (string)$error->Message);
-            }
-        }
-        foreach ($names as $name) {
-            if (isset($failed[$folder . $name])) {
-                continue;
-            }
-            if ($response === null) {
-                try {
-                    $this->request('DELETE', $folder . $name);
-                } catch (\Exception $single) {
-                    if ($this->status != 404) { /* already gone */
-                        throw $single;
-                    }
-                }
-            }
+        $left = array_values(array_intersect($names, $listed));
+        foreach (array_diff($names, $left) as $name) {
             syslog(LOG_NOTICE, 's3-backup: removed ' . $folder . $name);
         }
-        foreach ($failed as $key => $reason) {
-            $this->fail(sprintf(gettext('S3 could not remove %s: %s'), self::clean((string)$key), $reason));
+        if (!empty($left)) {
+            $this->fail($result['error'] !== '' ? $result['error'] :
+                sprintf(gettext('The bucket still lists %d of them.'), count($left)));
         }
     }
 
@@ -403,6 +459,172 @@ class S3 extends Base implements IBackupProvider
     }
 
     /**
+     * Seconds an rclone call may take, so an endpoint that never stops answering cannot hold the
+     * page or the nightly run.
+     */
+    protected function deadline()
+    {
+        return 300;
+    }
+
+    /**
+     * rclone, stopped at the deadline by timeout(1) (exit 124), in 2 GB of address space (Go reserves much
+     * up front), its log cut at 8 MB: it holds a whole listing, logs each odd name, and a listing can be endless.
+     */
+    protected function command()
+    {
+        return ['/usr/bin/limits', '-v', '2g', '-f', '8m', '/usr/bin/timeout', '-k', '5',
+            (string)$this->deadline(), '/usr/local/bin/rclone'];
+    }
+
+    /**
+     * The bucket's settings, as rclone reads them from its environment: as they are, and never on a
+     * command line.
+     */
+    private function remote()
+    {
+        return [
+            'RCLONE_CONFIG_S3_TYPE' => 's3',
+            'RCLONE_CONFIG_S3_PROVIDER' => $this->model->provider->getValue(),
+            'RCLONE_CONFIG_S3_ENV_AUTH' => 'false',
+            'RCLONE_CONFIG_S3_ACCESS_KEY_ID' => $this->model->accessKey->getValue(),
+            'RCLONE_CONFIG_S3_SECRET_ACCESS_KEY' => $this->model->secretKey->getValue(),
+            'RCLONE_CONFIG_S3_REGION' => $this->model->region->getValue(),
+            'RCLONE_CONFIG_S3_ENDPOINT' => 'https://' . $this->model->endpoint->getValue(),
+            'RCLONE_CONFIG_S3_NO_CHECK_BUCKET' => 'true',
+            'RCLONE_CONFIG_S3_NO_HEAD' => 'true',
+            'RCLONE_CONFIG_S3_NO_HEAD_OBJECT' => 'true',
+        ];
+    }
+
+    /**
+     * A file only this process can read, holding $contents, for rclone.
+     */
+    private static function tempFile($contents = '')
+    {
+        $file = tempnam((new \OPNsense\Core\AppConfig())->application->tempDir, self::TEMP_PREFIX);
+        if ($file !== false && file_put_contents($file, $contents) === false) {
+            @unlink($file);
+            $file = false;
+        }
+        if ($file === false) {
+            throw new \Exception(gettext('No temporary file could be made for rclone.'));
+        }
+        return $file;
+    }
+
+    /**
+     * rclone's name for a key, or a folder, of the bucket.
+     */
+    private function path($key)
+    {
+        return 's3:' . $this->model->bucket->getValue() . '/' . $key;
+    }
+
+    /**
+     * Run rclone with $settings and nothing else in its environment: ['out', 'error'], where error is why
+     * it failed, one line, or empty; $codes words the failure for an exit code.
+     */
+    private function rclone(array $args, array $settings = [], array $codes = [])
+    {
+        $result = ['out' => '', 'error' => gettext('rclone could not be started.')];
+        /* its log goes to a file: a pipe it filled while the listing is read would stall it */
+        $log = self::tempFile();
+        try {
+            /* rclone's S3 tries each request twice, so each try has half of 1.1's time */
+            $argv = array_merge($this->command(), ['--config', '/dev/null', '--retries', '1', '--low-level-retries',
+                '1', '--contimeout', '8s', '--timeout', '60s', '--use-json-log', '--log-level', 'NOTICE'], $args);
+            $process = proc_open(
+                Shell::exec_safe(array_fill(0, count($argv), '%s'), $argv),
+                [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $log, 'w']],
+                $pipes,
+                null,
+                $settings
+            );
+            if (!is_resource($process)) {
+                return $result;
+            }
+            $result['out'] = (string)stream_get_contents($pipes[1], self::MAX_RESPONSE + 1);
+            if (strlen($result['out']) > self::MAX_RESPONSE) {
+                /* a SIGTERM, which timeout(1) passes on to rclone */
+                proc_terminate($process);
+            }
+            fclose($pipes[1]);
+            /* proc_close() hides a signal: timeout(1) exits 128 + it on FreeBSD 14, dies of it on 15 */
+            while (($status = proc_get_status($process))['running']) {
+                usleep(10000);
+            }
+            proc_close($process);
+            $code = $status['signaled'] ? 128 + $status['termsig'] : $status['exitcode'];
+            $lines = explode("\n", (string)file_get_contents($log, false, null, 0, self::MAX_RESPONSE));
+        } finally {
+            @unlink($log);
+        }
+        /* rclone's first error names the cause (its last only sums up); else the first line anything
+         * else printed, e.g. the shell */
+        $message = '';
+        $other = '';
+        $unknown = false;
+        foreach ($lines as $line) {
+            $entry = json_decode($line, true);
+            if (!is_array($entry)) {
+                $other = $other === '' ? trim($line) : $other;
+                continue;
+            }
+            $text = (string)($entry['msg'] ?? '');
+            /* rclone runs a provider it does not know as Other */
+            $unknown = $unknown || preg_match('/^s3 provider ".*" not known/', $text);
+            if ($message === '' && in_array($entry['level'] ?? '', ['error', 'critical'])) {
+                /* not the temporary file an upload is sent from */
+                $object = (string)($entry['object'] ?? '');
+                $message = $object === '' || strpos($object, self::TEMP_PREFIX) === 0 ? $text : $object . ': ' . $text;
+            }
+        }
+        if (strlen($result['out']) > self::MAX_RESPONSE) {
+            $result['error'] = gettext('rclone sent more output than expected.');
+        } elseif ($code == 124) {
+            $result['error'] = sprintf(gettext('rclone did not finish within %d seconds.'), $this->deadline());
+        } elseif ($unknown) {
+            $result['error'] = sprintf(
+                gettext('rclone knows no S3 provider named %s.'),
+                $settings['RCLONE_CONFIG_S3_PROVIDER'] ?? ''
+            );
+        } elseif ($code > 128) {
+            $result['error'] = sprintf(gettext('rclone was stopped by signal %d.'), $code - 128);
+        } elseif (isset($codes[$code])) {
+            $result['error'] = $codes[$code];
+        } elseif ($code != 0) {
+            $message = $message !== '' ? $message : $other;
+            $result['error'] = $message !== '' ? sprintf(gettext('rclone: %s'), self::rcloneMessage($message)) :
+                sprintf(gettext('rclone stopped with exit code %d.'), $code);
+        } else {
+            $result['error'] = '';
+        }
+        return $result;
+    }
+
+    /**
+     * The S3 provider names the installed rclone knows.
+     */
+    private function providers()
+    {
+        $result = $this->rclone(['config', 'providers']);
+        if ($result['error'] !== '') {
+            throw new \Exception($result['error']);
+        }
+        $backends = json_decode($result['out'], true);
+        $backends = array_column(is_array($backends) ? $backends : [], null, 'Name');
+        $options = array_column($backends['s3']['Options'] ?? [], null, 'Name');
+        $names = array_filter(array_column($options['provider']['Examples'] ?? [], 'Value'), function ($name) {
+            return is_string($name) && $name !== '';
+        });
+        if (empty($names)) {
+            throw new \Exception(gettext('rclone listed no S3 providers.'));
+        }
+        return array_values($names);
+    }
+
+    /**
      * Timestamp a backup name carries, as core reads it.
      */
     private static function stamp($name)
@@ -415,168 +637,54 @@ class S3 extends Base implements IBackupProvider
      */
     private function folder()
     {
-        return (string)$this->model->prefix . '/';
+        return $this->model->prefix->getValue() . '/';
     }
 
     /**
-     * Backup file names under a key prefix, following continuation tokens past 1000 keys.
+     * Backup file names in a folder of the bucket; with patterns, only those matching one.
      */
-    private function listBackups($folder, $only = '')
+    private function listBackups($folder, array $only = [])
     {
-        $names = [];
-        $token = null;
-        $seen = [];
-        do {
-            /* the delimiter keeps subfolders, e.g. other firewalls under this one's folder, out;
-             * URL-encoded keys, so one holding a control character cannot break the XML */
-            $query = ['list-type' => '2', 'prefix' => $folder . $only, 'delimiter' => '/', 'encoding-type' => 'url'];
-            if ($token !== null) {
-                $query['continuation-token'] = $token;
-            }
-            $xml = $this->parse($this->request('GET', '', $query), 'ListBucketResult');
-            $encoded = (string)$xml->EncodingType === 'url';
-            foreach ($xml->Contents ?? [] as $object) {
-                $key = $encoded ? rawurldecode((string)$object->Key) : (string)$object->Key;
-                $name = substr($key, strlen($folder));
-                /* core prints the names it gets back unescaped, so only backup names pass */
-                if (preg_match(self::BACKUP_NAME, $name)) {
-                    $names[] = $name;
-                }
-            }
-            $truncated = in_array(strtolower((string)$xml->IsTruncated), ['true', '1'], true);
-            $token = $truncated ? (string)$xml->NextContinuationToken : null;
-            if ($token === '') {
-                $this->fail(gettext('S3 returned a partial bucket listing without a way to continue it.'));
-            }
-            if ($token !== null && (isset($seen[$token]) || count($seen) >= self::MAX_PAGES)) {
-                $this->fail(gettext('S3 kept returning more of the bucket listing than a backup folder holds.'));
-            }
-            $seen[(string)$token] = true;
-        } while ($token !== null);
-
-        return $names;
+        /* rclone lists this folder only, not its subfolders, e.g. other firewalls under this one's */
+        $args = ['lsf', $this->path($folder), '--files-only'];
+        /* only backup names, so other files in the folder do not fill the output */
+        foreach ($only ?: ['config-*.xml'] as $pattern) {
+            $args = array_merge($args, ['--include', $pattern]);
+        }
+        /* rclone's "directory not found" is any 404: S3 has no folders, so no bucket, or not S3 */
+        $result = $this->rclone($args, $this->remote(), [3 => sprintf(
+            gettext('The endpoint has no bucket %s.'),
+            $this->model->bucket->getValue()
+        )]);
+        if ($result['error'] !== '') {
+            $this->fail($result['error']);
+        }
+        /* core prints the names it gets back unescaped, so only backup names pass */
+        return array_values(preg_grep(self::BACKUP_NAME, explode("\n", $result['out'])));
     }
 
     /**
-     * One signed request against the bucket; returns the response body or throws with S3's reason.
+     * An rclone message as one short line: the AWS SDK's fixed wording left out, and its start and end
+     * kept when it is still long, as a Go error names its cause last.
      */
-    private function request($method, $key, $query = [], $body = '')
+    private static function rcloneMessage($text)
     {
-        $host = (string)$this->model->endpoint;
-        $region = (string)$this->model->region;
-        $path = '/' . rawurlencode((string)$this->model->bucket);
-        if ($key !== '') {
-            $path .= '/' . implode('/', array_map('rawurlencode', explode('/', $key)));
-        }
-        ksort($query);
-        $pairs = [];
-        foreach ($query as $name => $value) {
-            $pairs[] = rawurlencode($name) . '=' . rawurlencode($value);
-        }
-        $canonicalQuery = implode('&', $pairs);
-
-        $stamp = gmdate('Ymd\THis\Z');
-        $date = substr($stamp, 0, 8);
-        $payload = hash('sha256', $body);
-        $signed = 'host;x-amz-content-sha256;x-amz-date';
-        $canonical = implode("\n", [
-            $method, $path, $canonicalQuery,
-            "host:{$host}\nx-amz-content-sha256:{$payload}\nx-amz-date:{$stamp}\n",
-            $signed, $payload,
-        ]);
-        $scope = "{$date}/{$region}/s3/aws4_request";
-        $toSign = "AWS4-HMAC-SHA256\n{$stamp}\n{$scope}\n" . hash('sha256', $canonical);
-        $signingKey = 'AWS4' . $this->model->secretKey->getValue();
-        foreach ([$date, $region, 's3', 'aws4_request'] as $part) {
-            $signingKey = hash_hmac('sha256', $part, $signingKey, true);
-        }
-        $signature = hash_hmac('sha256', $toSign, $signingKey);
-
-        $response = '';
-        $tooLarge = false;
-        $headers = [
-            "Host: {$host}",
-            "x-amz-content-sha256: {$payload}",
-            "x-amz-date: {$stamp}",
-            'Content-Type: application/octet-stream',
-            'Authorization: AWS4-HMAC-SHA256 Credential=' . (string)$this->model->accessKey .
-                "/{$scope}, SignedHeaders={$signed}, Signature={$signature}",
+        $replace = [
+            '/operation error S3: \w+, /' => '',
+            '/https response error /' => '',
+            '/StatusCode: 0, /' => '',
+            '/RequestID: [^,]*, HostID: [^,]*, /' => '',
+            '/exceeded maximum number of attempts, \d+, /' => '',
+            '/("https?:\/\/[^"?]*)\?[^"]*"/' => '$1"',
         ];
-        if ($method == 'PUT' || $method == 'POST') {
-            /* DeleteObjects requires it, and so does a PUT into a bucket with Object Lock */
-            $headers[] = 'Content-MD5: ' . base64_encode(md5($body, true));
-        }
-        $this->curl = $this->curl ?? curl_init();
-        $curl = $this->curl;
-        curl_reset($curl);
-        curl_setopt_array($curl, [
-            CURLOPT_URL => 'https://' . $host . $path . ($canonicalQuery !== '' ? '?' . $canonicalQuery : ''),
-            CURLOPT_WRITEFUNCTION => function ($curl, $chunk) use (&$response, &$tooLarge) {
-                if (strlen($response) + strlen($chunk) > self::MAX_RESPONSE) {
-                    $tooLarge = true;
-                    return 0; /* aborts the transfer */
-                }
-                $response .= $chunk;
-                return strlen($chunk);
-            },
-            CURLOPT_CUSTOMREQUEST => $method,
-            CURLOPT_FOLLOWLOCATION => false,
-            CURLOPT_PROTOCOLS => CURLPROTO_HTTPS,
-            CURLOPT_SSL_VERIFYPEER => true,
-            CURLOPT_SSL_VERIFYHOST => 2,
-            CURLOPT_CONNECTTIMEOUT => 15,
-            CURLOPT_TIMEOUT => 120,
-            CURLOPT_HTTPHEADER => $headers,
-        ]);
-        if ($method == 'PUT' || $method == 'POST') {
-            curl_setopt($curl, CURLOPT_POSTFIELDS, $body);
-        }
-        $done = curl_exec($curl);
-        $this->status = $done === false ? 0 : (int)curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
-        $this->code = '';
-        $error = curl_error($curl);
-
-        if ($tooLarge) {
-            $this->fail(sprintf(gettext('%s sent a larger answer than S3 does.'), $host));
-        }
-        if ($done === false) {
-            $this->fail(sprintf(gettext('Could not reach %s: %s'), $host, $error));
-        }
-        if ($this->status < 200 || $this->status >= 300) {
-            /* only S3's own error code and message, never the raw body; a redirect names the endpoint */
-            $xml = @simplexml_load_string((string)$response, 'SimpleXMLElement', LIBXML_NONET);
-            $reason = '';
-            if ($xml !== false && isset($xml->Code)) {
-                $this->code = (string)$xml->Code;
-                $reason = self::clean($this->code . ': ' . (string)$xml->Message) .
-                    (isset($xml->Endpoint) ? ' (' . self::clean((string)$xml->Endpoint) . ')' : '');
-            }
-            $this->fail(sprintf(gettext('S3 answered HTTP %d %s'), $this->status, $reason));
-        }
-        return (string)$response;
-    }
-
-    /**
-     * The answer as XML, which must be the document S3 sends for this request.
-     */
-    private function parse($body, $root)
-    {
-        $xml = @simplexml_load_string($body, 'SimpleXMLElement', LIBXML_NONET);
-        if ($xml === false || $xml->getName() !== $root) {
-            $this->fail($root == 'DeleteResult'
-                ? gettext('S3 answered with something other than a delete result.')
-                : gettext('S3 answered with something other than a bucket listing.'));
-        }
-        return $xml;
-    }
-
-    /**
-     * Text from the endpoint as one short line, since it ends up in syslog and on the page.
-     */
-    private static function clean($text)
-    {
+        $text = preg_replace(array_keys($replace), array_values($replace), $text);
         $text = trim(preg_replace('/[\x00-\x1f\x7f]+/', ' ', $text));
-        return strlen($text) > 200 ? substr($text, 0, 200) . '...' : $text;
+        if (strlen($text) <= 240) {
+            return $text;
+        }
+        /* cut between characters, as syslog readers expect UTF-8 */
+        return preg_replace('/[\xc0-\xff][\x80-\xbf]*$/', '', substr($text, 0, 120)) . ' ... ' .
+            preg_replace('/^[\x80-\xbf]+/', '', substr($text, -115));
     }
 
     private function fail($message)

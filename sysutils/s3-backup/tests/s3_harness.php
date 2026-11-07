@@ -34,12 +34,20 @@ namespace OPNsense\Backup {
 namespace {
 require __DIR__ . '/../../../tools/tests/bootstrap.php';
 
-/* the real settings model over an empty config.xml, as core loads it; no configd is running */
+$spec = json_decode($argv[1], true);
+
+/* the real settings model over the config.xml given, else an empty one, as core loads it; no configd is running */
 require getenv('OPNSENSE_CORE') . '/src/opnsense/mvc/app/config/AppConfig.php';
 $conf = sys_get_temp_dir() . '/s3-harness-' . getmypid();
 @mkdir($conf);
-file_put_contents("{$conf}/config.xml", "<?xml version=\"1.0\"?>\n<opnsense/>\n");
-new OPNsense\Core\AppConfig(['application' => ['configDir' => $conf], 'globals' => ['simulate_mode' => '1', 'owner' => '']]);
+register_shutdown_function(function () use ($conf) {
+    exec('rm -rf ' . escapeshellarg($conf));
+});
+file_put_contents("{$conf}/config.xml", $spec['config'] ?? "<?xml version=\"1.0\"?>\n<opnsense/>\n");
+new OPNsense\Core\AppConfig([
+    'application' => ['configDir' => $conf, 'tempDir' => sys_get_temp_dir()],
+    'globals' => ['simulate_mode' => '1', 'owner' => ''],
+]);
 
 /* core's Config as far as the upload uses it: the local backups, newest first */
 class StubConfig
@@ -63,13 +71,30 @@ class TestS3 extends OPNsense\Backup\S3
         return self::$config;
     }
 
+    /* the production command with the test's limits(1), timeout(1) and logging wrapper, and what they need in
+     * the environment, trusting the test certificate */
+    protected function command()
+    {
+        $paths = ['/usr/bin/limits' => getenv('S3_LIMITS'), '/usr/bin/timeout' => getenv('S3_TIMEOUT'),
+            '/usr/local/bin/rclone' => getenv('S3_RCLONE')];
+        $argv = array_merge(['/usr/bin/env', 'PATH=' . getenv('PATH'), 'RCLONE=' . getenv('RCLONE'),
+            'S3_RCLONE_LOG=' . getenv('S3_RCLONE_LOG')], array_map(function ($arg) use ($paths) {
+                return $paths[$arg] ?? $arg;
+            }, parent::command()));
+        return getenv('S3_CA') ? array_merge($argv, ['--ca-cert', getenv('S3_CA')]) : $argv;
+    }
+
+    protected function deadline()
+    {
+        return 5;
+    }
+
     public function encrypt($data, $pass, $tag = 'config.xml')
     {
         return "---- BEGIN config.xml ----\n" . base64_encode($data) . "\n---- END config.xml ----\n";
     }
 }
 
-$spec = json_decode($argv[1], true);
 $provider = (new ReflectionClass('TestS3'))->newInstanceWithoutConstructor();
 $settings = new OPNsense\Backup\S3Settings();
 foreach ($spec['settings'] as $name => $value) {
@@ -83,10 +108,6 @@ $call = function ($method, ...$args) use ($provider) {
 foreach ($spec['steps'] as $step) {
     try {
         switch ($step[0]) {
-            case 'put':
-                $call('request', 'PUT', $step[1], [], 'x');
-                $answer = true;
-                break;
             case 'list':
                 $answer = $call('listBackups', $step[1]);
                 break;
@@ -104,6 +125,7 @@ foreach ($spec['steps'] as $step) {
                     'messages' => $provider->setConfiguration($step[1]),
                     'secretKey' => $settings->secretKey->getValue(),
                     'password' => $settings->password->getValue(),
+                    'provider' => (string)$settings->provider,
                 ];
                 break;
             case 'backup':
@@ -113,6 +135,11 @@ foreach ($spec['steps'] as $step) {
                 $answer = $GLOBALS['s3_log'] ?? [];
                 $GLOBALS['s3_log'] = [];
                 break;
+            case 'migrate':
+                /* as the package install does, from the config.xml given; what it wrote back, if anything */
+                (new OPNsense\Backup\S3Settings())->runMigrations();
+                $answer = (new OPNsense\Backup\S3Settings())->provider->getValue();
+                break;
         }
     } catch (Exception $e) {
         $answer = ['error' => $e->getMessage()];
@@ -120,8 +147,4 @@ foreach ($spec['steps'] as $step) {
     echo json_encode($answer) . "\n";
 }
 $GLOBALS['test_checks'] = count($spec['steps']);
-array_map('unlink', glob("{$conf}/backup/*"));
-@rmdir("{$conf}/backup");
-array_map('unlink', glob("{$conf}/*"));
-@rmdir($conf);
 }

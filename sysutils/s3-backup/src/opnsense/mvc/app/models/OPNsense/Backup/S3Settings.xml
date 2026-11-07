@@ -1,6 +1,7 @@
 <model>
     <mount>//system/backup/s3</mount>
-    <version>1.0.0</version>
+    <migration_prefix>S3_</migration_prefix>
+    <version>1.0.1</version>
     <description>S3 compatible storage backup settings</description>
     <items>
         <enabled type="BooleanField">
@@ -8,25 +9,31 @@
             <Required>Y</Required>
         </enabled>
         <endpoint type="TextField">
-            <Mask>/^[0-9a-zA-Z]([0-9a-zA-Z.-]*[0-9a-zA-Z])?(:[0-9]{1,5})?$/</Mask>
+            <Mask>/^[0-9a-zA-Z]([0-9a-zA-Z.-]*[0-9a-zA-Z])?(:[0-9]{1,5})?$/D</Mask>
             <ValidationMessage>Enter the host name of the S3 endpoint, optionally with a port, e.g. s3.eu-central-1.amazonaws.com.</ValidationMessage>
         </endpoint>
+        <provider type="TextField">
+            <Default>Other</Default>
+            <Required>Y</Required>
+            <Mask>/^[A-Za-z0-9]{1,32}$/D</Mask>
+            <ValidationMessage>Enter rclone's name for the S3 service, letters and digits only, e.g. AWS or Cloudflare.</ValidationMessage>
+        </provider>
         <region type="TextField">
             <Default>us-east-1</Default>
             <Required>Y</Required>
-            <Mask>/^[a-z0-9-]{1,32}$/</Mask>
+            <Mask>/^[a-z0-9-]{1,32}$/D</Mask>
             <ValidationMessage>Enter the region in lower case, e.g. us-east-1, or auto for Cloudflare R2.</ValidationMessage>
         </region>
         <bucket type="TextField">
-            <Mask>/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/</Mask>
+            <Mask>/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/D</Mask>
             <ValidationMessage>Enter a bucket name of 3 to 63 lower case letters, digits, dots and hyphens.</ValidationMessage>
         </bucket>
         <prefix type="TextField">
-            <Mask>/^[0-9A-Za-z_-]+(\/[0-9A-Za-z_-]+)*$/</Mask>
+            <Mask>/^[0-9A-Za-z_-]+(\/[0-9A-Za-z_-]+)*$/D</Mask>
             <ValidationMessage>Enter folder names of letters, digits, underscores and hyphens, separated by slashes.</ValidationMessage>
         </prefix>
         <accessKey type="TextField">
-            <Mask>/^[0-9A-Za-z._-]{1,128}$/</Mask>
+            <Mask>/^[0-9A-Za-z._-]{1,128}$/D</Mask>
             <ValidationMessage>Enter the access key ID: letters, digits, dots, underscores and hyphens.</ValidationMessage>
         </accessKey>
         <secretKey type="UpdateOnlyTextField"/>

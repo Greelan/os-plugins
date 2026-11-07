@@ -46,11 +46,31 @@ class S3Settings extends BaseModel
         $messages = parent::performValidation($validateFullModel);
 
         /* the mask takes any five digits */
-        if (preg_match('/:([0-9]+)$/', (string)$this->endpoint, $port) && ((int)$port[1] < 1 || (int)$port[1] > 65535)) {
+        if (
+            preg_match('/:([0-9]+)$/', $this->endpoint->getValue(), $port) &&
+            ((int)$port[1] < 1 || (int)$port[1] > 65535)
+        ) {
             $messages->appendMessage(new Message(gettext('Enter a port from 1 to 65535.'), 'endpoint'));
         }
 
-        if ((string)$this->enabled != '1') {
+        /* only what config.xml cannot hold, so no stored value fails an upgrade; not masks, which core
+         * before 26.1.8 checks against a write-only field's empty text */
+        $xml = '/^[\x{9}\x{a}\x{d}\x{20}-\x{d7ff}\x{e000}-\x{fffd}\x{10000}-\x{10ffff}]*$/Du';
+        $texts = [
+            'secretKey' => gettext('Enter the secret access key without control characters.'),
+            'password' => gettext('Enter a password without control characters.'),
+        ];
+        foreach ($texts as $field => $text) {
+            if (!preg_match($xml, $this->$field->getValue())) {
+                $messages->appendMessage(new Message($text, $field));
+            }
+        }
+        /* core encrypts with its first line only */
+        if ($this->password->isFieldChanged() && preg_match('/[\r\n]/', $this->password->getValue())) {
+            $messages->appendMessage(new Message(gettext('Enter a password without line breaks.'), 'password'));
+        }
+
+        if (!$this->enabled->isEqual('1')) {
             return $messages;
         }
         $required = [
