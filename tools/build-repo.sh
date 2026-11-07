@@ -66,6 +66,10 @@ done
 RCLONE=
 grep -h '^PLUGIN_DEPENDS' "${SELF}"/*/*/Makefile | grep -qw rclone && RCLONE=1
 
+# ports refuse a FreeBSD past its support, as the pinned base can be (14.3 for OPNsense 26.1);
+# the packages are for firewalls on that base all the same
+export ALLOW_UNSUPPORTED_SYSTEM=yes
+
 # ports tree: mounted on the FreeBSD 15 image, absent on 14 (never remove it)
 if { [ -n "${BLOCKY_VERSION}" ] || [ -n "${RCLONE}" ]; } && [ ! -e /usr/ports/Mk/bsd.port.mk ]; then
     git clone --depth 1 https://git.FreeBSD.org/ports.git /usr/ports
