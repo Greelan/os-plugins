@@ -130,15 +130,16 @@ LOCK = "/var/run/notify.lock"
 # apprise1_notes), and that Apprise.notify still applies emojis before convert_between (see
 # with_link); and that plugins still hold their settings as attributes, which an import compares
 # (see same_settings).
-FILE_ARGS_APPRISE = "2.1.0"
+FILE_ARGS_APPRISE = "2.2.0"
 FILE_ARGS = {
     "NotifyDiscord": ("template",), "NotifyTelegram": ("template",), "NotifySlack": ("template",),
     "NotifyWorkflows": ("template",), "NotifyFCM": ("keyfile",), "NotifyVapid": ("keyfile", "subfile"),
     "NotifyEmail": ("pgppub", "pgpprv"),
 }
 # services Apprise offers although each URL fails without one of these modules, which it only
-# recommends; left out while none is installed, as OPNsense ships neither of AMQP's
-NEEDS_ONE_OF = {"NotifyAMQP": ("pika", "proton")}
+# recommends; left out while none is installed, as OPNsense ships neither of AMQP's. Nostr without
+# cryptography cannot send a direct message, so the only URL that works would publish a public note
+NEEDS_ONE_OF = {"NotifyAMQP": ("pika", "proton"), "NotifyNostr": ("cryptography",)}
 # tokens Apprise masks in its own URL without marking them private, e.g. Mastodon's access token or
 # a login; kept out of the browser as the private ones are. The tests read them from Apprise's url()
 PRIVATE_TOKENS = {
@@ -1188,11 +1189,16 @@ def plugin_classes(schema):
     return class_names(N_MGR[schema]) if schema in N_MGR else set()
 
 
+def missing_modules(schema):
+    """For each NEEDS_ONE_OF entry of the service behind a schema with none installed, its modules."""
+    import importlib.util
+    return [modules for name, modules in NEEDS_ONE_OF.items()
+            if name in plugin_classes(schema) and not any(importlib.util.find_spec(m) for m in modules)]
+
+
 def usable(schema):
     """Whether the service behind a schema has a module it needs (NEEDS_ONE_OF)."""
-    import importlib.util
-    return all(any(importlib.util.find_spec(m) for m in modules)
-               for name, modules in NEEDS_ONE_OF.items() if name in plugin_classes(schema))
+    return not missing_modules(schema)
 
 
 def class_names(cls):
@@ -1988,11 +1994,11 @@ def default_text(value):
 
 
 def url_parts(url):
-    """(schema, query) as Apprise reads a URL (its VALID_URL_RE): leading space and backslashes
-    allowed, the query everything after the first ?, a # included. For the dialog's fields, which
-    same_url holds to Apprise's reading; the checks read apprise_view."""
+    """(schema, query) as Apprise reads a URL (its VALID_URL_RE, after the strip parse_url gives it):
+    surrounding space and backslashes allowed, the query everything after the first ?, a # included.
+    For the dialog's fields, which same_url holds to Apprise's reading; the checks read apprise_view."""
     from apprise.utils.parse import VALID_URL_RE
-    match = VALID_URL_RE.search(url or "")
+    match = VALID_URL_RE.search((url or "").strip())
     if match is None:
         return "", ""
     return (match.group("schema") or "").lower().strip(), (match.group("kwargs") or "").strip()
@@ -2531,7 +2537,8 @@ def one_plugin(url, typed=False, asset=None):
 
 def refused(url):
     """Why a URL is not given to Apprise at all, or "": a string its add() would split into several
-    services, the later ones unchecked, one naming a file, or one Apprise would send elsewhere."""
+    services, the later ones unchecked, one naming a file, one for a service missing a module it
+    needs (NEEDS_ONE_OF), or one Apprise would send elsewhere."""
     if several_urls(url):
         return "Give one URL per channel; add a channel for each further service."
     local = local_file_args(url)
@@ -2545,6 +2552,10 @@ def refused(url):
     # ntfy, Fluxer and LaMetric then take it for no server and send to their cloud, unless told the
     # mode, and email drops it
     results = apprise_results(url) or {}
+    missing = missing_modules(str(results.get("schema") or ""))
+    if missing:
+        # not offered in the dialog either; a pasted URL is held to the same
+        return f"This service needs the Python module {' or '.join(missing[0])}, which is not installed."
     host = str(results.get("host") or "")
     given = re.match(r"[^:]*:[/\\]*(?:[^/\\?]*@)?\[", url or "")
     if (results.get("mode") == "cloud" and "mode" not in (results.get("qsd") or {}) and re.search(r"[\[\]:%]", host)) \

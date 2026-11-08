@@ -321,6 +321,8 @@ class StoredFiles(Case):
                     self.assertEqual(handle.read(), "kept")
 
     def test_urls_read_as_apprise_reads_them(self):
+        # Apprise 2.2 strips the URL before VALID_URL_RE, which no longer allows surrounding space
+        self.assertEqual(notify.url_parts(" discord://1/abc?format=markdown "), ("discord", "format=markdown"))
         # a # does not end the query for Apprise, and ; splits it as & does
         for url in ("slack://T1/B2/C3/#general?template=/etc/master.passwd",
                     "discord://1/abc?x=1;template=/etc/master.passwd", " discord://1/abc?template=/etc/master.passwd",
@@ -494,6 +496,22 @@ class StoredFiles(Case):
             notify.apprise_services.cache_clear()
         if not any(find_spec(m) for m in ("pika", "proton")):
             self.assertIsNone(notify.check_url("amqp://user:pass@broker.example.com/exchange")[0])
+
+    def test_nostr_is_not_offered_without_cryptography(self):
+        # without it a direct message fails, so the one URL that sends is a public note
+        import importlib.util
+        find_spec = importlib.util.find_spec
+        try:
+            for installed in (False, True):
+                importlib.util.find_spec = lambda name, *args: object() if installed and name == "cryptography" \
+                    else None
+                notify.apprise_services.cache_clear()
+                self.assertEqual("nostr" in notify.apprise_services()[1], installed, installed)
+        finally:
+            importlib.util.find_spec = find_spec
+            notify.apprise_services.cache_clear()
+        if not find_spec("cryptography"):
+            self.assertIsNone(notify.check_url(f"nostr://{'ab' * 32}")[0])
 
     def test_an_import_kept_as_given_unless_apprise_reads_it_the_same(self):
         url = "discord://123456789/abcdefghijklmnop"

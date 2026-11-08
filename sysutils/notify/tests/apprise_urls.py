@@ -18,6 +18,9 @@ except ImportError:  # before Python 3.11
 CANDIDATES = ["user@example.com", "+15551234567", "15551234567", "N0CALL", "N0CALL-9", "*ABCDEFG", "ABCDEFGH",
               "abc", "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d", "12345", "channel", "#general", "user",
               "abcdef0123456789abcdef0123456789"]
+# tried only for a service none of those builds, so they do not push others past the limit below:
+# a 32-byte hex key, e.g. Nostr's secret key
+LATE_CANDIDATES = ["ab" * 32]
 
 
 def from_regex(pattern):
@@ -65,7 +68,7 @@ def compiled(rule):
         return None
 
 
-def token_values(key, token):
+def token_values(key, token, candidates=CANDIDATES):
     """Values to try for a token: fixed ones for the usual parts, else realistic ones its rule takes,
     then one derived from the rule itself."""
     fixed = {"port": ["8080"], "user": ["user"], "botname": ["user"], "password": ["pass", "12345"]}
@@ -81,10 +84,10 @@ def token_values(key, token):
     if kind.startswith("choice"):
         return [str(token.get("default") or token["values"][0])]
     if not rule[0]:
-        return CANDIDATES
+        return candidates
     pattern = compiled(rule)
     sample = from_regex(rule[0])
-    return [c for c in CANDIDATES if pattern is None or pattern.match(c)] + ([sample] if sample else [])
+    return [c for c in candidates if pattern is None or pattern.match(c)] + ([sample] if sample else [])
 
 
 def code_samples(plugin):
@@ -109,11 +112,13 @@ def build(entry, instantiate):
     schemas = list(entry.get("secure_protocols") or []) + list(entry.get("protocols") or [])
     known = [s for s in schemas if s in N_MGR]
     extra = code_samples(N_MGR[known[0]]) if known else []
-    for template in entry["details"]["templates"]:
+    for candidates, template in itertools.product((CANDIDATES, CANDIDATES + LATE_CANDIDATES),
+                                                  entry["details"]["templates"]):
         keys = [k for k in re.findall(r"{(\w+)}", template) if k != "schema"]
         if any(k not in tokens for k in keys):
             continue
-        options = [token_values(k, tokens[k]) + ([] if k in ("host", "port", "user", "password") else extra)
+        options = [token_values(k, tokens[k], candidates) + ([] if k in ("host", "port", "user", "password")
+                                                             else extra)
                    for k in keys]
         for values in itertools.islice(itertools.product(*options), 3000):
             url = template

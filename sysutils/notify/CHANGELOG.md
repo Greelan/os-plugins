@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.8 - 2026-11-09
+
+- Apprise 2.2.0, adding CM.com, FireHydrant, Groundmail, Gupshup, Infobip, KakaoTalk, Kaleyra, Nostr, SMSTunnel, Telesign, Whapi.Cloud and xMatters; Burst SMS is now Kudosity, and burstsms:// channels work as before.
+- Nostr is offered, and a Nostr URL taken, only with py-cryptography installed, as without it Nostr can only publish public notes, not send direct messages.
+
 ## 1.7_1 - 2026-10-31
 
 - A summary's graph shows rates to one decimal, so a low rate no longer reads 0.
