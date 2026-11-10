@@ -28,12 +28,19 @@
         <help>Plain HTTP listeners for the REST API, Prometheus metrics, the Go profiler at /debug and the DoH query path. None of it is authenticated and the API can turn blocking off, so keep the listener on a loopback address unless something else must reach it. Traffic is unencrypted, so the DoH path is only useful behind a TLS-terminating proxy. Examples: 127.0.0.1:4000, [::1]:4000, or 4000 for every interface. An address is bound when Blocky starts and is not followed if it changes. Empty (the default) disables it.</help>
     </field>
     <field>
+        <id>blocky.general.pprof</id>
+        <label>Go profiler</label>
+        <type>checkbox</type>
+        <help>Serve the Go profiler (pprof) at /debug on the HTTP and HTTPS listeners. It is not authenticated, so turn it off when those listeners can be reached from untrusted networks.</help>
+    </field>
+    <field>
         <id>blocky.general.logLevel</id>
         <label>Log level</label>
         <type>dropdown</type>
         <help>
-            <![CDATA[Verbosity of the Blocky log, shown under
-            <a href="/ui/blocky/log">Log File</a>.]]>
+            <![CDATA[The least severe messages Blocky writes to the system log. The severity filter under
+            <a href="/ui/blocky/log">Log File</a> only narrows what is shown; it opens at Informational,
+            so Debug and Trace messages appear once it is set to Debug.]]>
         </help>
     </field>
     <field>
@@ -78,7 +85,7 @@
         <allownew>true</allownew>
         <advanced>true</advanced>
         <hint>443</hint>
-        <help>HTTPS listeners serving DNS-over-HTTPS, plus the same REST API, Prometheus metrics and Go profiler endpoints as the HTTP port. Those are not authenticated and Blocky cannot serve DoH without them, so any client that can use DoH here can also turn blocking off. An address is bound when Blocky starts and is not followed if it changes. Examples: 443, :443, 127.0.0.1:443, [::1]:443. Leave empty to disable.</help>
+        <help>HTTPS listeners serving DNS-over-HTTPS, plus the same REST API, Prometheus metrics and Go profiler endpoints as the HTTP port. Those are not authenticated and Blocky cannot serve DoH without the API, so any client that can use DoH here can also turn blocking off. An address is bound when Blocky starts and is not followed if it changes. Examples: 443, :443, 127.0.0.1:443, [::1]:443. Leave empty to disable.</help>
     </field>
     <field>
         <id>blocky.general.dohPath</id>

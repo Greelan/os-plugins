@@ -137,7 +137,7 @@ DOWNLOAD_KEYS = {"timeout", "readTimeout", "readHeaderTimeout", "writeTimeout",
 # import does not take. User-named maps are checked where they are read.
 SCHEMA = {
     "": {"upstreams", "connectIPVersion", "customDNS", "conditional", "blocking",
-         "clientLookup", "caching", "queryLog", "prometheus", "statistics", "redis",
+         "clientLookup", "caching", "queryLog", "prometheus", "pprof", "statistics", "redis",
          "log", "ports", "minTlsServeVersion", "certFile", "keyFile", "bootstrapDns",
          "hostsFile", "fqdnOnly", "filtering", "ede", "ecs", "specialUseDomains",
          "dns64", "dnssec", "http3", "rateLimit", "rebindingProtection"},
@@ -145,7 +145,7 @@ SCHEMA = {
     "upstreams": {"init", "timeout", "groups", "strategy", "userAgent", "quic"},
     "upstreams.init": {"strategy"},
     "upstreams.quic": {"maxIdleTimeout", "keepAlivePeriod"},
-    "log": {"level", "format", "privacy", "timestamp"},
+    "log": {"level", "format", "privacy", "timestamp", "target", "syslog"},
     "blocking": {"denylists", "allowlists", "schedules", "listSchedules",
                  "clientGroupsBlock", "blockType", "blockTTL", "loading"},
     "blocking.loading": LOADING_KEYS,
@@ -167,6 +167,7 @@ SCHEMA = {
     "clientLookup": {"clients", "upstream", "singleNameOrder"},
     "filtering": {"queryTypes"},
     "prometheus": {"enable", "path"},
+    "pprof": {"enable"},
     "statistics": {"enable"},
     "rateLimit": {"enable", "rate", "burst", "ipv4Prefix", "ipv6Prefix", "allowlist"},
     "rebindingProtection": {"enable", "allowedDomains"},
@@ -205,6 +206,8 @@ BOOTSTRAP_KEYS = {"upstream", "ips", "resolvFile"}
 UNSUPPORTED = {
     "ports.freeBind": "Linux-only, not applicable on FreeBSD.",
     "log.timestamp": "handled by syslog on OPNsense; blocky's own timestamp is always disabled.",
+    "log.target": "Blocky always logs to syslog on OPNsense.",
+    "log.syslog": "Blocky always logs to syslog on OPNsense.",
     "customDNS.fallbackUpstream": "no equivalent setting in the plugin.",
     "hostsFile.loading.downloads.writeTimeout": "blocky does not use it for hosts files.",
     "hostsFile.loading.downloads.readTimeout": "blocky does not use it for hosts files.",
@@ -742,6 +745,7 @@ class Mapper:
     def _prometheus_log(self):
         self._map("prometheus.enable", "general", "prometheus", self._bool)
         self._map("prometheus.path", "general", "prometheusPath")
+        self._map("pprof.enable", "general", "pprof", self._bool)
         self._map("log.level", "general", "logLevel", self._log_level)
         self._map("log.format", "general", "logFormat")
         self._map("log.privacy", "general", "logPrivacy", self._bool)

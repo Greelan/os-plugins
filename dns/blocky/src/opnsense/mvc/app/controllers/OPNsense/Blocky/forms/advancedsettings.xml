@@ -182,7 +182,7 @@
         <id>blocky.redis.password</id>
         <label>Password</label>
         <type>password</type>
-        <help>Redis password, if required. It is never shown again; leave the field empty to keep the saved one. A value of file:/usr/local/etc/blocky/secrets/name reads it from that file instead, keeping it out of the OPNsense configuration and its backups.</help>
+        <help>Redis password, if required. It is never shown again. A value of file:/usr/local/etc/blocky/secrets/name reads it from that file instead, keeping it out of the OPNsense configuration and its backups.</help>
     </field>
     <field>
         <id>blocky.redis.database</id>
@@ -197,7 +197,7 @@
         <label>Required</label>
         <type>checkbox</type>
         <advanced>true</advanced>
-        <help>If enabled, Blocky refuses to start when the Redis connection cannot be established.</help>
+        <help>If enabled, Blocky refuses to start when the Redis connection cannot be established. Otherwise it starts without Redis and connects once Redis is reachable.</help>
     </field>
     <field>
         <id>blocky.redis.connectionAttempts</id>
@@ -237,6 +237,6 @@
         <label>Sentinel password</label>
         <type>password</type>
         <advanced>true</advanced>
-        <help>Password used to authenticate to the Redis Sentinel hosts, if required. It is never shown again; leave the field empty to keep the saved one. A value of file:/usr/local/etc/blocky/secrets/name reads it from that file instead, keeping it out of the OPNsense configuration and its backups.</help>
+        <help>Password used to authenticate to the Redis Sentinel hosts, if required. It is never shown again. A value of file:/usr/local/etc/blocky/secrets/name reads it from that file instead, keeping it out of the OPNsense configuration and its backups.</help>
     </field>
 </form>

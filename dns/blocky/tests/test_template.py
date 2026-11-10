@@ -82,6 +82,10 @@ class Template(unittest.TestCase):
         self.assertNotIn("http", doc["ports"], "the unauthenticated HTTP API is off by default")
         for key in ("certFile", "keyFile", "redis"):
             self.assertNotIn(key, doc)
+        self.assertEqual(doc["pprof"], {"enable": True}, "Blocky's default")
+
+    def test_profiler_can_be_turned_off(self):
+        self.assertEqual(render(general={"pprof": "0"})["pprof"], {"enable": False})
 
     def test_free_text_stays_a_value(self):
         # each value tries to open a top-level section of its own; none may appear
@@ -110,6 +114,12 @@ class Template(unittest.TestCase):
         self.assertEqual(render(queryLog={"type": "sqlite", "target": "/etc/x"})["queryLog"]["target"],
                          "/var/db/blocky/querylog.db")
         self.assertNotIn("cachePath", render(denylists=denylist("a.lan"))["blocking"]["loading"]["downloads"])
+
+    def test_logs_to_syslog_as_blocky(self):
+        # the log page and remote logging match program "blocky"
+        log = render()["log"]
+        self.assertEqual(log["target"], "syslog")
+        self.assertEqual(log["syslog"], {"tag": "blocky"})
 
     def test_database_target_is_taken_as_given(self):
         doc = render(queryLog={"type": "postgresql", "target": "postgres://u:p@db/blocky"})

@@ -244,6 +244,8 @@ clientLookup:
 prometheus:
   enable: {{ 'true' if OPNsense.blocky.general.prometheus == '1' else 'false' }}
   path: {{ OPNsense.blocky.general.prometheusPath|default('/metrics') }}
+pprof:
+  enable: {{ 'true' if OPNsense.blocky.general.pprof != '0' else 'false' }}
 {% if OPNsense.blocky.statistics is defined and OPNsense.blocky.statistics.enable == '1' %}
 
 statistics:
@@ -470,6 +472,9 @@ log:
   level: {{ OPNsense.blocky.general.logLevel|default('info') }}
   format: {{ OPNsense.blocky.general.logFormat|default('text') }}
   timestamp: false
+  target: syslog
+  syslog:
+    tag: blocky
   privacy: {{ 'true' if OPNsense.blocky.general.logPrivacy == '1' else 'false' }}
 
 {% if OPNsense.blocky.ede is defined and OPNsense.blocky.ede.enable == '1' %}

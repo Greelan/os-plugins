@@ -137,6 +137,11 @@ class Importer(unittest.TestCase):
         self.assertEqual(result["warnings"], [])
         self.assertEqual(run("ports:\n  dns: 53\nprometheus:\n  enable: yes\n")["scalars"]["general"]["prometheus"], "1")
 
+    def test_profiler_switch(self):
+        result = run("pprof:\n  enable: false\n")
+        self.assertEqual(result["scalars"]["general"]["pprof"], "0")
+        self.assertEqual(result["warnings"], [])
+
     def test_values_blocky_takes_fit_the_fields(self):
         result = run("blocking:\n  blockTTL: 0\n  schedules:\n    work:\n      weekdays: [Mon, Tue]\n      start: 09:00\n"
                      "      end: 17:00\n  listSchedules:\n    ads: [work]\n  denylists:\n    ads: [ads.lan]\n"
@@ -160,6 +165,12 @@ class Importer(unittest.TestCase):
     def test_an_empty_key_is_left_to_the_default(self):
         result = run("ports:\n  dns: \"\"\nblocking:\n  blockTTL: \"\"\n  loading:\n    refreshPeriod: \"\"\n")
         self.assertNotIn("general", result["scalars"])
+
+    def test_log_destination_is_left_to_the_plugin(self):
+        result = run("log:\n  target: stderr\n  syslog:\n    tag: dns\n")
+        self.assertIn("log.target: Blocky always logs to syslog on OPNsense.", result["skipped"])
+        self.assertIn("log.syslog: Blocky always logs to syslog on OPNsense.", result["skipped"])
+        self.assertFalse(warned(result, "not recognized"))
 
     def test_an_odd_date_is_text(self):
         self.assertNotIn("error", run("upstreams:\n  userAgent: 2026-13-45\n"))

@@ -270,6 +270,10 @@
                 <Mask>/^\/[\w\/.-]*$/</Mask>
                 <ValidationMessage>Enter a URL path beginning with a slash, e.g. /metrics.</ValidationMessage>
             </prometheusPath>
+            <pprof type="BooleanField">
+                <Default>1</Default>
+                <Required>Y</Required>
+            </pprof>
             <logFormat type="OptionField">
                 <Default>text</Default>
                 <Required>Y</Required>

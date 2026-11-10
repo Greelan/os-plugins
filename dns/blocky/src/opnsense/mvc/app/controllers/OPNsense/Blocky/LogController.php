@@ -32,11 +32,11 @@ class LogController extends \OPNsense\Base\IndexController
 {
     public function indexAction()
     {
-        /* core Diagnostics log viewer, defaulted to Notice (blocky logs are all daemon.notice) */
+        /* core Diagnostics log viewer, showing Blocky's info lines and the notices daemon(8) sends */
         $this->view->module = 'core';
         $this->view->scope = 'blocky';
         $this->view->service = '';
-        $this->view->default_log_severity = 'Notice';
+        $this->view->default_log_severity = 'Informational';
         $this->view->pick('OPNsense/Blocky/log');
     }
 }

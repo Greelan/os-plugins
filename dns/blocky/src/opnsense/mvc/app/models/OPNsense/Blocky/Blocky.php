@@ -45,7 +45,7 @@ class Blocky extends BaseModel
     /* the socket the Redis plugin (databases/redis) opens */
     public const REDIS_SOCKETS = ['/var/run/redis/redis.sock'];
     private const LIST_DIR = '/^\/usr\/local\/etc\/blocky\/lists(\/(?!\.\.?(\/|$))[^\/\0]+)+$/u';
-    /* the DNS type names Blocky 0.35 knows */
+    /* the DNS type names Blocky 0.36 knows */
     private const QUERY_TYPES = ['A', 'AAAA', 'AFSDB', 'AMTRELAY', 'ANY', 'APL', 'ATMA', 'AVC', 'AXFR', 'CAA',
         'CDNSKEY', 'CDS', 'CERT', 'CNAME', 'CSYNC', 'DHCID', 'DLV', 'DNAME', 'DNSKEY', 'DS', 'EID', 'EUI48', 'EUI64',
         'GID', 'GPOS', 'HINFO', 'HIP', 'HTTPS', 'IPSECKEY', 'ISDN', 'IXFR', 'KEY', 'KX', 'L32', 'L64', 'LOC', 'LP',

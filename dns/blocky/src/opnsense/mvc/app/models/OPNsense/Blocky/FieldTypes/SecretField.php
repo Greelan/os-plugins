@@ -35,7 +35,7 @@ use OPNsense\Base\FieldTypes\UpdateOnlyTextField;
  * Class SecretField
  *
  * A write-only secret: an empty value keeps the saved one, as for UpdateOnlyTextField, and
- * CLEAR, which nobody can type, removes it. The page sends CLEAR for its Remove link, so a
+ * CLEAR, which nobody can type, removes it. The page sends CLEAR for its Clear Saved Value link, so a
  * removal passes through the model's validation like any other change.
  *
  * @package OPNsense\Blocky\FieldTypes

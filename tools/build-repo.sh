@@ -84,14 +84,17 @@ if { [ -n "${BLOCKY_VERSION}" ] || [ -n "${RCLONE}" ]; } && [ ! -e /usr/ports/Mk
     git clone --depth 1 https://git.FreeBSD.org/ports.git /usr/ports
 fi
 
-# blocky, from the port pinned to BLOCKY_VERSION, at the port's own revision plus
-# BLOCKY_REVISION: a rebuild picks up a ports revision, and a change of ours within
-# the same blocky version raises BLOCKY_REVISION (back to 0 with the next version)
+# blocky, from the port pinned to BLOCKY_VERSION, one revision above the port's build
+# of that version, or at its own revision while the port packages another, so the
+# port catching up rebuilds it; a change of ours within the same blocky version
+# raises BLOCKY_REVISION (back to 0 with the next version)
 if [ -n "${BLOCKY_VERSION}" ]; then
     ours=
     [ -f "${SELF}/dns/blocky/BLOCKY_REVISION" ] &&
         ours=$(tr -d ' \n' < "${SELF}/dns/blocky/BLOCKY_REVISION")
-    revision=$(($(make -C /usr/ports/dns/blocky -V PORTREVISION) + ${ours:-0}))
+    revision=${ours:-0}
+    [ "$(make -C /usr/ports/dns/blocky -V DISTVERSION)" != "${BLOCKY_VERSION}" ] ||
+        revision=$(($(make -C /usr/ports/dns/blocky -V PORTREVISION) + 1 + revision))
     # pkg leaves a zero revision out of the version
     version="${BLOCKY_VERSION}"
     [ "${revision}" -eq 0 ] || version="${version}_${revision}"

@@ -147,7 +147,7 @@
         <id>blocky.specialUseDomains.enable</id>
         <label>Special-use domains</label>
         <type>checkbox</type>
-        <help>Answer the special-use names of RFC 6761 and RFC 6762 locally instead of forwarding them: NXDOMAIN for test, invalid, local, home.arpa and the private and link-local reverse zones, and the loopback addresses for localhost. The example domains are still forwarded. Off forwards everything.</help>
+        <help>Answer the special-use names of RFC 6761 and RFC 6762 locally instead of forwarding them: NXDOMAIN for test, invalid, local, home.arpa and the private, link-local and shared address space (100.64.0.0/10, RFC 6598) reverse zones, and the loopback addresses for localhost. The example domains are still forwarded. Off forwards everything.</help>
     </field>
     <field>
         <id>blocky.specialUseDomains.rfc6762</id>

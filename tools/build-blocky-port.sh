@@ -12,10 +12,10 @@ PORT="${PORTSDIR:-/usr/ports}/dns/blocky"
 
 mkdir -p "${OUT}"
 
-# Route blocky's stdout/stderr to syslog (program "blocky") instead of a flat
-# /var/log/blocky.log, so it integrates with OPNsense's log viewer and log
-# rotation. blocky has no native syslog output, so we bridge it via daemon(8)'s
-# -T (syslog tag) in the port's rc script.
+# blocky logs to syslog itself, but prints to stdout/stderr whatever comes before
+# that, such as the error a config it can't use stops it with. daemon(8)'s -T sends
+# that to syslog too (program "blocky") instead of the port's flat, unrotated
+# /var/log/blocky.log.
 RC_IN="${PORT}/files/blocky.in"
 # a silent no-match would ship a package whose log never reaches syslog
 if ! grep -qF -- '-o ${logfile}' "${RC_IN}"; then

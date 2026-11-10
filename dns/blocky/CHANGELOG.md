@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5 - 2026-11-10
+
+- Blocky 0.36.0.
+- Blocky now logs to syslog itself, so each line in the log keeps its own severity instead of all showing as Notice.
+- The Go profiler at /debug can be turned off.
+
 ## 1.4_13 - 2026-10-10
 
 - A query log connection string cannot name a file for Blocky to read, such as allowAllFiles or sslkey; such options go in a file: value.

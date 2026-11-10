@@ -40,7 +40,7 @@
         <type>text</type>
         <hint>4</hint>
         <advanced>true</advanced>
-        <help>Maximum number of lists processed in parallel.</help>
+        <help>Maximum number of lists processed in parallel. Groups are loaded one at a time.</help>
     </field>
     <field>
         <id>blocky.general.downloadTimeout</id>

@@ -25,7 +25,3 @@
  #}
 
 {{ partial('OPNsense/Diagnostics/log') }}
-
-<div class="alert alert-info" role="alert" style="margin-top: 1rem;">
-    {{ lang._('Blocky is bridged to syslog and every line is tagged with the same severity (Notice), so the severity filter is not meaningful for these entries. The real level (INFO, WARN, ERROR) is in the message text - use the search box to filter by level.') }}
-</div>
