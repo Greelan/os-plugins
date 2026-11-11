@@ -89,6 +89,12 @@ class TestS3 extends OPNsense\Backup\S3
         return 5;
     }
 
+    /* core's backup page, as given, else none */
+    protected function page()
+    {
+        return getenv('S3_PAGE') ?: '/nonexistent';
+    }
+
     public function encrypt($data, $pass, $tag = 'config.xml')
     {
         return "---- BEGIN config.xml ----\n" . base64_encode($data) . "\n---- END config.xml ----\n";

@@ -420,6 +420,45 @@ class S3(unittest.TestCase):
         names = list(fields)
         self.assertEqual(names[names.index("endpoint") + 1], "provider", "the provider follows the endpoint")
 
+    def test_provider_is_a_list_where_the_page_has_one(self):
+        # core's page from 26.7.9 on renders a dropdown (opnsense/core#11170)
+        new = {"S3_PAGE": os.path.join(CORE, "src", "www", "diag_backup.php")}
+        field = self.run_steps([["fields"]], env=new)[0]["provider"]
+        self.assertEqual((field["type"], field["value"]), ("dropdown", "Other"))
+        self.assertEqual(field["options"]["AWS"], "Amazon Web Services (AWS) S3")
+        self.assertIn('For one not listed, choose "Any other S3 compatible provider".', field["help"])
+        # a stored name rclone does not list stays selected, first
+        field = self.run_steps([["fields"]], env=new, provider="Gone")[0]["provider"]
+        self.assertEqual((field["value"], list(field["options"])[0]), ("Gone", "Gone"))
+        # without rclone the name can still be read and typed
+        field = self.run_steps([["fields"]], env=dict(new, S3_RCLONE="/nonexistent"))[0]["provider"]
+        self.assertEqual((field["type"], field["value"]), ("text", "Other"))
+        # the page shows help as it is
+        listing = os.path.join(self.tmp, "listing")
+        with open(listing, "w") as handle:
+            handle.write("#!/bin/sh\necho '%s'\n" % json.dumps([{"Name": "s3", "Options": [
+                {"Name": "provider", "Examples": [{"Value": "Other", "Help": "<b>&\""}]}]}]))
+        os.chmod(listing, 0o755)
+        text = self.run_steps([["fields"]], env=dict(new, S3_RCLONE=listing))[0]["provider"]["help"]
+        self.assertIn('choose "&lt;b&gt;&amp;&quot;".', text)
+
+    def test_a_save_lists_the_providers_once(self):
+        # core's page reads the fields, then saves, with one handle
+        self.calls()
+        self.run_steps([["fields"], ["setup", self.setup_page()]],
+                       env={"S3_PAGE": os.path.join(CORE, "src", "www", "diag_backup.php")})
+        self.assertEqual(len([c for c in self.calls() if "config providers" in c]), 1)
+
+    def test_provider_is_a_text_box_on_older_pages(self):
+        # 26.7.8 and before, and Business Edition until based on 26.7.9: no box for a type they do not know
+        old = os.path.join(self.tmp, "diag_backup.php")
+        with open(old, "w") as handle:
+            handle.write("<?php if ($field['type'] == 'textarea'): ?><?php endif ?>\n")
+        self.calls()
+        field = self.run_steps([["fields"]], env={"S3_PAGE": old})[0]["provider"]
+        self.assertEqual((field["type"], field["value"]), ("text", "Other"))
+        self.assertEqual(self.calls(), [], "rclone is not asked for the list")
+
     def setup_page(self, **values):
         return self.settings(**dict({"provider": "Other", "secretKey": "", "password": "", "passwordconfirm": ""},
                                     **values))

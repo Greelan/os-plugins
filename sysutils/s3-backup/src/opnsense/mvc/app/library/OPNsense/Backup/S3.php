@@ -56,6 +56,9 @@ class S3 extends Base implements IBackupProvider
 
     private $model = null;
 
+    /* rclone's S3 providers, once read */
+    private $providers = null;
+
     public function __construct()
     {
         $this->model = new S3Settings();
@@ -162,8 +165,42 @@ class S3 extends Base implements IBackupProvider
                 /* the page escapes them, with legacy_html_escape_form_data() */
                 $field['value'] = $this->model->getNodeByReference($field['name'])->getValue();
             }
+            if ($field['name'] == 'provider') {
+                $field = $this->providerField($field);
+            }
         }
         return $fields;
+    }
+
+    /**
+     * A list of the providers rclone knows where core's page has the dropdown type: 26.7.9 on, and Business
+     * Edition once based on it. A stored name rclone does not list stays selected, so saving says so.
+     */
+    private function providerField(array $field)
+    {
+        try {
+            /* no page before 26.7.9 mentions it; they show no box for a type they do not know */
+            if (strpos((string)@file_get_contents($this->page()), 'dropdown') === false) {
+                return $field;
+            }
+            $options = $this->providers();
+        } catch (\Exception $e) {
+            return $field;
+        }
+        $options = isset($options[$field['value']]) ? $options : [$field['value'] => $field['value']] + $options;
+        /* the page shows help as it is */
+        return array_merge($field, ['type' => 'dropdown', 'options' => $options, 'help' => sprintf(
+            gettext('The S3 service, so rclone applies its ways. For one not listed, choose "%s".'),
+            htmlspecialchars($options['Other'] ?? 'Other', ENT_QUOTES | ENT_HTML401)
+        )]);
+    }
+
+    /**
+     * Core's backup page.
+     */
+    protected function page()
+    {
+        return '/usr/local/www/diag_backup.php';
     }
 
     /**
@@ -207,7 +244,7 @@ class S3 extends Base implements IBackupProvider
         $provider = $this->model->provider->getValue();
         if ($this->model->enabled->isEqual('1') && preg_match('/^[A-Za-z0-9]{1,32}$/D', $provider)) {
             try {
-                $known = array_values(array_filter($this->providers(), function ($name) use ($provider) {
+                $known = array_values(array_filter(array_keys($this->providers()), function ($name) use ($provider) {
                     return strcasecmp($name, $provider) == 0;
                 }));
                 if (empty($known)) {
@@ -604,10 +641,13 @@ class S3 extends Base implements IBackupProvider
     }
 
     /**
-     * The S3 provider names the installed rclone knows.
+     * The S3 providers the installed rclone knows, as name => description.
      */
     private function providers()
     {
+        if ($this->providers !== null) {
+            return $this->providers;
+        }
         $result = $this->rclone(['config', 'providers']);
         if ($result['error'] !== '') {
             throw new \Exception($result['error']);
@@ -615,13 +655,11 @@ class S3 extends Base implements IBackupProvider
         $backends = json_decode($result['out'], true);
         $backends = array_column(is_array($backends) ? $backends : [], null, 'Name');
         $options = array_column($backends['s3']['Options'] ?? [], null, 'Name');
-        $names = array_filter(array_column($options['provider']['Examples'] ?? [], 'Value'), function ($name) {
-            return is_string($name) && $name !== '';
-        });
+        $names = array_filter(array_column($options['provider']['Examples'] ?? [], 'Help', 'Value'), 'is_string');
         if (empty($names)) {
             throw new \Exception(gettext('rclone listed no S3 providers.'));
         }
-        return array_values($names);
+        return $this->providers = $names;
     }
 
     /**
