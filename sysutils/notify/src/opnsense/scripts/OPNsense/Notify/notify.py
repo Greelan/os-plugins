@@ -192,6 +192,8 @@ SYSLOG_SKIP = ("audit", "filter", "notify")
 SEVERITIES = ("emergency", "alert", "critical", "error", "warning", "notice", "info", "debug")
 # a repeated log message is held this long
 SYSLOG_HOLD = 3600
+# from core 26.7.9, syslog-ng writes a message logged again within 30 s once, then this in place of the rest
+SYSLOG_REPEATS = re.compile(r"Last message '(.*)' repeated (\d{1,10}) times, suppressed by syslog-ng on \S+")
 # per check; more are listed in one
 LOG_MESSAGES = 20
 SEEN_MAX = 1000
@@ -919,6 +921,19 @@ def check_vpn(config, previous):
 VPN_WORDS = {"up": "connected", "down": "disconnected", "online": "online", "stale": "stale", "offline": "offline"}
 
 
+def repeat_of(key, start, before, seen):
+    """Which message a syslog-ng "Last message '...' repeated N times" line repeats: the line before
+    it in the same file, else the latest held message that starts the same; None when neither
+    matches, as for a message logged before notify read the log. syslog-ng quotes only the first
+    20 bytes, which can split a character."""
+    name, program, _, severity = key
+    start = start.lstrip().rstrip("�")
+    if before and before[1] == program and before[3] == severity and before[2].startswith(start):
+        return before
+    held = [(t, k) for k, t in seen.items() if k.startswith(f"{program}\t{start}")]
+    return (name, program, max(held)[1].split("\t", 1)[1], severity) if held else None
+
+
 def check_syslog(config, previous):
     """Local log lines at or above the chosen severity; audit, filterlog and our own log are
     skipped."""
@@ -949,6 +964,7 @@ def check_syslog(config, previous):
             last = {"inode": 0}  # read the new day's file from its start
         more, files[name], (count, passed) = follow(path, last, wanted)
         missed, skipped = missed + count, skipped + passed
+        before = None
         for line in lines + more:
             match = re.match(r"<(\d+)>\d* (\S+) \S+ (\S+) \S+ \S+ (?:-|\[.*?\]) ?(.*)", line.strip())
             if match:
@@ -957,7 +973,13 @@ def check_syslog(config, previous):
                     at = int(datetime.datetime.fromisoformat(match.group(2)).timestamp())
                 except ValueError:
                     at = now
-                found.setdefault(key, []).append(at)
+                again = SYSLOG_REPEATS.fullmatch(key[2])
+                if again:
+                    key = repeat_of(key, again.group(1), before, previous.get("seen", {}))
+                    if key is None:
+                        continue
+                found.setdefault(key, collections.Counter())[at] += int(again.group(2)) if again else 1
+                before = key
     # repeats within the hold are counted, not sent
     seen = {k: t for k, t in previous.get("seen", {}).items() if now - t < SYSLOG_HOLD}
     # the most severe sent of each; 0 for one seen before this was kept, so it is held as then
@@ -966,9 +988,9 @@ def check_syslog(config, previous):
     extra: list = []
     sent = 0
     for (name, program, text, severity), times in sorted(found.items(), key=lambda kv: kv[0][3]):
-        count = len(times)
+        count = sum(times.values())
         # each second it was logged in, with how many times, the latest as many as a summary lists
-        logged = sorted(collections.Counter(times).items())[-kept:] if kept else []
+        logged = sorted(times.items())[-kept:] if kept else []
         repeat = f"{program}\t{text}"[:300]
         held = repeat in seen and severity >= levels.get(repeat, 0)
         body = f"{SEVERITIES[severity].capitalize()} in the {name} log: {text}"

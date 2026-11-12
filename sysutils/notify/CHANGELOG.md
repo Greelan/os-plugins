@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8_1 - 2026-11-12
+
+- From core 26.7.9, syslog-ng writes a log message repeated within 30 seconds once, then a line saying how many more times it came. Those repeats now count toward the message instead of being sent as a message of their own.
+
 ## 1.8 - 2026-11-09
 
 - Apprise 2.2.0, adding CM.com, FireHydrant, Groundmail, Gupshup, Infobip, KakaoTalk, Kaleyra, Nostr, SMSTunnel, Telesign, Whapi.Cloud and xMatters; Burst SMS is now Kudosity, and burstsms:// channels work as before.

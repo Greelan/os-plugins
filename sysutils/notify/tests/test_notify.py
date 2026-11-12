@@ -2414,6 +2414,48 @@ class LogMessages(unittest.TestCase):
                          "at the times logged, the same second together")
         self.assertGreaterEqual(recent[2]["time"], before, "a time it cannot read is when it was read")
 
+    # from core 26.7.9, syslog-ng writes a message logged again within 30 s once, then this
+    REPEATS = b"Last message '%s' repeated %d times, suppressed by syslog-ng on fw.example"
+
+    def repeats(self, prog, text, count):
+        line = self.LINE.format(pri=10, prog=prog, text="{}").encode()
+        with open(os.path.join(self.folder, "system", f"system_{self.day}.log"), "ab") as handle:
+            handle.write(line.replace(b"{}", self.REPEATS % (text.encode()[:20], count)))
+
+    def test_a_repeat_syslog_ng_suppressed_counts_with_its_message(self):
+        self.write("system", [])
+        config = {"general": {}}
+        state, _ = notify.check_syslog(config, None)
+        self.write("system", [self.LINE.format(pri=10, prog="kernel", text="disk ada0 sector 5 ä failing")])
+        self.repeats("kernel", "disk ada0 sector 5 ä failing", 4)  # cut inside the ä
+        state, messages = notify.check_syslog(config, state)
+        self.assertEqual([m["title"] for m in messages], ["kernel: disk ada0 sector 5 ä failing"])
+        self.assertIn("(Logged 5 times.)", messages[0]["body"])
+        self.repeats("kernel", "disk ada0 sector 5 ä failing", 2)
+        _, messages = notify.check_syslog(config, state)
+        self.assertEqual([(m["title"], m.get("quiet"), m["count"]) for m in messages],
+                         [("kernel: disk ada0 sector 5 ä failing", True, 2)], "in a later check, held with it")
+
+    def test_a_repeat_is_of_the_line_before_it(self):
+        self.write("system", [])
+        config = {"general": {}}
+        state, _ = notify.check_syslog(config, None)
+        self.write("system", [self.LINE.format(pri=10, prog="configd.py", text=f"action allowed firmware.{a}")
+                              for a in ("check", "status")])
+        self.repeats("configd.py", "action allowed firmware.status", 999999999)
+        _, messages = notify.check_syslog(config, state)
+        self.assertEqual(sorted((m["title"], m["count"]) for m in messages),
+                         [("configd.py: action allowed firmware.check", 1),
+                          ("configd.py: action allowed firmware.status", 1000000000)])
+
+    def test_a_repeat_of_a_message_before_the_log_was_read_is_left_out(self):
+        self.write("system", [self.LINE.format(pri=10, prog="kernel", text="disk failing")])
+        config = {"general": {}}
+        state, _ = notify.check_syslog(config, None)
+        self.repeats("kernel", "disk failing", 4)
+        _, messages = notify.check_syslog(config, state)
+        self.assertEqual(messages, [])
+
     def test_the_not_checked_note_is_held(self):
         self.write("system", [])
         config = {"general": {}}
