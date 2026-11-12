@@ -45,14 +45,6 @@ class S3Settings extends BaseModel
     {
         $messages = parent::performValidation($validateFullModel);
 
-        /* the mask takes any five digits */
-        if (
-            preg_match('/:([0-9]+)$/', $this->endpoint->getValue(), $port) &&
-            ((int)$port[1] < 1 || (int)$port[1] > 65535)
-        ) {
-            $messages->appendMessage(new Message(gettext('Enter a port from 1 to 65535.'), 'endpoint'));
-        }
-
         /* only what config.xml cannot hold, so no stored value fails an upgrade; not masks, which core
          * before 26.1.8 checks against a write-only field's empty text */
         $xml = '/^[\x{9}\x{a}\x{d}\x{20}-\x{d7ff}\x{e000}-\x{fffd}\x{10000}-\x{10ffff}]*$/Du';

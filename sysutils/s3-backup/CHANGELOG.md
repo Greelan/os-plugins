@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3_1 - 2026-11-12
+
+- An endpoint can be an IPv6 address, e.g. 2001:db8::1, or [2001:db8::1]:9000 with a port.
+
 ## 1.3 - 2026-11-12
 
 - On 26.7.9 and later, Provider is a list of the services the installed rclone knows. Earlier versions, including Business Edition 26.10 until a release based on 26.7.9, have no such list on the page, so it stays a text box there.

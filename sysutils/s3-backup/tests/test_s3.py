@@ -20,6 +20,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 HARNESS = os.path.join(HERE, "s3_harness.php")
 RCLONE = os.environ.get("RCLONE") or shutil.which("rclone") or ""
 CORE = os.environ.get("OPNSENSE_CORE", "")
+ENDPOINT = "Enter the host name of the S3 endpoint, optionally with a port, e.g. s3.eu-central-1.amazonaws.com."
 SECRET = "s3cr3t/Key+With=Symbols"
 DOTS = "\ue000" * 8  # what the page shows for a saved secret
 AHEAD = int(time.time()) + 365 * 86400  # names from a clock that ran a year ahead
@@ -331,8 +332,7 @@ class S3(unittest.TestCase):
         self.assertIn("The S3 settings are not valid: region:", error, "names the setting")
         self.assertEqual(self.run_steps([["list", "fw8/"]], prefix="fw8")[0], [], "nothing sent")
         error = self.run_steps([["upload", self.local("config-1727000011.xml")]], endpoint="localhost:99999")[0]["error"]
-        self.assertIn("endpoint: Enter a port from 1 to 65535.", error)
-        self.assertEqual(error.count("endpoint"), 1, "one message for the port")
+        self.assertEqual(error, f'The S3 settings are not valid: endpoint: "localhost:99999" is invalid. {ENDPOINT}')
 
     def test_revision_time_in_any_language(self):
         running = self.local("running-de.xml",
@@ -471,7 +471,7 @@ class S3(unittest.TestCase):
         # config.xml would drop them, so the next backups would be encrypted with another password
         answer = self.run_steps([["setup", self.setup_page(secretKey="a\x01b", password="a\uffffb",
                                                            passwordconfirm="a\uffffb")]])[0]
-        self.assertEqual(answer["messages"], ["Secret access key: Enter the secret access key without control characters.",
+        self.assertEqual(answer["messages"], ["Secret Access Key: Enter the secret access key without control characters.",
                                               "Encrypt Password: Enter a password without control characters."])
         # what config.xml keeps, as 1.1 took it
         answer = self.run_steps([["setup", self.setup_page(secretKey="a\tb\x7f", password="a\tb\x7f",
@@ -565,10 +565,25 @@ class S3(unittest.TestCase):
 
     def test_a_trailing_line_break_is_refused(self):
         # core compares a number with trailing white space as equal to the match
-        for name, label in (("endpoint", "Endpoint"), ("region", "Region"), ("bucket", "Bucket"),
-                            ("prefix", "Folder"), ("accessKey", "Access key ID")):
+        for name, label in (("region", "Region"), ("bucket", "Bucket"), ("prefix", "Folder"),
+                            ("accessKey", "Access Key ID")):
             messages = self.run_steps([["setup", self.setup_page(**{name: "123\n"})]])[0]["messages"]
             self.assertTrue([m for m in messages if m.startswith(label + ": ")], (name, messages))
+
+    def test_endpoint_with_a_port_or_an_ipv6_address(self):
+        # rclone takes a URL, which needs an IPv6 address in brackets; core trims the host name
+        endpoints = {"s3.example.com": "https://s3.example.com", "s3.example.com:9000": "https://s3.example.com:9000",
+                     "192.0.2.1:9000": "https://192.0.2.1:9000", "[2001:db8::1]:9000": "https://[2001:db8::1]:9000",
+                     "2001:db8::1": "https://[2001:db8::1]", "s3.example.com\n": "https://s3.example.com"}
+        steps = [step for endpoint in endpoints for step in
+                 (["setup", self.setup_page(enabled="0", endpoint=endpoint)], ["endpoint"])]
+        answers = self.run_steps(steps)
+        self.assertEqual([answer["messages"] for answer in answers[0::2]], [[]] * len(endpoints))
+        self.assertEqual(answers[1::2], list(endpoints.values()))
+        refused = ("s3.example.com:99999", "s3.example.com:0", "https://s3.example.com", "[2001:db8::1]", "a..b")
+        answers = self.run_steps([["setup", self.setup_page(enabled="0", endpoint=endpoint)] for endpoint in refused])
+        self.assertEqual([answer["messages"] for answer in answers],
+                         [[f'Endpoint: "{endpoint}" is invalid. {ENDPOINT}'] for endpoint in refused])
 
     def test_a_failed_nightly_backup_is_logged(self):
         # core's nightly run (php CLI) on 26.7 and before stops at a provider that throws

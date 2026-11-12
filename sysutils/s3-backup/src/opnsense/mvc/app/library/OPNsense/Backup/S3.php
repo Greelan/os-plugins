@@ -30,8 +30,10 @@
 namespace OPNsense\Backup;
 
 use OPNsense\Core\ACL;
+use OPNsense\Core\AppConfig;
 use OPNsense\Core\Config;
 use OPNsense\Core\Shell;
+use OPNsense\Firewall\Util;
 
 /**
  * Configuration backups to S3-compatible object storage, through rclone.
@@ -123,12 +125,12 @@ class S3 extends Base implements IBackupProvider
             [
                 'name' => 'accessKey',
                 'type' => 'text',
-                'label' => gettext('Access key ID'),
+                'label' => gettext('Access Key ID'),
             ],
             [
                 'name' => 'secretKey',
                 'type' => 'password',
-                'label' => gettext('Secret access key'),
+                'label' => gettext('Secret Access Key'),
                 'help' => gettext(
                     'Never shown again: a saved key shows as dots, which leave it as it is. The key only ' .
                     'needs to list, write and delete objects in this bucket.'
@@ -315,7 +317,8 @@ class S3 extends Base implements IBackupProvider
 
         [$plain, $name] = $this->running($cnf);
 
-        $folder = $this->folder();
+        /* the folder as entered, which is this firewall's alone */
+        $folder = $this->model->prefix->getValue() . '/';
         $keep = (int)$this->model->backupcount->getValue();
         /* with nothing to delete, only names within a second of this save are kept from the listing */
         $second = (int)self::stamp($name);
@@ -339,14 +342,14 @@ class S3 extends Base implements IBackupProvider
             try {
                 $listed = $this->listBackups($folder, [$name]);
             } catch (\Exception $e) {
-                $this->fail(sprintf(
+                throw new \Exception(sprintf(
                     gettext('The backup %s was sent, but the bucket could not be listed: %s'),
                     $folder . $name,
                     $e->getMessage()
                 ));
             }
             if (!in_array($name, $listed)) {
-                $this->fail(sprintf(
+                throw new \Exception(sprintf(
                     gettext('The backup %s was sent, but the bucket does not list it.'),
                     $folder . $name
                 ));
@@ -397,7 +400,7 @@ class S3 extends Base implements IBackupProvider
             @unlink($file);
         }
         if ($result['error'] !== '') {
-            $this->fail($result['error']);
+            throw new \Exception($result['error']);
         }
     }
 
@@ -421,14 +424,14 @@ class S3 extends Base implements IBackupProvider
         try {
             $listed = $this->listBackups($folder);
         } catch (\Exception $e) {
-            $this->fail(sprintf(gettext('The bucket could not be listed afterwards: %s'), $e->getMessage()));
+            throw new \Exception(sprintf(gettext('The bucket could not be listed afterwards: %s'), $e->getMessage()));
         }
         $left = array_values(array_intersect($names, $listed));
         foreach (array_diff($names, $left) as $name) {
             syslog(LOG_NOTICE, 's3-backup: removed ' . $folder . $name);
         }
         if (!empty($left)) {
-            $this->fail($result['error'] !== '' ? $result['error'] :
+            throw new \Exception($result['error'] !== '' ? $result['error'] :
                 sprintf(gettext('The bucket still lists %d of them.'), count($left)));
         }
     }
@@ -492,7 +495,7 @@ class S3 extends Base implements IBackupProvider
      */
     protected function configFile()
     {
-        return (new \OPNsense\Core\AppConfig())->application->configDir . '/config.xml';
+        return (new AppConfig())->application->configDir . '/config.xml';
     }
 
     /**
@@ -520,6 +523,7 @@ class S3 extends Base implements IBackupProvider
      */
     private function remote()
     {
+        $host = $this->model->endpoint->getValue();
         return [
             'RCLONE_CONFIG_S3_TYPE' => 's3',
             'RCLONE_CONFIG_S3_PROVIDER' => $this->model->provider->getValue(),
@@ -527,7 +531,8 @@ class S3 extends Base implements IBackupProvider
             'RCLONE_CONFIG_S3_ACCESS_KEY_ID' => $this->model->accessKey->getValue(),
             'RCLONE_CONFIG_S3_SECRET_ACCESS_KEY' => $this->model->secretKey->getValue(),
             'RCLONE_CONFIG_S3_REGION' => $this->model->region->getValue(),
-            'RCLONE_CONFIG_S3_ENDPOINT' => 'https://' . $this->model->endpoint->getValue(),
+            /* an IPv6 address without a port, which a URL takes in brackets */
+            'RCLONE_CONFIG_S3_ENDPOINT' => 'https://' . (Util::isIpv6Address($host) ? "[{$host}]" : $host),
             'RCLONE_CONFIG_S3_NO_CHECK_BUCKET' => 'true',
             'RCLONE_CONFIG_S3_NO_HEAD' => 'true',
             'RCLONE_CONFIG_S3_NO_HEAD_OBJECT' => 'true',
@@ -539,7 +544,7 @@ class S3 extends Base implements IBackupProvider
      */
     private static function tempFile($contents = '')
     {
-        $file = tempnam((new \OPNsense\Core\AppConfig())->application->tempDir, self::TEMP_PREFIX);
+        $file = tempnam((new AppConfig())->application->tempDir, self::TEMP_PREFIX);
         if ($file !== false && file_put_contents($file, $contents) === false) {
             @unlink($file);
             $file = false;
@@ -655,7 +660,7 @@ class S3 extends Base implements IBackupProvider
         $backends = json_decode($result['out'], true);
         $backends = array_column(is_array($backends) ? $backends : [], null, 'Name');
         $options = array_column($backends['s3']['Options'] ?? [], null, 'Name');
-        $names = array_filter(array_column($options['provider']['Examples'] ?? [], 'Help', 'Value'), 'is_string');
+        $names = array_column($options['provider']['Examples'] ?? [], 'Help', 'Value');
         if (empty($names)) {
             throw new \Exception(gettext('rclone listed no S3 providers.'));
         }
@@ -668,14 +673,6 @@ class S3 extends Base implements IBackupProvider
     private static function stamp($name)
     {
         return (float)substr($name, strlen('config-'), -strlen('.xml'));
-    }
-
-    /**
-     * Key prefix for this firewall: the folder as entered, which is its alone.
-     */
-    private function folder()
-    {
-        return $this->model->prefix->getValue() . '/';
     }
 
     /**
@@ -695,7 +692,7 @@ class S3 extends Base implements IBackupProvider
             $this->model->bucket->getValue()
         )]);
         if ($result['error'] !== '') {
-            $this->fail($result['error']);
+            throw new \Exception($result['error']);
         }
         /* core prints the names it gets back unescaped, so only backup names pass */
         return array_values(preg_grep(self::BACKUP_NAME, explode("\n", $result['out'])));
@@ -723,10 +720,5 @@ class S3 extends Base implements IBackupProvider
         /* cut between characters, as syslog readers expect UTF-8 */
         return preg_replace('/[\xc0-\xff][\x80-\xbf]*$/', '', substr($text, 0, 120)) . ' ... ' .
             preg_replace('/^[\x80-\xbf]+/', '', substr($text, -115));
-    }
-
-    private function fail($message)
-    {
-        throw new \Exception($message);
     }
 }

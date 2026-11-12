@@ -48,6 +48,8 @@ new OPNsense\Core\AppConfig([
     'application' => ['configDir' => $conf, 'tempDir' => sys_get_temp_dir()],
     'globals' => ['simulate_mode' => '1', 'owner' => ''],
 ]);
+/* core reads /etc/services once, for a port given by its service name, and warns on lines it does not expect */
+@OPNsense\Firewall\Util::getservbyname('');
 
 /* core's Config as far as the upload uses it: the local backups, newest first */
 class StubConfig
@@ -133,6 +135,10 @@ foreach ($spec['steps'] as $step) {
                     'password' => $settings->password->getValue(),
                     'provider' => (string)$settings->provider,
                 ];
+                break;
+            case 'endpoint':
+                /* the URL rclone is given */
+                $answer = $call('remote')['RCLONE_CONFIG_S3_ENDPOINT'];
                 break;
             case 'backup':
                 $answer = $provider->backup();
