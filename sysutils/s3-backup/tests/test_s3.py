@@ -356,26 +356,59 @@ class S3(unittest.TestCase):
         answers = self.run_steps([["upload", other], ["list", "fw16/"]], prefix="fw16")
         self.assertEqual(len(answers[1]), 2)
 
+    def test_one_save_is_one_backup_after_a_slow_whoami(self):
+        # core names the backup, then takes the revision time, a whoami later on the console
+        def run(prefix, seeded, local, running=None):
+            self.seed(prefix, [seeded])
+            steps = [["upload", local] + ([running] if running else []), ["list", prefix + "/"]]
+            return sorted(self.run_steps(steps, prefix=prefix)[1])
+
+        def revision(name, time):
+            return self.local(name, contents=f"<opnsense><revision><time>{time}</time></revision></opnsense>")[0]
+
+        other = self.local("config-1790000000.xml")
+        self.assertEqual(run("fw31", "config-1790000500.4123.xml", other, revision("run31.xml", "1790000500.46")),
+                         ["config-1790000500.4123.xml"], "sent under core's name, found by the revision time")
+        self.assertEqual(run("fw32", "config-1790000600.46.xml", [revision("config-1790000600.4123.xml",
+                                                                           "1790000600.46")]),
+                         ["config-1790000600.46.xml"], "sent under the revision time, found by core's name")
+        self.assertEqual(len(run("fw33", "config-1790000700.41.xml", [revision("config-1790000700.46.xml",
+                                                                               "1790000700.47")])), 2,
+                         "an earlier backup is another save")
+        self.assertEqual(len(run("fw34", "config-1790000800.45.xml", other, revision("run34.xml", "1790000800.40"))),
+                         2, "a later backup is another save")
+        self.assertEqual(len(run("fw35", "config-1790000898.xml", other, revision("run35.xml", "1790000900.46"))), 2,
+                         "more than a second apart")
+
     def test_a_hand_made_copy_is_not_matched(self):
         running = self.local("config-1790000400.xml", contents="<opnsense><c/></opnsense>")
         copy = self.local("config-1790000400.1234_bak.xml", contents="<opnsense><c/></opnsense>")
         answers = self.run_steps([["upload", copy + running, running[0]]], prefix="fw11")
         self.assertEqual(answers[0][0], "config-1790000400.xml")
 
-    def test_names_from_a_clock_ahead_go_first(self):
-        self.seed("fw12", [f"config-{AHEAD + i}.xml" for i in range(1, 3)] + ["config-1727000008.xml"])
-        answers = self.run_steps([["upload", self.local("config-1727000009.xml")]], prefix="fw12")
-        self.assertEqual(answers[-1], ["config-1727000009.xml", "config-1727000008.xml", f"config-{AHEAD + 2}.xml"])
+    def test_names_from_a_clock_ahead_are_left_alone(self):
+        ahead = [f"config-{AHEAD + i}.xml" for i in (1, 2)]
+        self.seed("fw12", ahead + ["config-1727000008.xml", "config-1727000007.xml"])
+        answers = self.run_steps([["upload", self.local("config-1727000009.xml")], ["list", "fw12/"]],
+                                 prefix="fw12", backupcount="2")
+        self.assertEqual(answers[0], ["config-1727000009.xml", "config-1727000008.xml"], "left out, as core does")
+        self.assertEqual(sorted(answers[1]), sorted(ahead + ["config-1727000009.xml", "config-1727000008.xml"]),
+                         "and never deleted")
+        # the running config's own name counts, wherever its clock was
+        answers = self.run_steps([["upload", self.local(f"config-{AHEAD + 5}.xml")], ["list", "fw12/"]],
+                                 prefix="fw12", backupcount="2")
+        self.assertEqual(answers[0], [f"config-{AHEAD + 5}.xml", "config-1727000009.xml"])
+        self.assertEqual(sorted(answers[1]), sorted(ahead + [f"config-{AHEAD + 5}.xml", "config-1727000009.xml"]))
 
-    def test_keep_all_looks_only_around_that_second(self):
-        self.calls()
+    def test_keep_all_lists_the_folder(self):
+        self.seed("fw13", ["config-1727000001.xml", "config-1727000002.xml", "notes.txt"])
         answers = self.run_steps([["upload", self.local("config-1727000020.xml")],
                                   ["upload", self.local("config-1727000020.xml")], ["list", "fw13/"]],
                                  prefix="fw13", backupcount="0")
-        self.assertEqual(answers[0], ["config-1727000020.xml"])
-        self.assertEqual(answers[1], ["config-1727000020.xml"])
-        self.assertEqual(answers[2], ["config-1727000020.xml"], "sent once")
-        self.assertTrue([c for c in self.calls() if "--include config-1727000020*" in c], "asked only around that second")
+        kept = ["config-1727000020.xml", "config-1727000002.xml", "config-1727000001.xml"]
+        self.assertEqual(answers[0], kept)
+        self.assertEqual(answers[1], kept, "sent once")
+        self.assertEqual(sorted(answers[2]), sorted(kept))
 
     def test_keep_all_finds_the_same_save_across_a_second(self):
         self.seed("fw20", ["config-1727000019.995.xml"])
@@ -449,6 +482,13 @@ class S3(unittest.TestCase):
                        env={"S3_PAGE": os.path.join(CORE, "src", "www", "diag_backup.php")})
         self.assertEqual(len([c for c in self.calls() if "config providers" in c]), 1)
 
+    def test_a_request_lists_the_providers_once(self):
+        # core's page makes a provider for each list it shows
+        self.calls()
+        self.run_steps([["fields"], ["fields-new"], ["setup", self.setup_page()]],
+                       env={"S3_PAGE": os.path.join(CORE, "src", "www", "diag_backup.php")})
+        self.assertEqual(len([c for c in self.calls() if "config providers" in c]), 1)
+
     def test_provider_is_a_text_box_on_older_pages(self):
         # 26.7.8 and before, and Business Edition until based on 26.7.9: no box for a type they do not know
         old = os.path.join(self.tmp, "diag_backup.php")
@@ -480,6 +520,42 @@ class S3(unittest.TestCase):
         # core encrypts with the password's first line only
         answer = self.run_steps([["setup", self.setup_page(password="a\nb", passwordconfirm="a\nb")]])[0]
         self.assertEqual(answer["messages"], ["Encrypt Password: Enter a password without line breaks."])
+
+    def test_masks_take_what_services_use(self):
+        taken = [{"accessKey": "YWRtaW4="}, {"accessKey": "backup@fw1"}, {"accessKey": "fw1+backup"},
+                 {"accessKey": "team/fw1"}, {"bucket": "fw_backups"}, {"bucket": "Legacy_Bucket"},
+                 {"bucket": ".".join(["a" * 63] * 3)}, {"region": "MyRegion"}, {"region": "auto"}]
+        # rclone's AWS SDK refuses a region that is not a host label
+        refused = [{"accessKey": "a,b"}, {"accessKey": "a b"}, {"accessKey": "a\x01b"}, {"region": "-lead"},
+                   {"region": "trail-"}, {"region": "my_region"}, {"region": "eu.central"}, {"bucket": "..x"},
+                   {"bucket": "a/b"}, {"bucket": "ab"}, {"bucket": "a:b"}]
+        for values in taken:
+            self.assertEqual(self.run_steps([["setup", self.setup_page(enabled="0", **values)]])[0]["messages"], [],
+                             values)
+        for values in refused:
+            messages = self.run_steps([["setup", self.setup_page(enabled="0", **values)]])[0]["messages"]
+            self.assertEqual(len(messages), 1, (values, messages))
+
+    def test_an_enabled_backup_needs_each_setting(self):
+        page = self.setup_page(endpoint="", bucket="", prefix="", accessKey="")
+        messages = self.run_steps([["setup", page]], secretKey="", password="")[0]["messages"]
+        self.assertEqual(sorted(messages), sorted([
+            "Endpoint: Enter the S3 endpoint.", "Bucket: Enter the bucket.", "Folder: Enter a folder for this firewall.",
+            "Access Key ID: Enter the access key ID.", "Secret Access Key: Enter the secret access key.",
+            "Encrypt Password: Enter a password to encrypt the backups with; they are only sent encrypted."]),
+            "each named, once")
+        self.assertEqual(self.run_steps([["setup", dict(page, enabled="0")]], secretKey="", password="")[0]["messages"],
+                         [], "not when disabled")
+        answer = self.run_steps([["setup", self.setup_page(password="0", passwordconfirm="0")]], password="")[0]
+        self.assertEqual(answer["messages"], ["Encrypt Password: Enter a password to encrypt the backups with; they are "
+                                              "only sent encrypted."], "core's restore form refuses it too")
+
+    def test_password_must_match_its_confirmation(self):
+        match = "The supplied 'Password' and 'Confirm' field values must match."
+        answers = [self.run_steps([["setup", self.setup_page(password=pw, passwordconfirm=confirm)]], password="old")[0]
+                   for pw, confirm in (("new", "other"), ("new", ""), ("", "new"), ("new", "new"), ("", ""))]
+        self.assertEqual([a["messages"] for a in answers], [[match], [match], [match], [], []])
+        self.assertEqual([a["password"] for a in answers[3:]], ["new", "old"], "typed, else kept")
 
     def test_unknown_provider_is_refused(self):
         messages = self.run_steps([["setup", self.setup_page(provider="Nope")]])[0]["messages"]
@@ -591,6 +667,9 @@ class S3(unittest.TestCase):
         self.assertEqual(answers[0], [], "the providers after this one still run")
         self.assertEqual(len(answers[1]), 1)
         self.assertIn("s3-backup: The S3 settings are not valid: region:", answers[1][0])
+        # the page shows it, in the GUI's language
+        answers = self.run_steps([["backup"], ["log"]], region="", env={"S3_SESSION": "root"})
+        self.assertEqual(answers[1], [], "not logged")
 
     def hostile(self, mode, steps, **options):
         """The steps against a Hostile endpoint in mode; what it was asked is left in self.seen."""
@@ -669,8 +748,8 @@ class S3(unittest.TestCase):
     def test_a_delete_must_show_in_the_listing(self):
         answers = self.hostile("delete-200", [["upload", self.local("config-1727000004.xml")], ["log"]],
                                backupcount="1")
-        self.assertEqual(answers[0]["error"],
-                         "The backup is stored, but removing older backups failed: The bucket still lists 2 of them.")
+        self.assertEqual(answers[0]["error"], "The backup is stored, but removing older backups failed: The bucket "
+                                              "still lists 2 of the backups to remove.")
         self.assertEqual(answers[1], [], "nothing logged as removed")
 
     def test_a_failed_check_after_removing_says_so(self):
@@ -678,7 +757,7 @@ class S3(unittest.TestCase):
                                backupcount="1")
         error = answers[0]["error"]
         self.assertTrue(error.startswith("The backup is stored, but removing older backups failed: The bucket could not "
-                                         "be listed afterwards: rclone: "), error)
+                                         "be listed to check which backups were removed: rclone: "), error)
         self.assertEqual(answers[1], [], "what went is not known")
 
     def test_a_backup_already_gone_counts_as_removed(self):

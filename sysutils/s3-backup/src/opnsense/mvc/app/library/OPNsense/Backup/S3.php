@@ -26,7 +26,6 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-
 namespace OPNsense\Backup;
 
 use OPNsense\Core\ACL;
@@ -49,8 +48,8 @@ class S3 extends Base implements IBackupProvider
     private const SAVED_1_0 = '(saved)';
     /* names core gives backups: config-<microtime>[_<hrtime>].xml */
     private const BACKUP_NAME = '/^config-[0-9]+(\.[0-9]+)?(_[0-9]+)?\.xml$/D';
-    /* a revision time, which core rounds to two decimals, and the backup it writes with it are this close */
-    private const SAME_SAVE = 0.01;
+    /* seconds core can take a save's revision time after its backup's name: a whoami later, on the console */
+    private const SAME_SAVE = 1;
     /* the most of an rclone call's output or log that is read */
     private const MAX_RESPONSE = 8 * 1024 * 1024;
     /* the start of this provider's temporary file names */
@@ -58,8 +57,8 @@ class S3 extends Base implements IBackupProvider
 
     private $model = null;
 
-    /* rclone's S3 providers, once read */
-    private $providers = null;
+    /* rclone's S3 providers, read once a request, as core's page makes a provider for each list it shows */
+    private static $providers = null;
 
     public function __construct()
     {
@@ -177,6 +176,8 @@ class S3 extends Base implements IBackupProvider
     /**
      * A list of the providers rclone knows where core's page has the dropdown type: 26.7.9 on, and Business
      * Edition once based on it. A stored name rclone does not list stays selected, so saving says so.
+     * @param array $field the provider field
+     * @return array the field for this page
      */
     private function providerField(array $field)
     {
@@ -199,6 +200,7 @@ class S3 extends Base implements IBackupProvider
 
     /**
      * Core's backup page.
+     * @return string path
      */
     protected function page()
     {
@@ -291,7 +293,10 @@ class S3 extends Base implements IBackupProvider
         try {
             return $this->upload($cnf);
         } catch (\Throwable $e) {
-            syslog(LOG_ERR, 's3-backup: ' . $e->getMessage());
+            /* the page shows an Exception's message, in the GUI's language; the nightly run's go to the log */
+            if (empty($_SESSION['Username']) || !$e instanceof \Exception) {
+                syslog(LOG_ERR, 's3-backup: ' . $e->getMessage());
+            }
             /* thrown for the page only: the nightly script catches it only from opnsense/core#11054 on */
             if (PHP_SAPI !== 'cli') {
                 /* the page only catches Exception */
@@ -307,6 +312,9 @@ class S3 extends Base implements IBackupProvider
 
     /**
      * Send the running configuration unless the bucket has it, then apply the backup count.
+     * @param Config $cnf the configuration
+     * @return array the backups in the folder, newest first
+     * @throws \Exception when a step fails
      */
     private function upload($cnf)
     {
@@ -315,29 +323,26 @@ class S3 extends Base implements IBackupProvider
             throw new \Exception(sprintf(gettext('The S3 settings are not valid: %s: %s'), $field, $text));
         }
 
-        [$plain, $name] = $this->running($cnf);
+        [$plain, $name, $revised] = $this->running($cnf);
 
         /* the folder as entered, which is this firewall's alone */
         $folder = $this->model->prefix->getValue() . '/';
         $keep = (int)$this->model->backupcount->getValue();
-        /* with nothing to delete, only names within a second of this save are kept from the listing */
-        $second = (int)self::stamp($name);
-        $remote = $this->listBackups($folder, $keep != 0 ? [] : array_map(function ($offset) use ($second) {
-            return 'config-' . ($second + $offset) . '*';
-        }, [-1, 0, 1]));
-        /* the same save under core's name and under its revision time */
+        $remote = $this->listBackups($folder);
+        /* the same save under core's name and under its revision time, which is later, rounded to two decimals */
         foreach (in_array($name, $remote) ? [] : $remote as $other) {
-            if (abs(self::stamp($other) - self::stamp($name)) < self::SAME_SAVE) {
+            $later = $revised ? self::stamp($name) - self::stamp($other) : self::stamp($other) - self::stamp($name);
+            if ($later > -0.01 && $later < self::SAME_SAVE) {
                 $name = $other;
                 break;
             }
         }
         if (!in_array($name, $remote)) {
-            $data = $this->encrypt($plain, $this->model->password->getValue());
-            if ($data === null) {
+            $encrypted = $this->encrypt($plain, $this->model->password->getValue());
+            if ($encrypted === null) {
                 throw new \Exception(gettext('The configuration could not be encrypted.'));
             }
-            $this->put($folder . $name, $data);
+            $this->put($folder . $name, $encrypted);
             /* an answer that is not S3's, e.g. a login page, can pass for a stored upload */
             try {
                 $listed = $this->listBackups($folder, [$name]);
@@ -357,11 +362,14 @@ class S3 extends Base implements IBackupProvider
             syslog(LOG_NOTICE, 's3-backup: uploaded ' . $folder . $name);
         }
 
-        /* newest first; a name stamped in the future, from a clock that ran ahead, counts as oldest,
-         * so it goes first, and the backup just sent always stays */
+        /* newest first, and the backup just sent always stays; as in core's list, names stamped in the future,
+         * from a clock that ran ahead, are left out, so they are never deleted */
         $now = microtime(true);
-        usort($remote, function ($a, $b) use ($now) {
-            return [self::stamp($b) <= $now, self::stamp($b), $b] <=> [self::stamp($a) <= $now, self::stamp($a), $a];
+        $remote = array_filter($remote, function ($other) use ($now) {
+            return self::stamp($other) <= $now;
+        });
+        usort($remote, function ($a, $b) {
+            return [self::stamp($b), $b] <=> [self::stamp($a), $a];
         });
         $remote = array_merge([$name], array_values(array_diff($remote, [$name])));
         if ($keep > 0) {
@@ -384,14 +392,17 @@ class S3 extends Base implements IBackupProvider
 
     /**
      * Store data under a key of the bucket.
+     * @param string $key key in the bucket
+     * @param string $data contents
+     * @throws \Exception when rclone fails
      */
     private function put($key, $data)
     {
-        $file = self::tempFile($data);
+        $file = self::rcloneFile($data);
         try {
             /* no HEAD, so no read permission needed, and no ETag check, as it is no MD5 under KMS: S3 checks
              * the Content-MD5 rclone sends. Typed as bytes, as in 1.1, not as XML by its name */
-            $result = $this->rclone(
+            $this->rclone(
                 ['copyto', $file, $this->path($key), '--no-check-dest', '--ignore-checksum', '--header-upload',
                     'Content-Type: application/octet-stream'],
                 $this->remote()
@@ -399,24 +410,27 @@ class S3 extends Base implements IBackupProvider
         } finally {
             @unlink($file);
         }
-        if ($result['error'] !== '') {
-            throw new \Exception($result['error']);
-        }
     }
 
     /**
      * Remove backups from a folder; each one the listing after no longer holds is logged, and one it
      * still holds fails, saying why.
+     * @param string $folder folder in the bucket
+     * @param array $names backup names in it
+     * @throws \Exception when a backup is still listed
      */
     private function delete($folder, $names)
     {
-        $list = self::tempFile(implode("\n", $names) . "\n");
+        $list = self::rcloneFile(implode("\n", $names) . "\n");
+        $error = null;
         try {
             /* by name, so rclone does not list the folder first */
-            $result = $this->rclone(
+            $this->rclone(
                 ['delete', $this->path($folder), '--files-from-raw', $list, '--no-traverse'],
                 $this->remote()
             );
+        } catch (\Exception $e) {
+            $error = $e->getMessage();
         } finally {
             @unlink($list);
         }
@@ -424,15 +438,20 @@ class S3 extends Base implements IBackupProvider
         try {
             $listed = $this->listBackups($folder);
         } catch (\Exception $e) {
-            throw new \Exception(sprintf(gettext('The bucket could not be listed afterwards: %s'), $e->getMessage()));
+            throw new \Exception(sprintf(
+                gettext('The bucket could not be listed to check which backups were removed: %s'),
+                $e->getMessage()
+            ));
         }
         $left = array_values(array_intersect($names, $listed));
         foreach (array_diff($names, $left) as $name) {
             syslog(LOG_NOTICE, 's3-backup: removed ' . $folder . $name);
         }
         if (!empty($left)) {
-            throw new \Exception($result['error'] !== '' ? $result['error'] :
-                sprintf(gettext('The bucket still lists %d of them.'), count($left)));
+            throw new \Exception($error ?? sprintf(
+                gettext('The bucket still lists %d of the backups to remove.'),
+                count($left)
+            ));
         }
     }
 
@@ -440,6 +459,9 @@ class S3 extends Base implements IBackupProvider
      * The running config and the name to store it under: that of the backup core wrote with it
      * on save. A file merely copied into the backup directory holds other contents, whatever
      * its name says.
+     * @param Config $cnf the configuration
+     * @return array the contents, the name, and whether the name is the save time it records
+     * @throws \Exception when it cannot be read or named
      */
     private function running($cnf)
     {
@@ -476,7 +498,8 @@ class S3 extends Base implements IBackupProvider
             flock($handle, LOCK_UN);
             fclose($handle);
         }
-        if ($name === null) {
+        $revised = $name === null;
+        if ($revised) {
             /* saved without a backup of its own: named by the save time it records, which core
              * writes with the GUI language's decimal mark, or a byte of one */
             $xml = @simplexml_load_string($plain, 'SimpleXMLElement', LIBXML_NONET);
@@ -487,11 +510,12 @@ class S3 extends Base implements IBackupProvider
             /* it would never show in the listing, so it would be sent again every time */
             throw new \Exception(gettext('The configuration records no save time.'));
         }
-        return [$plain, $name];
+        return [$plain, $name, $revised];
     }
 
     /**
      * The configuration the firewall runs.
+     * @return string path
      */
     protected function configFile()
     {
@@ -501,6 +525,7 @@ class S3 extends Base implements IBackupProvider
     /**
      * Seconds an rclone call may take, so an endpoint that never stops answering cannot hold the
      * page or the nightly run.
+     * @return int seconds
      */
     protected function deadline()
     {
@@ -510,6 +535,7 @@ class S3 extends Base implements IBackupProvider
     /**
      * rclone, stopped at the deadline by timeout(1) (exit 124), in 2 GB of address space (Go reserves much
      * up front), its log cut at 8 MB: it holds a whole listing, logs each odd name, and a listing can be endless.
+     * @return array command and arguments
      */
     protected function command()
     {
@@ -520,6 +546,7 @@ class S3 extends Base implements IBackupProvider
     /**
      * The bucket's settings, as rclone reads them from its environment: as they are, and never on a
      * command line.
+     * @return array environment variables
      */
     private function remote()
     {
@@ -541,8 +568,11 @@ class S3 extends Base implements IBackupProvider
 
     /**
      * A file only this process can read, holding $contents, for rclone.
+     * @param string $contents contents
+     * @return string path
+     * @throws \Exception when it cannot be made
      */
-    private static function tempFile($contents = '')
+    private static function rcloneFile($contents = '')
     {
         $file = tempnam((new AppConfig())->application->tempDir, self::TEMP_PREFIX);
         if ($file !== false && file_put_contents($file, $contents) === false) {
@@ -557,6 +587,8 @@ class S3 extends Base implements IBackupProvider
 
     /**
      * rclone's name for a key, or a folder, of the bucket.
+     * @param string $key key or folder in the bucket
+     * @return string rclone path
      */
     private function path($key)
     {
@@ -564,14 +596,17 @@ class S3 extends Base implements IBackupProvider
     }
 
     /**
-     * Run rclone with $settings and nothing else in its environment: ['out', 'error'], where error is why
-     * it failed, one line, or empty; $codes words the failure for an exit code.
+     * Run rclone with $settings and nothing else in its environment.
+     * @param array $args arguments
+     * @param array $settings environment
+     * @param array $codes the failure to report for an exit code
+     * @return string what it printed
+     * @throws \Exception why it failed, one line
      */
     private function rclone(array $args, array $settings = [], array $codes = [])
     {
-        $result = ['out' => '', 'error' => gettext('rclone could not be started.')];
         /* its log goes to a file: a pipe it filled while the listing is read would stall it */
-        $log = self::tempFile();
+        $log = self::rcloneFile();
         try {
             /* rclone's S3 tries each request twice, so each try has half of 1.1's time */
             $argv = array_merge($this->command(), ['--config', '/dev/null', '--retries', '1', '--low-level-retries',
@@ -584,10 +619,10 @@ class S3 extends Base implements IBackupProvider
                 $settings
             );
             if (!is_resource($process)) {
-                return $result;
+                throw new \Exception(gettext('rclone could not be started.'));
             }
-            $result['out'] = (string)stream_get_contents($pipes[1], self::MAX_RESPONSE + 1);
-            if (strlen($result['out']) > self::MAX_RESPONSE) {
+            $out = (string)stream_get_contents($pipes[1], self::MAX_RESPONSE + 1);
+            if (strlen($out) > self::MAX_RESPONSE) {
                 /* a SIGTERM, which timeout(1) passes on to rclone */
                 proc_terminate($process);
             }
@@ -622,53 +657,53 @@ class S3 extends Base implements IBackupProvider
                 $message = $object === '' || strpos($object, self::TEMP_PREFIX) === 0 ? $text : $object . ': ' . $text;
             }
         }
-        if (strlen($result['out']) > self::MAX_RESPONSE) {
-            $result['error'] = gettext('rclone sent more output than expected.');
+        if (strlen($out) > self::MAX_RESPONSE) {
+            $error = gettext('rclone sent more output than expected.');
         } elseif ($code == 124) {
-            $result['error'] = sprintf(gettext('rclone did not finish within %d seconds.'), $this->deadline());
+            $error = sprintf(gettext('rclone did not finish within %d seconds.'), $this->deadline());
         } elseif ($unknown) {
-            $result['error'] = sprintf(
+            $error = sprintf(
                 gettext('rclone knows no S3 provider named %s.'),
                 $settings['RCLONE_CONFIG_S3_PROVIDER'] ?? ''
             );
         } elseif ($code > 128) {
-            $result['error'] = sprintf(gettext('rclone was stopped by signal %d.'), $code - 128);
+            $error = sprintf(gettext('rclone was stopped by signal %d.'), $code - 128);
         } elseif (isset($codes[$code])) {
-            $result['error'] = $codes[$code];
+            $error = $codes[$code];
         } elseif ($code != 0) {
             $message = $message !== '' ? $message : $other;
-            $result['error'] = $message !== '' ? sprintf(gettext('rclone: %s'), self::rcloneMessage($message)) :
+            $error = $message !== '' ? sprintf(gettext('rclone: %s'), self::rcloneMessage($message)) :
                 sprintf(gettext('rclone stopped with exit code %d.'), $code);
         } else {
-            $result['error'] = '';
+            return $out;
         }
-        return $result;
+        throw new \Exception($error);
     }
 
     /**
-     * The S3 providers the installed rclone knows, as name => description.
+     * The S3 providers the installed rclone knows.
+     * @return array name => description
+     * @throws \Exception when rclone lists none
      */
     private function providers()
     {
-        if ($this->providers !== null) {
-            return $this->providers;
+        if (self::$providers === null) {
+            $backends = json_decode($this->rclone(['config', 'providers']), true);
+            $backends = array_column(is_array($backends) ? $backends : [], null, 'Name');
+            $options = array_column($backends['s3']['Options'] ?? [], null, 'Name');
+            $names = array_column($options['provider']['Examples'] ?? [], 'Help', 'Value');
+            if (empty($names)) {
+                throw new \Exception(gettext('rclone listed no S3 providers.'));
+            }
+            self::$providers = $names;
         }
-        $result = $this->rclone(['config', 'providers']);
-        if ($result['error'] !== '') {
-            throw new \Exception($result['error']);
-        }
-        $backends = json_decode($result['out'], true);
-        $backends = array_column(is_array($backends) ? $backends : [], null, 'Name');
-        $options = array_column($backends['s3']['Options'] ?? [], null, 'Name');
-        $names = array_column($options['provider']['Examples'] ?? [], 'Help', 'Value');
-        if (empty($names)) {
-            throw new \Exception(gettext('rclone listed no S3 providers.'));
-        }
-        return $this->providers = $names;
+        return self::$providers;
     }
 
     /**
      * Timestamp a backup name carries, as core reads it.
+     * @param string $name backup name
+     * @return float timestamp
      */
     private static function stamp($name)
     {
@@ -677,6 +712,10 @@ class S3 extends Base implements IBackupProvider
 
     /**
      * Backup file names in a folder of the bucket; with patterns, only those matching one.
+     * @param string $folder folder in the bucket
+     * @param array $only rclone include patterns
+     * @return array backup names
+     * @throws \Exception when rclone fails
      */
     private function listBackups($folder, array $only = [])
     {
@@ -687,20 +726,19 @@ class S3 extends Base implements IBackupProvider
             $args = array_merge($args, ['--include', $pattern]);
         }
         /* rclone's "directory not found" is any 404: S3 has no folders, so no bucket, or not S3 */
-        $result = $this->rclone($args, $this->remote(), [3 => sprintf(
+        $out = $this->rclone($args, $this->remote(), [3 => sprintf(
             gettext('The endpoint has no bucket %s.'),
             $this->model->bucket->getValue()
         )]);
-        if ($result['error'] !== '') {
-            throw new \Exception($result['error']);
-        }
         /* core prints the names it gets back unescaped, so only backup names pass */
-        return array_values(preg_grep(self::BACKUP_NAME, explode("\n", $result['out'])));
+        return array_values(preg_grep(self::BACKUP_NAME, explode("\n", $out)));
     }
 
     /**
      * An rclone message as one short line: the AWS SDK's fixed wording left out, and its start and end
      * kept when it is still long, as a Go error names its cause last.
+     * @param string $text message
+     * @return string one line
      */
     private static function rcloneMessage($text)
     {

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3_2 - 2026-11-13
+
+- Access key IDs, bucket names and regions take what rclone accepts.
+- Backups named ahead of the clock are no longer deleted first.
+
 ## 1.3_1 - 2026-11-12
 
 - An endpoint can be an IPv6 address, e.g. 2001:db8::1, or [2001:db8::1]:9000 with a port.
