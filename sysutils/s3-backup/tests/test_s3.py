@@ -92,6 +92,9 @@ class Hostile(http.server.BaseHTTPRequestHandler):
                               f"{'A' * 5000}</Message></Error>").encode())
         elif self.mode == "huge-error":
             self.answer(403, b"<Error><Code>AccessDenied</Code><Message>" + b"A" * (100 << 20) + b"</Message></Error>")
+        elif self.mode == "requestid":
+            message = b"RequestID: " * 95000
+            self.answer(403, b"<Error><Code>AccessDenied</Code><Message>" + message + b"</Message></Error>")
         elif self.mode == "loop":
             self.answer(200, b"<ListBucketResult><IsTruncated>true</IsTruncated>"
                              b"<NextContinuationToken>same</NextContinuationToken></ListBucketResult>")
@@ -223,12 +226,13 @@ class S3(unittest.TestCase):
                      "prefix": "fw", "accessKey": "AKIDTEST", "secretKey": SECRET, "password": "pw",
                      "backupcount": "3"}, **values)
 
-    def run_steps(self, steps, trusted=True, env=None, config=None, memory="-1", **settings):
+    def run_steps(self, steps, trusted=True, env=None, config=None, memory="-1", jit=True, **settings):
         """Run the harness, over config.xml when given; one answer per step."""
         spec = {"settings": self.settings(**settings), "steps": steps}
         if config:
             spec["config"] = config
-        command = ["php", "-d", "error_reporting=E_ALL", "-d", "display_errors=1", "-d", f"memory_limit={memory}"]
+        command = ["php", "-d", "error_reporting=E_ALL", "-d", "display_errors=1", "-d", f"memory_limit={memory}",
+                   "-d", f"pcre.jit={int(jit)}"]
         environ = dict(os.environ, OPNSENSE_CORE=CORE, RCLONE=os.path.abspath(RCLONE), S3_RCLONE=self.wrapper,
                        S3_RCLONE_LOG=self.call_log, S3_TIMEOUT=self.timeout, S3_LIMITS=self.limits, TMPDIR=self.temp)
         if trusted:
@@ -671,6 +675,13 @@ class S3(unittest.TestCase):
         answers = self.run_steps([["backup"], ["log"]], region="", env={"S3_SESSION": "root"})
         self.assertEqual(answers[1], [], "not logged")
 
+    def test_a_restored_value_is_logged_on_one_line(self):
+        # core quotes an invalid endpoint in its message, line breaks and all
+        answers = self.run_steps([["backup"], ["log"]], endpoint="good.example.com\nFORGED: s3-backup: uploaded evil")
+        self.assertEqual(len(answers[1]), 1)
+        self.assertIn("FORGED", answers[1][0])
+        self.assertNotIn("\n", answers[1][0])
+
     def hostile(self, mode, steps, **options):
         """The steps against a Hostile endpoint in mode; what it was asked is left in self.seen."""
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -715,6 +726,13 @@ class S3(unittest.TestCase):
         error = self.hostile("huge-error", [["list", "fw/"]], memory="64M")[0]["error"]
         self.assertTrue(error.startswith("rclone: "), error[:300])
         self.assertLess(len(error), 300)
+
+    def test_a_long_error_is_read_quickly(self):
+        # each RequestID made the pattern for the SDK's wording scan the rest of the message again
+        started = time.monotonic()
+        error = self.hostile("requestid", [["list", "fw/"]], jit=False)[0]["error"]
+        self.assertTrue(error.startswith("rclone: "), error[:300])
+        self.assertLess(time.monotonic() - started, 5)
 
     def test_a_busy_endpoint_is_tried_twice(self):
         self.hostile("busy", [["list", "fw/"]])

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3_3 - 2026-11-13
+
+- A very long error from the endpoint is read quickly, and a restored setting cannot add lines to the log.
+
 ## 1.3_2 - 2026-11-13
 
 - Access key IDs, bucket names and regions take what rclone accepts.

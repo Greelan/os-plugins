@@ -320,7 +320,12 @@ class S3 extends Base implements IBackupProvider
     {
         /* settings can arrive without the page, e.g. in a restored config.xml, so check them all */
         foreach ($this->model->validate(null, '', true) as $field => $text) {
-            throw new \Exception(sprintf(gettext('The S3 settings are not valid: %s: %s'), $field, $text));
+            /* core quotes some values, e.g. an endpoint, line breaks and all */
+            throw new \Exception(sprintf(
+                gettext('The S3 settings are not valid: %s: %s'),
+                $field,
+                self::oneLine($text)
+            ));
         }
 
         [$plain, $name, $revised] = $this->running($cnf);
@@ -742,6 +747,8 @@ class S3 extends Base implements IBackupProvider
      */
     private static function rcloneMessage($text)
     {
+        /* an endpoint can send megabytes, which the patterns would read over and over */
+        $text = self::cut($text, 2048, 2048);
         $replace = [
             '/operation error S3: \w+, /' => '',
             '/https response error /' => '',
@@ -750,13 +757,32 @@ class S3 extends Base implements IBackupProvider
             '/exceeded maximum number of attempts, \d+, /' => '',
             '/("https?:\/\/[^"?]*)\?[^"]*"/' => '$1"',
         ];
-        $text = preg_replace(array_keys($replace), array_values($replace), $text);
-        $text = trim(preg_replace('/[\x00-\x1f\x7f]+/', ' ', $text));
-        if (strlen($text) <= 240) {
+        return self::cut(self::oneLine(preg_replace(array_keys($replace), array_values($replace), $text)), 120, 115);
+    }
+
+    /**
+     * Text as one line: control characters, which could add lines to the log, become spaces.
+     * @param string $text text
+     * @return string one line
+     */
+    private static function oneLine($text)
+    {
+        return trim(preg_replace('/[\x00-\x1f\x7f]+/', ' ', $text));
+    }
+
+    /**
+     * The start and end of a long text, cut between characters, as syslog readers expect UTF-8.
+     * @param string $text text
+     * @param int $head bytes kept from the start
+     * @param int $tail bytes kept from the end
+     * @return string at most $head + $tail + 5 bytes
+     */
+    private static function cut($text, $head, $tail)
+    {
+        if (strlen($text) <= $head + $tail + 5) {
             return $text;
         }
-        /* cut between characters, as syslog readers expect UTF-8 */
-        return preg_replace('/[\xc0-\xff][\x80-\xbf]*$/', '', substr($text, 0, 120)) . ' ... ' .
-            preg_replace('/^[\x80-\xbf]+/', '', substr($text, -115));
+        return preg_replace('/[\xc0-\xff][\x80-\xbf]*$/', '', substr($text, 0, $head)) . ' ... ' .
+            preg_replace('/^[\x80-\xbf]+/', '', substr($text, -$tail));
     }
 }
