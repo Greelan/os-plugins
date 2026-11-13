@@ -103,6 +103,10 @@ class TestS3 extends OPNsense\Backup\S3
     }
 }
 
+/* a GUI user, as on core's page */
+if (getenv('S3_SESSION')) {
+    $_SESSION['Username'] = getenv('S3_SESSION');
+}
 $provider = (new ReflectionClass('TestS3'))->newInstanceWithoutConstructor();
 $settings = new OPNsense\Backup\S3Settings();
 foreach ($spec['settings'] as $name => $value) {
@@ -126,6 +130,12 @@ foreach ($spec['steps'] as $step) {
                 break;
             case 'fields':
                 $answer = array_column($call('getConfigurationFields'), null, 'name');
+                break;
+            case 'fields-new':
+                /* as core's page does: another provider, in the same request */
+                $other = (new ReflectionClass('TestS3'))->newInstanceWithoutConstructor();
+                (new ReflectionProperty('OPNsense\Backup\S3', 'model'))->setValue($other, $settings);
+                $answer = array_column($other->getConfigurationFields(), null, 'name');
                 break;
             case 'setup':
                 /* as the page posts it, then what the secrets hold */

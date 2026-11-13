@@ -26,7 +26,6 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-
 namespace OPNsense\Backup;
 
 use OPNsense\Base\BaseModel;
@@ -39,7 +38,7 @@ use OPNsense\Base\Messages\Message;
 class S3Settings extends BaseModel
 {
     /**
-     * What an enabled backup needs. The secrets are write-only, so their stored values are read.
+     * Secrets config.xml can hold. They are write-only, so their stored values are read.
      */
     public function performValidation($validateFullModel = false)
     {
@@ -60,23 +59,6 @@ class S3Settings extends BaseModel
         /* core encrypts with its first line only */
         if ($this->password->isFieldChanged() && preg_match('/[\r\n]/', $this->password->getValue())) {
             $messages->appendMessage(new Message(gettext('Enter a password without line breaks.'), 'password'));
-        }
-
-        if (!$this->enabled->isEqual('1')) {
-            return $messages;
-        }
-        $required = [
-            'endpoint' => gettext('Enter the S3 endpoint.'),
-            'bucket' => gettext('Enter the bucket.'),
-            'prefix' => gettext('Enter a folder for this firewall.'),
-            'accessKey' => gettext('Enter the access key ID.'),
-            'secretKey' => gettext('Enter the secret access key.'),
-            'password' => gettext('Enter a password to encrypt the backups with; they are only sent encrypted.'),
-        ];
-        foreach ($required as $field => $message) {
-            if ($this->$field->getValue() === '') {
-                $messages->appendMessage(new Message($message, $field));
-            }
         }
 
         return $messages;
