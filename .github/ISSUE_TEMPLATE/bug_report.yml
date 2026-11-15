@@ -1,0 +1,92 @@
+name: Bug report
+description: Something in one of these plugins does not work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Report a security problem privately instead, through [Report a vulnerability](https://github.com/Greelan/os-plugins/security/advisories/new).
+
+        When the plugin passes your settings on correctly but Blocky or Apprise itself misbehaves, the fix belongs upstream. The previous page links there.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you report
+      options:
+        - label: I searched the open and closed issues, and this one is new.
+          required: true
+        - label: I run the latest version of the plugin (System > Firmware > Updates), or I say below why I cannot.
+          required: true
+  - type: dropdown
+    id: plugin
+    attributes:
+      label: Plugin
+      options:
+        - os-blocky-greelan
+        - os-notify-greelan
+        - os-s3-backup-greelan
+        - The package repository or installation
+    validations:
+      required: true
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      description: Shown in System > Firmware > Plugins, or by `pkg info -x greelan` in a shell.
+      placeholder: 1.3_3
+    validations:
+      required: true
+  - type: input
+    id: opnsense-version
+    attributes:
+      label: OPNsense version
+      description: Shown in System > Firmware > Status, or by `opnsense-version` in a shell.
+      placeholder: OPNsense 26.7.9_1 (amd64)
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: What happens, and the last version where it worked, if any.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: To reproduce
+      description: The steps that make it happen, starting from the settings that matter.
+      placeholder: |
+        1. Go to Services > Blocky DNS > General
+        2. Set ...
+        3. Click Apply
+        4. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected to happen instead.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: |
+        Blocky and Notify: the plugin's Log File page, under Services > Blocky DNS or Services > Notify. S3 Backup: System > Log Files > General, searched for `s3-backup`.
+        Remove tokens, passwords, access keys, Apprise URLs and public addresses before you paste.
+      render: text
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: |
+        The settings involved, as screenshots or text. For Blocky, the relevant part of `/usr/local/etc/blocky/config.yml` helps.
+        Remove every secret first, as above.
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Screenshots, errors in the browser console, anything else that helps.

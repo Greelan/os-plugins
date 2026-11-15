@@ -1,0 +1,32 @@
+name: Question
+description: Ask how something in one of these plugins works.
+labels: [question]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        General OPNsense questions get faster answers on the [OPNsense forum](https://forum.opnsense.org).
+  - type: dropdown
+    id: plugin
+    attributes:
+      label: Plugin
+      options:
+        - os-blocky-greelan
+        - os-notify-greelan
+        - os-s3-backup-greelan
+        - The package repository or installation
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What you want to know, and what you tried or read already.
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: The plugin and OPNsense versions, if they matter.
+      placeholder: os-notify-greelan 1.8_1, OPNsense 26.7.9_1

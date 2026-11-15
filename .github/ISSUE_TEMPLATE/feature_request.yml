@@ -1,0 +1,50 @@
+name: Feature request
+description: Suggest a change to one of these plugins, or a new plugin.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The plugins offer what Blocky and Apprise support. A setting that Blocky or Apprise itself lacks belongs upstream first. The previous page links there.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you ask
+      options:
+        - label: I searched the open and closed issues, and this request is new.
+          required: true
+  - type: dropdown
+    id: plugin
+    attributes:
+      label: Plugin
+      options:
+        - os-blocky-greelan
+        - os-notify-greelan
+        - os-s3-backup-greelan
+        - A new plugin
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do and what stops you, for example "To be told when X happens, I am missing a way to ...".
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: The solution you would like
+      description: What the plugin should do, and where in the GUI if you have an idea.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Other ways to get there, including any workaround you use now.
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Screenshots, or links to upstream documentation or forum threads.

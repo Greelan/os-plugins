@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/Greelan/os-plugins/security/advisories/new
+    about: Report it privately here, never in a public issue.
+  - name: Blocky itself
+    url: https://github.com/0xERR0R/blocky/issues
+    about: Blocky misbehaves with the configuration the plugin generated, or lacks an option.
+  - name: Apprise itself
+    url: https://github.com/caronc/apprise/issues
+    about: A notification service fails in Apprise itself, or Apprise does not support it.
+  - name: OPNsense itself
+    url: https://github.com/opnsense/core/issues
+    about: The problem also occurs without these plugins installed.
