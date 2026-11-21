@@ -77,16 +77,6 @@ class S3 extends Base implements IBackupProvider
                 'label' => gettext('Enable'),
             ],
             [
-                'name' => 'endpoint',
-                'type' => 'text',
-                'label' => gettext('Endpoint'),
-                'help' => gettext(
-                    'Host name of the S3 service, optionally with a port, e.g. s3.eu-central-1.amazonaws.com,' .
-                    ' s3.us-west-004.backblazeb2.com or ACCOUNT_ID.r2.cloudflarestorage.com. HTTPS is always ' .
-                    'used.'
-                ),
-            ],
-            [
                 'name' => 'provider',
                 'type' => 'text',
                 'label' => gettext('Provider'),
@@ -97,6 +87,16 @@ class S3 extends Base implements IBackupProvider
                     ),
                     '<a href="https://rclone.org/s3/#s3-provider" target="_blank">',
                     '</a>'
+                ),
+            ],
+            [
+                'name' => 'endpoint',
+                'type' => 'text',
+                'label' => gettext('Endpoint'),
+                'help' => gettext(
+                    'Host name of the S3 service, optionally with a port, e.g. s3.eu-central-1.amazonaws.com,' .
+                    ' s3.us-west-004.backblazeb2.com or ACCOUNT_ID.r2.cloudflarestorage.com. HTTPS is always ' .
+                    'used.'
                 ),
             ],
             [

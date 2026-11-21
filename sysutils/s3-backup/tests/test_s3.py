@@ -455,7 +455,7 @@ class S3(unittest.TestCase):
         self.assertIn('<a href="https://rclone.org/s3/#s3-provider" target="_blank">The names rclone knows</a>',
                       fields["provider"]["help"])
         names = list(fields)
-        self.assertEqual(names[names.index("endpoint") + 1], "provider", "the provider follows the endpoint")
+        self.assertEqual(names[:3], ["enabled", "provider", "endpoint"], "the provider comes before the endpoint")
 
     def test_provider_is_a_list_where_the_page_has_one(self):
         # core's page from 26.7.9 on renders a dropdown (opnsense/core#11170)
@@ -510,6 +510,14 @@ class S3(unittest.TestCase):
     def test_bad_provider_name_is_refused(self):
         messages = self.run_steps([["setup", self.setup_page(provider="Bad Name!")]])[0]["messages"]
         self.assertTrue([m for m in messages if m.startswith("Provider: Enter rclone's name")], messages)
+
+    def test_messages_follow_the_page(self):
+        # settings changed once stored: core names fields in the model's order
+        stored = "".join(f"<{name}>{value}</{name}>" for name, value in self.settings(provider="Other").items())
+        config = f'<?xml version="1.0"?>\n<opnsense><system><backup><s3>{stored}</s3></backup></system></opnsense>\n'
+        page = self.setup_page(provider="Bad Name!", endpoint="bad host!", backupcount="abc")
+        messages = self.run_steps([["setup", page]], config=config)[0]["messages"]
+        self.assertEqual([m.split(":")[0] for m in messages], ["Provider", "Endpoint", "Backup Count"], messages)
 
     def test_control_characters_in_secrets_are_refused(self):
         # config.xml would drop them, so the next backups would be encrypted with another password

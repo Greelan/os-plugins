@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3_4 - 2026-11-21
+
+- Provider comes before Endpoint.
+
 ## 1.3_3 - 2026-11-13
 
 - A very long error from the endpoint is read quickly, and a restored setting cannot add lines to the log.

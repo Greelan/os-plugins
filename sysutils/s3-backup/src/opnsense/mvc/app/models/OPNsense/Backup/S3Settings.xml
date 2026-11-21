@@ -28,6 +28,12 @@
                 </check006>
             </Constraints>
         </enabled>
+        <provider type="TextField">
+            <Default>Other</Default>
+            <Required>Y</Required>
+            <Mask>/^[A-Za-z0-9]{1,32}$/D</Mask>
+            <ValidationMessage>Enter rclone's name for the S3 service, letters and digits only, e.g. AWS or Cloudflare.</ValidationMessage>
+        </provider>
         <endpoint type="IPPortField">
             <HostnameAllowed>Y</HostnameAllowed>
             <PortOptional>Y</PortOptional>
@@ -42,12 +48,6 @@
                 </check001>
             </Constraints>
         </endpoint>
-        <provider type="TextField">
-            <Default>Other</Default>
-            <Required>Y</Required>
-            <Mask>/^[A-Za-z0-9]{1,32}$/D</Mask>
-            <ValidationMessage>Enter rclone's name for the S3 service, letters and digits only, e.g. AWS or Cloudflare.</ValidationMessage>
-        </provider>
         <region type="TextField">
             <Default>us-east-1</Default>
             <Required>Y</Required>
@@ -104,6 +104,13 @@
                 </check001>
             </Constraints>
         </secretKey>
+        <backupcount type="IntegerField">
+            <Default>60</Default>
+            <Required>Y</Required>
+            <MinimumValue>0</MinimumValue>
+            <MaximumValue>1000</MaximumValue>
+            <ValidationMessage>Enter how many backups to keep, up to 1000, or 0 to keep them all.</ValidationMessage>
+        </backupcount>
         <password type="UpdateOnlyTextField">
             <Constraints>
                 <check001>
@@ -116,12 +123,5 @@
             </Constraints>
         </password>
         <passwordconfirm type="UpdateOnlyTextField" volatile="true"/>
-        <backupcount type="IntegerField">
-            <Default>60</Default>
-            <Required>Y</Required>
-            <MinimumValue>0</MinimumValue>
-            <MaximumValue>1000</MaximumValue>
-            <ValidationMessage>Enter how many backups to keep, up to 1000, or 0 to keep them all.</ValidationMessage>
-        </backupcount>
     </items>
 </model>
