@@ -1,8 +1,9 @@
 name: notify
 
 # Email the maintainer about a new blocky release, the blocky port reaching the pinned
-# version or a new revision of it (Go bumps in ports raise its PORTREVISION), a new OPNsense
-# series and its FreeBSD base, or newer vendored libraries.
+# version or a new revision of it (Go bumps in ports raise its PORTREVISION), a new version or
+# revision of the rclone port, a new OPNsense series and its FreeBSD base, or newer vendored
+# libraries.
 
 on:
   schedule:
@@ -16,8 +17,8 @@ permissions:
 jobs:
   notify:
     # email once per new blocky release, once per port version of the pinned blocky, once per
-    # OPNsense series and base, and once per set of newer vendored libraries; a state cache GitHub
-    # evicts costs a repeat email, never a missed one
+    # rclone port version, once per OPNsense series and base, and once per set of newer vendored
+    # libraries; a state cache GitHub evicts costs a repeat email, never a missed one
     runs-on: ubuntu-latest
     env:
       # the sender, as a repository variable or secret; the address falls back to MAIL_FROM
@@ -116,6 +117,55 @@ jobs:
       - name: Record port state
         if: steps.port.outputs.version != '' && steps.portseen.outputs.cache-hit != 'true'
         run: touch .port-notified
+
+      # s3-backup's rclone is the net/rclone port as it is, version and revision, from the same
+      # Makefile the tests read; the build runs only on push or dispatch, so a ports bump alone
+      # never ships
+      - name: Resolve the rclone port's version
+        id: rclone
+        run: |
+          mk=$(curl -fsSL https://cgit.freebsd.org/ports/plain/net/rclone/Makefile) || exit 0
+          dist=$(printf '%s\n' "${mk}" | sed -n 's/^DISTVERSION=[[:space:]]*\([^[:space:]#]*\).*/\1/p' | head -1)
+          rev=$(printf '%s\n' "${mk}" | sed -n 's/^PORTREVISION=[[:space:]]*\([^[:space:]#]*\).*/\1/p' | head -1)
+          [ -n "${dist}" ] || exit 0
+          {
+            echo "distversion=${dist}"
+            echo "revision=${rev:-0}"
+            echo "version=${dist}_${rev:-0}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Already emailed this rclone port version?
+        id: rcloneseen
+        if: steps.rclone.outputs.version != ''
+        uses: actions/cache@v5
+        with:
+          path: .rclone-notified
+          key: rclone-port-notified-${{ steps.rclone.outputs.version }}
+
+      - name: Email the maintainer about rclone
+        if: steps.rclone.outputs.version != '' && steps.rcloneseen.outputs.cache-hit != 'true'
+        uses: dawidd6/action-send-mail@v22
+        with:
+          server_address: ${{ secrets.MAIL_SERVER }}
+          # STARTTLS; secure means TLS from the start, as on port 465
+          server_port: 587
+          secure: false
+          require_tls: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          from: ${{ env.MAIL_FROM_NAME && format('{0} <{1}>', env.MAIL_FROM_NAME, env.MAIL_FROM_EMAIL) || env.MAIL_FROM_EMAIL }}
+          to: ${{ secrets.MAIL_TO }}
+          subject: "rclone port now ${{ steps.rclone.outputs.distversion }}, PORTREVISION ${{ steps.rclone.outputs.revision }}"
+          body: |
+            net/rclone in ports: ${{ steps.rclone.outputs.distversion }}, PORTREVISION ${{ steps.rclone.outputs.revision }}
+            https://cgit.freebsd.org/ports/log/net/rclone
+            https://rclone.org/changelog/
+
+            s3-backup ships the port as it is, and the nightly tests run this rclone version. Once they pass, run the build workflow to publish it.
+
+      - name: Record rclone state
+        if: steps.rclone.outputs.version != '' && steps.rcloneseen.outputs.cache-hit != 'true'
+        run: touch .rclone-notified
 
       # opnsense/tools has a config per series about a month before its release; its OS?= is the
       # FreeBSD base the build matrix may need (a new major) or move to (a dropped series)

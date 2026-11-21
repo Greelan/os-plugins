@@ -9,6 +9,9 @@ contact_links:
   - name: Apprise itself
     url: https://github.com/caronc/apprise/issues
     about: A notification service fails in Apprise itself, or Apprise does not support it.
+  - name: rclone itself
+    url: https://github.com/rclone/rclone/issues
+    about: An S3 service fails in rclone itself with the settings the plugin passed, or rclone does not list it.
   - name: OPNsense itself
     url: https://github.com/opnsense/core/issues
     about: The problem also occurs without these plugins installed.

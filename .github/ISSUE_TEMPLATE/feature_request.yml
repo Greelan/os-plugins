@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        The plugins offer what Blocky and Apprise support. A setting that Blocky or Apprise itself lacks belongs upstream first. The previous page links there.
+        The plugins offer what Blocky, Apprise and rclone support. A setting that Blocky, Apprise or rclone itself lacks belongs upstream first. The previous page links there.
   - type: checkboxes
     id: checks
     attributes:

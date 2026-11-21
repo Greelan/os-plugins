@@ -7,7 +7,7 @@ body:
       value: |
         Report a security problem privately instead, through [Report a vulnerability](https://github.com/Greelan/os-plugins/security/advisories/new).
 
-        When the plugin passes your settings on correctly but Blocky or Apprise itself misbehaves, the fix belongs upstream. The previous page links there.
+        When the plugin passes your settings on correctly but Blocky, Apprise or rclone itself misbehaves, the fix belongs upstream. The previous page links there.
   - type: checkboxes
     id: checks
     attributes:
