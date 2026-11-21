@@ -110,6 +110,9 @@ class StoredFiles(Case):
                     "ntfys://[FD00::5]:8080/alerts", "ntfy://[::ffff:10.0.0.5]:8080/alerts", "fluxer://[FD00::5]:8080/123/token",
                     # a zone ID Apprise does not take for one, port or not
                     "ntfy://[fe80::1%25igb0_vlan10]/alerts", "fluxer://[fe80::1%25em0.100]/123/token", "ntfy://[fd00::5%25em0]/alerts",
+                    # outside brackets, which Apprise 2.3 reads as no server
+                    "ntfy://fe80::1%25igb0_vlan10/alerts", "fluxer://fe80::1%25igb1:8080/123/token",
+                    "lametric://key@fe80::1%25igb1:8080",
                     # and email, which drops the host
                     "mailtos://fw:pw@[fe80::1%25igb1]:587?to=a@example.org&from=fw@example.com"):
             self.assertIn("cannot read this server address", notify.refused(url), url)

@@ -48,6 +48,7 @@ settings are applied. Transitions (gateway, CARP, Monit, System Status) are
 only reported once a previous state exists; the first poll records a baseline.
 """
 
+import ast
 import base64
 import collections
 import contextlib
@@ -130,7 +131,7 @@ LOCK = "/var/run/notify.lock"
 # apprise1_notes), and that Apprise.notify still applies emojis before convert_between (see
 # with_link); and that plugins still hold their settings as attributes, which an import compares
 # (see same_settings).
-FILE_ARGS_APPRISE = "2.2.0"
+FILE_ARGS_APPRISE = "2.3.0"
 FILE_ARGS = {
     "NotifyDiscord": ("template",), "NotifyTelegram": ("template",), "NotifySlack": ("template",),
     "NotifyWorkflows": ("template",), "NotifyFCM": ("keyfile",), "NotifyVapid": ("keyfile", "subfile"),
@@ -1522,7 +1523,17 @@ def last_warning(captured, fallback):
     """The first line of what Apprise last warned of, which says why it failed; a server's reply
     can follow it."""
     messages = logged(captured)
-    return messages[-1].splitlines()[0] if messages else fallback
+    if not messages:
+        return fallback
+    message = messages[-1]
+    # a reply logged as bytes (Lark, from Apprise 2.3) is one line of escapes: read it as text
+    reply = re.fullmatch(r"(.* - )(b(['\"]).*\3)", message, flags=re.S)
+    if reply:
+        try:
+            message = reply.group(1) + ast.literal_eval(reply.group(2)).decode("utf-8", "replace")
+        except (ValueError, SyntaxError, AttributeError, MemoryError, RecursionError):
+            pass
+    return message.splitlines()[0]
 
 
 def title_prefix(general, hostname):
@@ -2570,20 +2581,34 @@ def refused(url):
             return f"Give an https:// address for {', '.join(plain)}, or paste its contents in the channel."
         return (f"The URL names a file in {', '.join(local)}; choose its service in the channel and paste its "
                 "contents instead.")
-    # Apprise does not read every IPv6 address, e.g. not one in uppercase or with some zone IDs:
-    # ntfy, Fluxer and LaMetric then take it for no server and send to their cloud, unless told the
-    # mode, and email drops it
+    # Apprise does not read every IPv6 address, e.g. not one in uppercase, with some zone IDs, or
+    # (from 2.3) one outside brackets with a zone ID or a port: ntfy, Fluxer and LaMetric then take
+    # it for no server and send to their cloud, unless told the mode, and email drops it
     results = apprise_results(url) or {}
     missing = missing_modules(str(results.get("schema") or ""))
     if missing:
         # not offered in the dialog either; a pasted URL is held to the same
         return f"This service needs the Python module {' or '.join(missing[0])}, which is not installed."
     host = str(results.get("host") or "")
+    told = "mode" in (results.get("qsd") or {})
     given = re.match(r"[^:]*:[/\\]*(?:[^/\\?]*@)?\[", url or "")
-    if (results.get("mode") == "cloud" and "mode" not in (results.get("qsd") or {}) and re.search(r"[\[\]:%]", host)) \
-            or (given and results and not host):
+    if (results.get("mode") == "cloud" and not told and (re.search(r"[\[\]:%]", host) or (not host and ipv6_server(url)))) \
+            or (given and results and not host and not (told and results.get("mode") == "cloud")):
         return "Apprise cannot read this server address; give the server's name, or an address in lowercase without a zone ID."
     return ""
+
+
+def ipv6_server(url):
+    """Whether a URL names its server by an IPv6 address outside brackets, with a port or not."""
+    found = re.match(r"[^:]*:[/\\]*(?:[^/\\?]*@)?([^/\\?#]*)", url or "")
+    server = urllib.parse.unquote(found.group(1)) if found else ""
+    for address in (server, server.rpartition(":")[0]):
+        try:
+            if ipaddress.ip_address(address).version == 6:
+                return True
+        except ValueError:
+            pass
+    return False
 
 
 def check_url(url, typed=False):

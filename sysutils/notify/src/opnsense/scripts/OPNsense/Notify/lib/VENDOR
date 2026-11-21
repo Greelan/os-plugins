@@ -1,5 +1,5 @@
 # Pinned libraries, fetched from PyPI by tools/vendor.py (update) before building.
 # <PyPI name> <version> <package dir in sdist> <license file in sdist>
-apprise 2.2.0 apprise LICENSE
+apprise 2.3.0 apprise LICENSE
 Markdown 3.11.3 markdown LICENSE.md
-PyYAML 6.0.3 lib/yaml LICENSE
+PyYAML 6.0.4 lib/yaml LICENSE

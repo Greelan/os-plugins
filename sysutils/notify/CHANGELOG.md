@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.9 - 2026-11-21
+
+- Apprise 2.3.0, adding AWS End User Messaging Social (WhatsApp), Azure Communication Services email, Bale, Instagram, Notify! and OpsiMate, with a security fix (GHSA-rmjg-h4cf-m74j). PyYAML 6.0.4.
+
 ## 1.8_1 - 2026-11-12
 
 - From core 26.7.9, syslog-ng writes a log message repeated within 30 seconds once, then a line saying how many more times it came. Those repeats now count toward the message instead of being sent as a message of their own.
