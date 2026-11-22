@@ -38,6 +38,9 @@ class SettingsController extends ApiMutableModelControllerBase
 {
     protected static $internalModelName = 'blocky';
     protected static $internalModelClass = '\OPNsense\Blocky\Blocky';
+    /* Blocky runs as root and reads the files, sockets and zone directives its settings name, which
+     * cannot be checked strictly enough to be safe input, as core does for Monit */
+    protected static $internalSaveRequiresAdmin = true;
 
     /* array (grid) sections replaced wholesale on import */
     private static $importArrays = [
@@ -56,9 +59,10 @@ class SettingsController extends ApiMutableModelControllerBase
         if (!$this->request->isPost()) {
             return ['status' => 'failed', 'message' => gettext('Use a POST request.')];
         }
-        /* save() checks it too, but only after the backend has parsed the file */
+        /* save() checks these too, but only after the backend has parsed the file */
         $this->throwReadOnly();
-        /* unfiltered: the sanitiser escapes quotes and ampersands, which breaks the YAML */
+        $this->throwNotFullAdmin();
+        /* unfiltered: the sanitizer escapes quotes and ampersands, which breaks the YAML */
         $payload = (string)$this->request->getPost('payload');
         if (trim($payload) === '') {
             return ['status' => 'failed', 'message' => gettext('No configuration was provided.')];
@@ -126,6 +130,8 @@ class SettingsController extends ApiMutableModelControllerBase
                 'status' => 'failed',
                 'errors' => $errors,
                 'message' => gettext('Imported values failed validation; nothing was saved.'),
+                'skipped' => $parsed['skipped'] ?? [],
+                'warnings' => $parsed['warnings'] ?? [],
             ];
         }
 
@@ -165,6 +171,11 @@ class SettingsController extends ApiMutableModelControllerBase
     private function toggleChecked($path, $uuids, $enabled)
     {
         if ($this->request->isPost()) {
+            /* save() checks these too, but only after the trial */
+            $this->throwReadOnly();
+            $this->throwNotFullAdmin();
+            /* locked before the trial, so a change saved meanwhile is in it */
+            Config::getInstance()->lock();
             $this->refuseIfInvalid(function ($model) use ($path, $uuids, $enabled) {
                 foreach (explode(',', (string)$uuids) as $uuid) {
                     $node = $model->getNodeByReference($path . '.' . $uuid);
@@ -180,6 +191,11 @@ class SettingsController extends ApiMutableModelControllerBase
     private function delChecked($path, $uuids)
     {
         if ($this->request->isPost()) {
+            /* save() checks these too, but only after the trial */
+            $this->throwReadOnly();
+            $this->throwNotFullAdmin();
+            /* locked before the trial, so a change saved meanwhile is in it */
+            Config::getInstance()->lock();
             $this->refuseIfInvalid(function ($model) use ($path, $uuids) {
                 foreach (explode(',', (string)$uuids) as $uuid) {
                     $model->getNodeByReference($path)->del($uuid);

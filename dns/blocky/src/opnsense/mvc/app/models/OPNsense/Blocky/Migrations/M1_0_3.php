@@ -45,9 +45,11 @@ class M1_0_3 extends BaseModelMigration
             return;
         }
 
+        /* stored before 1.4_4, when any user with the page could save them */
         $zone = (string)$model->general->customZone;
-        if (Blocky::hasZoneInclude($zone)) {
-            $model->general->customZone = preg_replace('/^\s*\$INCLUDE\b.*(\R|$)/mi', '', $zone);
+        $kept = preg_replace('/^\s*\$INCLUDE\b.*(\R|$)/mi', '', $zone);
+        if ($kept !== $zone) {
+            $model->general->customZone = $kept;
         }
 
         foreach ($model->bootstrap->iterateItems() as $bootstrap) {
@@ -61,8 +63,9 @@ class M1_0_3 extends BaseModelMigration
             /* Redis cannot be required without an address */
             $model->redis->required = '0';
         }
-        $sentinels = array_filter(explode(',', (string)$model->redis->sentinelAddresses), function ($address) {
-            return !Blocky::isSocket(trim($address));
+        $sentinels = array_map('trim', explode(',', (string)$model->redis->sentinelAddresses));
+        $sentinels = array_filter($sentinels, function ($address) {
+            return $address !== '' && !Blocky::isSocket($address);
         });
         $model->redis->sentinelAddresses = implode(',', $sentinels);
 

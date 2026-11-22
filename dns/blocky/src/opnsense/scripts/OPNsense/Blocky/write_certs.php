@@ -30,7 +30,8 @@
 /*
  * Write the certificate chosen in the settings to the files config.yml points at,
  * so Blocky serves DoT/DoH with a certificate managed by OPNsense. Removes them
- * again when no certificate is selected.
+ * again when no certificate is selected and the config.yml Blocky starts with no
+ * longer names them: one Blocky refused keeps the previous config.yml (deploy.sh).
  */
 
 require_once('script/load_phalcon.php');
@@ -38,24 +39,28 @@ require_once('script/load_phalcon.php');
 use OPNsense\Blocky\Blocky;
 use OPNsense\Trust\Store as CertStore;
 
+openlog('blocky', LOG_ODELAY, LOG_DAEMON);
+
 $cert_file = '/usr/local/etc/blocky/cert.pem';
 $key_file = '/usr/local/etc/blocky/key.pem';
 $refid = (string)(new Blocky())->general->certificate;
 
 if (empty($refid)) {
-    @unlink($cert_file);
-    @unlink($key_file);
+    if (!preg_match('/^certFile: /m', (string)@file_get_contents('/usr/local/etc/blocky/config.yml'))) {
+        @unlink($cert_file);
+        @unlink($key_file);
+    }
     exit(0);
 }
 
 $cert = CertStore::getCertificate($refid);
 if (!is_array($cert)) {
-    syslog(LOG_ERR, 'blocky: certificate ' . $refid . ' was not found');
+    syslog(LOG_ERR, 'certificate ' . $refid . ' was not found');
     exit(1);
 }
 if (empty($cert['prv']) || empty($cert['subject'])) {
     /* a signing request has a key but no certificate yet */
-    syslog(LOG_ERR, 'blocky: certificate ' . $refid . ' has no key or no certificate, keeping the previous files');
+    syslog(LOG_ERR, 'certificate ' . $refid . ' has no key or no certificate, keeping the previous files');
     exit(1);
 }
 $chain = $cert['crt'] . ($cert['ca']['crt'] ?? '');
@@ -71,7 +76,7 @@ foreach ([$cert_file => $chain, $key_file => $cert['prv']] as $file => $pem) {
 if ($written) {
     /* the files are named for Blocky, so record which certificate they hold */
     syslog(LOG_NOTICE, sprintf(
-        'blocky: exported certificate %s (%s)',
+        'exported certificate %s (%s)',
         $cert['subject']['CN'] ?? $cert['name'] ?? $refid,
         $refid
     ));

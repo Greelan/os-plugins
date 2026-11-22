@@ -1,2 +1,2 @@
-config.yml:/usr/local/etc/blocky/config.yml
+config.yml:/usr/local/etc/blocky/config.yml.staging
 rc.conf.d:/etc/rc.conf.d/blocky

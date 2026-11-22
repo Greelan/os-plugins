@@ -3,13 +3,13 @@
         <id>blocky.queryLog.type</id>
         <label>Log type</label>
         <type>dropdown</type>
-        <help><![CDATA[Where query logs are written. Disabled (the default) turns query logging off; Console writes each query to the Blocky log (viewable under <a href="/ui/blocky/log">Log File</a>); CSV and CSV per-client write daily .csv files to the Target directory; SQLite, MySQL/MariaDB, PostgreSQL and TimescaleDB write to a database using the connection string in Target; dnstap streams to the dnstap socket set in Target. Console is high-volume (one line per query); use CSV or a database for long-term logs.]]></help>
+        <help><![CDATA[Where query logs are written. Disabled (the default) turns query logging off; Console writes each query to the Blocky log (viewable under <a href="/ui/blocky/log">Log File</a>); CSV and CSV per-client write daily .log files to /var/db/blocky/querylog; SQLite writes to /var/db/blocky/querylog.db; MySQL/MariaDB, PostgreSQL and TimescaleDB write to a database using the connection string in Target; dnstap streams to the dnstap socket set in Target. Console is high-volume (one line per query); use CSV or a database for long-term logs.]]></help>
     </field>
     <field>
         <id>blocky.queryLog.target</id>
         <label>Target</label>
         <type>password</type>
-        <help>Where the log goes, by type. MySQL/MariaDB, PostgreSQL, TimescaleDB: a connection string, e.g. postgres://user:password@host:5432/blocky. dnstap: a tcp:// address such as tcp://127.0.0.1:6000; Unix sockets are not accepted. A value of file:/usr/local/etc/blocky/secrets/name reads the target from that file, keeping credentials out of the configuration. Options that make Blocky read a file, MySQL's allowAllFiles and PostgreSQL's sslcert, sslkey, sslrootcert, passfile and servicefile, are accepted only in such a file. A connection string can hold a password, so the target is never shown again. Unused for Console, and for CSV and SQLite, which are written to /var/db/blocky/querylog (a 2026-09-14_ALL.log file per day, or one per client) and /var/db/blocky/querylog.db.</help>
+        <help>Where the log goes, by type. MySQL/MariaDB, PostgreSQL, TimescaleDB: a connection string, e.g. postgres://user:password@host:5432/blocky. dnstap: tcp://host:port such as tcp://127.0.0.1:6000; Unix sockets are not accepted. A value of file:/usr/local/etc/blocky/secrets/name reads the target from that file, keeping credentials out of the configuration. A connection string can hold a password, so the target is never shown again. Unused for Console, and for CSV and SQLite, which are written to /var/db/blocky/querylog (a 2026-09-14_ALL.log file per day, or one per client) and /var/db/blocky/querylog.db.</help>
     </field>
     <field>
         <id>blocky.queryLog.logRetentionDays</id>
@@ -30,7 +30,7 @@
         <type>text</type>
         <hint>30s</hint>
         <advanced>true</advanced>
-        <help>How often buffered entries are written to the target. Used by the database types and dnstap; CSV writes each entry as it arrives.</help>
+        <help>How often buffered entries are written to the target. Used by the database types, which also write as soon as 1,000 entries are waiting, and dnstap; CSV writes each entry as it arrives.</help>
     </field>
     <field>
         <id>blocky.queryLog.creationAttempts</id>
@@ -38,7 +38,7 @@
         <type>text</type>
         <hint>3</hint>
         <advanced>true</advanced>
-        <help>Number of attempts to open the log target (file or database) before giving up.</help>
+        <help>Number of attempts to open the log target before Blocky writes queries to its own log instead. A database that cannot be reached or opened is not given up on: Blocky holds up to about 32 MiB of entries and retries in the background.</help>
     </field>
     <field>
         <id>blocky.queryLog.creationCooldown</id>
@@ -64,5 +64,15 @@
         <advanced>true</advanced>
         <hint>example.com</hint>
         <help>Domains excluded from the query log. Each entry matches the query name as an exact domain, a *.wildcard, or a /regex/.</help>
+    </field>
+    <field>
+        <id>blocky.queryLog.ignoreClients</id>
+        <label>Ignore clients</label>
+        <type>select_multiple</type>
+        <style>tokenize</style>
+        <allownew>true</allownew>
+        <advanced>true</advanced>
+        <hint>192.168.1.1</hint>
+        <help>Clients excluded from the query log, such as a router that checks its internet connection every few seconds. Each entry is a client IP address, a CIDR subnet, or a client name, which can use * and ? wildcards. Their queries are still answered, filtered and counted in the metrics.</help>
     </field>
 </form>

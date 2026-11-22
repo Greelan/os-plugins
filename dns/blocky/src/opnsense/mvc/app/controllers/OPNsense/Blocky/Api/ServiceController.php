@@ -29,6 +29,7 @@
 namespace OPNsense\Blocky\Api;
 
 use OPNsense\Base\ApiMutableServiceControllerBase;
+use OPNsense\Core\Backend;
 
 /**
  * Class ServiceController
@@ -40,4 +41,36 @@ class ServiceController extends ApiMutableServiceControllerBase
     protected static $internalServiceTemplate = 'OPNsense/Blocky';
     protected static $internalServiceEnabled = 'general.enabled';
     protected static $internalServiceName = 'blocky';
+
+    /**
+     * The template stages config.yml, and starting Blocky puts it in place only when Blocky can read it
+     * (deploy.sh); a staged configuration Blocky would refuse to read leaves Blocky as it is, and says why.
+     * A stopped Blocky also loses the configuration it last ran with, which a later start would run.
+     */
+    public function reconfigureAction()
+    {
+        if ($this->request->isPost() && $this->serviceEnabled()) {
+            $backend = new Backend();
+            if (trim($backend->configdpRun('template reload', [static::$internalServiceTemplate])) === 'OK') {
+                /* "Error: " and Blocky's reason, or nothing */
+                $refusal = trim($backend->configdRun('blocky configtest'));
+                if (strpos($refusal, 'Error: ') === 0) {
+                    $reason = substr($refusal, strlen('Error: '));
+                    /* only when surely stopped: an unknown status may be a running Blocky */
+                    if ($this->statusAction()['status'] === 'stopped') {
+                        $backend->configdRun('blocky discard');
+                        return ['status' => 'failed', 'status_msg' => sprintf(
+                            gettext('Blocky would not start with this configuration, so it stays stopped: %s'),
+                            $reason
+                        )];
+                    }
+                    return ['status' => 'failed', 'status_msg' => sprintf(
+                        gettext('Blocky would not start with this configuration, so it was left as it is: %s'),
+                        $reason
+                    )];
+                }
+            }
+        }
+        return parent::reconfigureAction();
+    }
 }

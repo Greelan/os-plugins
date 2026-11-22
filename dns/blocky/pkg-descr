@@ -1,4 +1,4 @@
-Blocky is a fast and lightweight DNS proxy and ad-blocker for local networks, written in Go. This plugin puts its whole configuration in the OPNsense web UI, won't save a setting Blocky would refuse, and shows its log. If you already run Blocky elsewhere, you can upload its config.yml to start from.
+Blocky is a fast and lightweight DNS proxy and ad-blocker for local networks, written in Go. This plugin puts its whole configuration in the OPNsense web UI, won't put a configuration Blocky refuses to read into use, and shows its log. If you already run Blocky elsewhere, you can upload its config.yml to start from.
 
 Blocking uses deny and allow lists that can differ between groups of clients, matched by name, address or subnet, and follow a weekly schedule. Clients can be given names by hand where reverse DNS does not provide them.
 

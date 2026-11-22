@@ -4,8 +4,9 @@
 {# a bare-integer duration is deprecated (read as minutes) - append 'm' to keep the value with a unit #}
 {% macro d(v) %}{{ (v ~ 'm') if v|string == (v|int)|string else v }}{% endmacro %}
 {# free text: single quotes keep backslashes literal, an embedded quote is doubled, a line break
-   is the space it would fold to (a --- after one would end the document) #}
-{% macro q(v) %}'{{ v|string|replace('\r', '')|replace('\n', ' ')|replace("'", "''") }}'{% endmacro %}
+   is the space it would fold to (a --- after one would end the document), and so are NEL, LS and
+   PS, which YAML also reads as line breaks #}
+{% macro q(v) %}'{{ v|string|replace('\r', '')|replace('\n', ' ')|replace('\x85', ' ')|replace('\u2028', ' ')|replace('\u2029', ' ')|replace("'", "''") }}'{% endmacro %}
 {# blocky reads a source as a file unless it starts with http or holds a newline, so a bare
    entry (domain, wildcard, /regex/) has to be emitted as a block scalar to stay inline #}
 {% macro is_path(v) %}{{ v.startswith('http://') or v.startswith('https://') or v.startswith('file://') or (v.startswith('/') and not v.endswith('/')) }}{% endmacro %}
@@ -28,7 +29,7 @@ upstreams:
 {% if ug %}
   groups:
 {% for grp in ug %}
-    "{{ grp }}":
+    {{ q(grp) }}:
 {% for u in helpers.toList('OPNsense.blocky.upstreams') if u.enabled == '1' and u.group == grp %}
       - {{ q(u.server) }}
 {% endfor %}
@@ -48,14 +49,18 @@ customDNS:
   filterUnmappedTypes: {{ 'true' if OPNsense.blocky.general.filterUnmappedTypes != '0' else 'false' }}
 {% if cdr_on %}
   rewrite:
-{% for r in cdr if r.enabled == '1' %}
-    "{{ r.fromDomain }}": "{{ r.toDomain }}"
+{# Blocky never matches a key with a trailing dot: where both are set, the one without it stays #}
+{% set by_from = {} %}
+{% for r in cdr_on if not r.fromDomain.endswith('.') %}{% do by_from.setdefault(r.fromDomain.lower(), r.toDomain) %}{% endfor %}
+{% for r in cdr_on if r.fromDomain.endswith('.') %}{% do by_from.setdefault(r.fromDomain.lower().rstrip('.'), r.toDomain) %}{% endfor %}
+{% for domain, target in by_from.items() %}
+    {{ q(domain) }}: {{ q(target) }}
 {% endfor %}
 {% endif %}
 {% if cd_on %}
   mapping:
 {% set by_domain = {} %}
-{% for m in cd_on %}{% do by_domain.setdefault(m.domain, []).append(m.ip) %}{% endfor %}
+{% for m in cd_on %}{% do by_domain.setdefault(m.domain.lower().rstrip('.'), []).append(m.ip) %}{% endfor %}
 {% for domain, ips in by_domain.items() %}
     {{ q(domain) }}: {{ q(ips|join(',')) }}
 {% endfor %}
@@ -75,13 +80,19 @@ conditional:
 {% set cfr_on = cfr|selectattr('enabled', 'equalto', '1')|list %}
 {% if cfr_on %}
   rewrite:
-{% for r in cfr if r.enabled == '1' %}
-    "{{ r.fromDomain }}": "{{ r.toDomain }}"
+{% set by_from = {} %}
+{% for r in cfr_on if not r.fromDomain.endswith('.') %}{% do by_from.setdefault(r.fromDomain.lower(), r.toDomain) %}{% endfor %}
+{% for r in cfr_on if r.fromDomain.endswith('.') %}{% do by_from.setdefault(r.fromDomain.lower().rstrip('.'), r.toDomain) %}{% endfor %}
+{% for domain, target in by_from.items() %}
+    {{ q(domain) }}: {{ q(target) }}
 {% endfor %}
 {% endif %}
   mapping:
+{# rows with a trailing dot only count for a domain no row without one names #}
 {% set by_domain = {} %}
-{% for m in cf_on %}{% do by_domain.setdefault(m.domain, []).append(m.resolver) %}{% endfor %}
+{% for m in cf_on if m.domain == '.' or not m.domain.endswith('.') %}{% do by_domain.setdefault(m.domain.lower(), []).append(m.resolver) %}{% endfor %}
+{% set live = by_domain.keys()|list %}
+{% for m in cf_on if m.domain != '.' and m.domain.endswith('.') and (m.domain.lower().rstrip('.') or '.') not in live %}{% do by_domain.setdefault(m.domain.lower().rstrip('.') or '.', []).append(m.resolver) %}{% endfor %}
 {% for domain, resolvers in by_domain.items() %}
     {{ q(domain) }}: {{ q(resolvers|join(',')) }}
 {% endfor %}
@@ -99,12 +110,12 @@ conditional:
 {% for a in al if a.enabled == '1' %}
 {% if a.group not in ag %}{% do ag.append(a.group) %}{% endif %}
 {% endfor %}
-{% if dg or ag or sc_on %}
+{# always: Blocky's own HTTP server takes its timeouts from blocking.loading.downloads #}
 blocking:
 {% if dg %}
   denylists:
 {% for grp in dg %}
-    "{{ grp }}":
+    {{ q(grp) }}:
 {% for b in dl if b.enabled == '1' and b.group == grp %}
 {% if is_path(b.source)|trim == 'True' %}
       - {{ q(b.source) }}
@@ -118,7 +129,7 @@ blocking:
 {% if ag %}
   allowlists:
 {% for grp in ag %}
-    "{{ grp }}":
+    {{ q(grp) }}:
 {% for a in al if a.enabled == '1' and a.group == grp %}
 {% if is_path(a.source)|trim == 'True' %}
       - {{ q(a.source) }}
@@ -148,7 +159,7 @@ blocking:
 {% else %}
   clientGroupsBlock: {}
 {% endif %}
-  blockType: "{{ OPNsense.blocky.general.blockType|default('zeroIP') }}"
+  blockType: {{ q(OPNsense.blocky.general.blockType|default('zeroIP')) }}
   blockTTL: {{ OPNsense.blocky.general.blockTTL|default('6h') }}
   loading:
     strategy: {{ OPNsense.blocky.general.loadingStrategy|default('blocking') }}
@@ -170,14 +181,14 @@ blocking:
 {% if sc_on %}
   schedules:
 {% for s in sc if s.enabled == '1' %}
-    "{{ s.name }}":
+    {{ q(s.name) }}:
       weekdays:
 {% for wd in s.weekdays.split(',') %}
         - {{ wd|trim }}
 {% endfor %}
 {% if s.start and s.end %}
-      start: "{{ s.start }}"
-      end: "{{ s.end }}"
+      start: {{ q(s.start) }}
+      end: {{ q(s.end) }}
 {% endif %}
 {% endfor %}
   listSchedules:
@@ -188,14 +199,13 @@ blocking:
 {% endfor %}
 {% endfor %}
 {% for grp in sgroups %}
-    "{{ grp }}":
+    {{ q(grp) }}:
 {% for s in sc if s.enabled == '1' and grp in s.groups.split(',')|map('trim')|list %}
-      - "{{ s.name }}"
+      - {{ q(s.name) }}
 {% endfor %}
 {% endfor %}
 {% endif %}
 
-{% endif %}
 caching:
   minTime: {{ d(OPNsense.blocky.general.cacheMinTime|default('0')) }}
   maxTime: {{ d(OPNsense.blocky.general.cacheMaxTime|default('0')) }}
@@ -231,10 +241,10 @@ clientLookup:
 {% set names = [] %}
 {% for c in clc_on if c.name not in names %}{% do names.append(c.name) %}{% endfor %}
 {% for name in names %}
-    "{{ name }}":
+    {{ q(name) }}:
 {% for c in clc_on if c.name == name %}
 {% for ip in c.ips.split(',') if ip|trim %}
-      - {{ ip|trim }}
+      - {{ q(ip|trim) }}
 {% endfor %}
 {% endfor %}
 {% endfor %}
@@ -243,7 +253,8 @@ clientLookup:
 {% endif %}
 prometheus:
   enable: {{ 'true' if OPNsense.blocky.general.prometheus == '1' else 'false' }}
-  path: {{ OPNsense.blocky.general.prometheusPath|default('/metrics') }}
+  path: {{ q(OPNsense.blocky.general.prometheusPath|default('/metrics')) }}
+  enableClientLabel: {{ 'true' if OPNsense.blocky.general.prometheusClientLabel != '0' else 'false' }}
 pprof:
   enable: {{ 'true' if OPNsense.blocky.general.pprof != '0' else 'false' }}
 {% if OPNsense.blocky.statistics is defined and OPNsense.blocky.statistics.enable == '1' %}
@@ -278,7 +289,7 @@ queryLog:
     - {{ f|trim }}
 {% endfor %}
 {% endif %}
-{% if qltype != 'none' and (OPNsense.blocky.queryLog.ignoreSudn == '1' or OPNsense.blocky.queryLog.ignoreDomains) %}
+{% if qltype != 'none' and (OPNsense.blocky.queryLog.ignoreSudn == '1' or OPNsense.blocky.queryLog.ignoreDomains or OPNsense.blocky.queryLog.ignoreClients) %}
   ignore:
 {% if OPNsense.blocky.queryLog.ignoreSudn == '1' %}
     sudn: true
@@ -287,6 +298,12 @@ queryLog:
     domains:
 {% for d in OPNsense.blocky.queryLog.ignoreDomains.split(',') if d|trim %}
       - {{ q(d|trim) }}
+{% endfor %}
+{% endif %}
+{% if OPNsense.blocky.queryLog.ignoreClients %}
+    clients:
+{% for c in OPNsense.blocky.queryLog.ignoreClients.split(',') if c|trim %}
+      - {{ q(c|trim) }}
 {% endfor %}
 {% endif %}
 {% endif %}
@@ -336,7 +353,7 @@ bootstrapDns:
 {% if b.ips %}
     ips:
 {% for ip in b.ips.split(',') if ip|trim %}
-      - {{ ip|trim }}
+      - {{ q(ip|trim) }}
 {% endfor %}
 {% endif %}
 {% endif %}
@@ -370,7 +387,7 @@ rateLimit:
 {% if OPNsense.blocky.rateLimit.allowlist %}
   allowlist:
 {% for c in OPNsense.blocky.rateLimit.allowlist.split(',') %}
-    - "{{ c|trim }}"
+    - {{ q(c|trim) }}
 {% endfor %}
 {% endif %}
 {% endif %}
@@ -413,11 +430,11 @@ ports:
 {% endif %}
 {% if not dns_items %}{% do dns_items.append('53') %}{% endif %}
 {% if dns_items|length == 1 %}
-  dns: "{{ dns_items[0] }}"
+  dns: {{ q(dns_items[0]) }}
 {% else %}
   dns:
 {% for it in dns_items %}
-    - "{{ it }}"
+    - {{ q(it) }}
 {% endfor %}
 {% endif %}
 {% set http_items = [] %}
@@ -425,11 +442,11 @@ ports:
 {% for l in OPNsense.blocky.general.httpPort.split(',') if l|trim and l|trim != '0' %}{% do http_items.append(l|trim) %}{% endfor %}
 {% endif %}
 {% if http_items|length == 1 %}
-  http: "{{ http_items[0] }}"
+  http: {{ q(http_items[0]) }}
 {% elif http_items|length > 1 %}
   http:
 {% for it in http_items %}
-    - "{{ it }}"
+    - {{ q(it) }}
 {% endfor %}
 {% endif %}
 {% set tls_items = [] %}
@@ -437,11 +454,11 @@ ports:
 {% for l in OPNsense.blocky.general.tlsPort.split(',') if l|trim and l|trim != '0' %}{% do tls_items.append(l|trim) %}{% endfor %}
 {% endif %}
 {% if tls_items|length == 1 %}
-  tls: "{{ tls_items[0] }}"
+  tls: {{ q(tls_items[0]) }}
 {% elif tls_items|length > 1 %}
   tls:
 {% for it in tls_items %}
-    - "{{ it }}"
+    - {{ q(it) }}
 {% endfor %}
 {% endif %}
 {% set https_items = [] %}
@@ -449,15 +466,15 @@ ports:
 {% for l in OPNsense.blocky.general.httpsPort.split(',') if l|trim and l|trim != '0' %}{% do https_items.append(l|trim) %}{% endfor %}
 {% endif %}
 {% if https_items|length == 1 %}
-  https: "{{ https_items[0] }}"
+  https: {{ q(https_items[0]) }}
 {% elif https_items|length > 1 %}
   https:
 {% for it in https_items %}
-    - "{{ it }}"
+    - {{ q(it) }}
 {% endfor %}
 {% endif %}
 {% if https_items %}
-  dohPath: "{{ OPNsense.blocky.general.dohPath|default('/dns-query') }}"
+  dohPath: {{ q(OPNsense.blocky.general.dohPath|default('/dns-query')) }}
 {% endif %}
 {% if OPNsense.blocky.general.proxyProtocol %}
   proxyProtocol: [{{ OPNsense.blocky.general.proxyProtocol.split(',')|map('trim')|join(', ') }}]
@@ -507,7 +524,7 @@ dnssec:
   clockSkewToleranceSec: {{ OPNsense.blocky.dnssec.clockSkewToleranceSec|default('3600') }}
 {% if OPNsense.blocky.dnssec.trustAnchors %}
   trustAnchors:
-{% for t in OPNsense.blocky.dnssec.trustAnchors.split(',') %}
+{% for t in OPNsense.blocky.dnssec.trustAnchors.split(',') if t|trim %}
     - {{ q(t|trim) }}
 {% endfor %}
 {% endif %}
@@ -518,13 +535,13 @@ dns64:
 {% if OPNsense.blocky.dns64.prefix %}
   prefixes:
 {% for p in OPNsense.blocky.dns64.prefix.split(',') %}
-    - "{{ p|trim }}"
+    - {{ q(p|trim) }}
 {% endfor %}
 {% endif %}
 {% if OPNsense.blocky.dns64.exclusionSet %}
   exclusionSet:
 {% for e in OPNsense.blocky.dns64.exclusionSet.split(',') %}
-    - "{{ e|trim }}"
+    - {{ q(e|trim) }}
 {% endfor %}
 {% endif %}
 {% endif %}

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.6 - 2026-11-26
+
+- Blocky 0.37.0 and PyYAML 6.0.4.
+- Apply refuses a configuration Blocky would not read, and says why.
+- Only a full administrator can change the settings (OPNsense 26.1.11 or Business Edition 26.4.1p2 or later); zone $INCLUDE lines and database file options are accepted.
+- Clients can be left out of the query log, and the metrics client label turned off.
+- Imports follow Blocky more closely and show their warnings.
+- The firewall, router advertisements and ISC DHCP use Blocky only when it listens on every address.
+- Settings Blocky cannot use are refused or written as Blocky reads them; help matches Blocky 0.37.
+
 ## 1.5 - 2026-11-10
 
 - Blocky 0.36.0.

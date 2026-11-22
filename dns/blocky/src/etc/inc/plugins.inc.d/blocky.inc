@@ -50,8 +50,9 @@ function blocky_services()
     $model = new \OPNsense\Blocky\Blocky();
 
     $services[] = [
-        /* registered so other DNS services can detect a port conflict */
-        'dns_ports' => $model->listenPorts(),
+        /* the ports Blocky answers on at every address: core hands what is registered for 53 to clients
+         * and to the firewall itself, and other DNS services check for a conflict */
+        'dns_ports' => $model->wildcardPorts(),
         'description' => gettext('Blocky DNS proxy'),
         'configd' => [
             'restart' => ['blocky restart'],

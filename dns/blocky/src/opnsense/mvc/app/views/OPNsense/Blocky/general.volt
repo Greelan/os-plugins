@@ -80,6 +80,8 @@
                     } else {
                         let html = '<div class="alert alert-danger">' + escapeHtml((data && data['message']) || "{{ lang._('Import failed.') }}") + '</div>';
                         html += renderList("{{ lang._('Validation errors') }}", data ? data['errors'] : [], 'alert-danger');
+                        html += renderList("{{ lang._('Warnings') }}", data ? data['warnings'] : [], 'alert-warning');
+                        html += renderList("{{ lang._('Skipped (unsupported)') }}", data ? data['skipped'] : [], 'alert-info');
                         $("#importResult").html(html);
                     }
                 }
@@ -96,7 +98,7 @@
         <i class="fa fa-upload"></i> {{ lang._('Import config.yml') }}
     </button>
     <div class="text-muted" style="margin-top: 0.5em;">
-        {{ lang._('Import an existing Blocky config.yml. This replaces the current configuration: list entries are rebuilt and any setting not present in the file is reset to its default. Unsupported keys are reported and skipped. If the file is invalid nothing is changed. After a successful import, review the settings and then apply them.') }}
+        {{ lang._('Import an existing Blocky config.yml. This replaces the current configuration: list entries are rebuilt and any setting not present in the file is reset to its default. Unsupported keys are reported and skipped. If the file cannot be imported nothing is changed. After a successful import, review the settings and then apply them; Apply checks first that Blocky can read them.') }}
     </div>
     <div id="importResult" style="margin-top: 1em;"></div>
 </div>

@@ -60,8 +60,21 @@ namespace {
                 }
             }
         }
+        /* a case may name migrations to run on what it set, as an upgrade would: on the values as
+         * config.xml holds them, checking what changed, as core's runMigrations() saves */
+        $validateFullModel = empty($case['migrate']);
+        if (!$validateFullModel) {
+            file_put_contents("{$conf}/config.xml", "<?xml version=\"1.0\"?>\n<opnsense>" .
+                preg_replace('/^<\?xml[^>]*>\s*/', '', $model->toXML()->asXML()) . '</opnsense>');
+            OPNsense\Core\Config::getInstance()->forceReload();
+            $model = new OPNsense\Blocky\Blocky();
+            foreach ((array)$case['migrate'] as $name) {
+                $migration = "OPNsense\\Blocky\\Migrations\\{$name}";
+                (new $migration())->run($model);
+            }
+        }
         $messages = [];
-        foreach ($model->performValidation(true) as $message) {
+        foreach ($model->performValidation($validateFullModel) as $message) {
             $field = preg_replace_callback('/^(\w+)\.([0-9a-f-]{36})\./', function ($m) use ($rows) {
                 return ($rows[$m[2]] ?? $m[1]) . '.';
             }, $message->getField());
@@ -72,6 +85,10 @@ namespace {
             'xml' => $messages ? null :
                 '<opnsense>' . preg_replace('/^<\?xml[^>]*>\s*/', '', $model->toXML()->asXML()) . '</opnsense>',
         ]) . "\n";
+        if (!$validateFullModel) {
+            file_put_contents("{$conf}/config.xml", "<?xml version=\"1.0\"?>\n<opnsense/>\n");
+            OPNsense\Core\Config::getInstance()->forceReload();
+        }
     }
     array_map('unlink', glob("{$conf}/*"));
     @rmdir($conf);

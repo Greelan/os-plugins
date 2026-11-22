@@ -1,8 +1,8 @@
 PLUGIN_NAME=		blocky-greelan
-PLUGIN_VERSION=		1.5
+PLUGIN_VERSION=		1.6
 PLUGIN_COMMENT=		Fast and lightweight DNS proxy with ad-blocking
 PLUGIN_DEPENDS=		blocky
 PLUGIN_CONFLICTS=	blocky
-PLUGIN_MAINTAINER=	greelan@proton.me
+PLUGIN_MAINTAINER=	contact@greelan.net
 
 .include "../../Mk/plugins.mk"

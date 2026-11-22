@@ -1,5 +1,7 @@
-"""Who may do what: changes are POST-only, a read-only user cannot start an import, and the configd
-actions that stop Blocky or read a caller's file take calls from root and the web interface only."""
+"""Who may do what: changes are POST-only and for a full administrator only, a read-only or delegated
+user cannot start an import or the trial before a toggle or delete, and the configd actions that stop
+Blocky, remove its configuration, read a caller's file or answer with Blocky's reading of its
+configuration take calls from root and the web interface only."""
 
 import configparser
 import os
@@ -54,13 +56,33 @@ class Permissions(unittest.TestCase):
     def test_a_read_only_user_is_refused_before_the_import_is_parsed(self):
         body = methods(os.path.join(API, "SettingsController.php"))["importAction"]
         self.assertLess(body.index("throwReadOnly()"), body.index("configdpRun("))
+        self.assertLess(body.index("throwNotFullAdmin()"), body.index("configdpRun("))
+
+    def test_a_delegated_user_is_refused_before_the_trial(self):
+        """A toggle or delete locks the configuration and validates the model twice before save()."""
+        found = methods(os.path.join(API, "SettingsController.php"))
+        for name in ("toggleChecked", "delChecked"):
+            body = found[name]
+            self.assertLess(body.index("throwReadOnly()"), body.index("lock()"), name)
+            self.assertLess(body.index("throwNotFullAdmin()"), body.index("lock()"), name)
+
+    def test_only_a_full_administrator_saves(self):
+        """Blocky reads, as root, the files, sockets and zone directives its settings name."""
+        with open(os.path.join(API, "SettingsController.php")) as handle:
+            text = handle.read()
+        self.assertIn("protected static $internalSaveRequiresAdmin = true;", text)
+        self.assertNotIn("function save(", text, "core's save() is where the flag is checked")
 
     def test_configd_actions_that_stop_or_take_a_file(self):
         conf = configparser.ConfigParser(interpolation=None)
         conf.read(ACTIONS)
         for name in conf.sections():
             action = conf[name]
-            if "%s" in action.get("parameters", "") or re.search(r"\bstop\b", action["command"]):
+            takes_a_file = "%s" in action.get("parameters", "")
+            stops = re.search(r"\bstop\b", action["command"])
+            removes = re.search(r"\brm\b", action["command"])
+            reads_the_config = re.search(r"deploy\.sh$", action["command"])
+            if takes_a_file or stops or removes or reads_the_config:
                 self.assertEqual(action.get("allowed_groups"), "wheel,wwwonly", name)
 
     def test_acl_covers_the_pages_and_the_api(self):

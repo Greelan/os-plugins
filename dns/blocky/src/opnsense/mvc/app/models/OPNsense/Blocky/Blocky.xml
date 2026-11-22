@@ -1,7 +1,7 @@
 <model>
     <mount>//OPNsense/blocky</mount>
     <description>Blocky DNS proxy</description>
-    <version>1.0.5</version>
+    <version>1.0.6</version>
     <items>
         <general>
             <enabled type="BooleanField">
@@ -270,6 +270,10 @@
                 <Mask>/^\/[\w\/.-]*$/</Mask>
                 <ValidationMessage>Enter a URL path beginning with a slash, e.g. /metrics.</ValidationMessage>
             </prometheusPath>
+            <prometheusClientLabel type="BooleanField">
+                <Default>1</Default>
+                <Required>Y</Required>
+            </prometheusClientLabel>
             <pprof type="BooleanField">
                 <Default>1</Default>
                 <Required>Y</Required>
@@ -398,7 +402,8 @@
             <resolver type="CSVListField">
                 <Required>Y</Required>
                 <AsList>Y</AsList>
-                <FieldSeparator>,</FieldSeparator>
+                <Mask>/^ *[^\s'"\p{C}]+ *$/u</Mask>
+                <MaskPerItem>Y</MaskPerItem>
                 <ValidationMessage>Enter one or more upstream resolvers for this domain, e.g. 192.168.1.1.</ValidationMessage>
             </resolver>
             <description type="DescriptionField"/>
@@ -441,7 +446,7 @@
             <client type="TextField">
                 <Required>Y</Required>
                 <Mask>/^[^\s'"]+$/</Mask>
-                <ValidationMessage>Enter a client IP, CIDR, client name or wildcard (use "default" for all clients).</ValidationMessage>
+                <ValidationMessage>Enter a client IP, CIDR, client name or wildcard (use "default" for clients that match no other entry).</ValidationMessage>
             </client>
             <groups type="TextField">
                 <Default>default</Default>
@@ -518,7 +523,7 @@
             </maxChainDepth>
             <cacheExpirationHours type="IntegerField">
                 <Default>1</Default>
-                <MinimumValue>0</MinimumValue>
+                <MinimumValue>1</MinimumValue>
                 <Required>Y</Required>
             </cacheExpirationHours>
             <maxUpstreamQueries type="IntegerField">
@@ -528,7 +533,7 @@
             </maxUpstreamQueries>
             <maxNSEC3Iterations type="IntegerField">
                 <Default>150</Default>
-                <MinimumValue>0</MinimumValue>
+                <MinimumValue>1</MinimumValue>
                 <Required>Y</Required>
             </maxNSEC3Iterations>
             <clockSkewToleranceSec type="IntegerField">
@@ -538,7 +543,11 @@
             </clockSkewToleranceSec>
             <trustAnchors type="CSVListField">
                 <AsList>Y</AsList>
-                <FieldSeparator>,</FieldSeparator>
+                <!-- Blocky exits on an anchor that is not a DNSKEY record with the SEP flag (odd flags):
+                     an owner, any TTL and class, then the record -->
+                <Mask>/^ *(\S+(\s+([0-9][0-9smhdw]*|IN))*\s+DNSKEY\s+[0-9]*[13579]\s.*)?$/is</Mask>
+                <MaskPerItem>Y</MaskPerItem>
+                <ValidationMessage>Enter key signing keys as DNSKEY records, e.g. ". 172800 IN DNSKEY 257 3 8 AwEAA".</ValidationMessage>
             </trustAnchors>
         </dnssec>
         <rebindingProtection>
@@ -624,7 +633,7 @@
                     <mysql>MySQL / MariaDB</mysql>
                     <postgresql>PostgreSQL</postgresql>
                     <timescale>TimescaleDB</timescale>
-                    <dnstap>dnstap</dnstap>
+                    <dnstap>dnstap stream</dnstap>
                 </OptionValues>
             </type>
             <target type=".\SecretField">
@@ -669,8 +678,16 @@
             </ignoreSudn>
             <ignoreDomains type="CSVListField">
                 <AsList>Y</AsList>
-                <FieldSeparator>,</FieldSeparator>
+                <Mask>/^ *([^\p{C}\p{Z}]+ *)?$/u</Mask>
+                <MaskPerItem>Y</MaskPerItem>
+                <ValidationMessage>Enter each domain, *.wildcard or /regex/ without spaces or control characters.</ValidationMessage>
             </ignoreDomains>
+            <ignoreClients type="CSVListField">
+                <AsList>Y</AsList>
+                <Mask>/^ *([^\s'"\p{C}]+ *)?$/u</Mask>
+                <MaskPerItem>Y</MaskPerItem>
+                <ValidationMessage>Enter each client as an IP address, a CIDR subnet or a client name, without spaces or quotes.</ValidationMessage>
+            </ignoreClients>
         </queryLog>
         <filtering>
             <queryTypes type="CSVListField">
@@ -819,7 +836,9 @@
             </sentinelPassword>
             <sentinelAddresses type="CSVListField">
                 <AsList>Y</AsList>
-                <FieldSeparator>,</FieldSeparator>
+                <Mask>/^ *([^\s'"\p{C}]+ *)?$/u</Mask>
+                <MaskPerItem>Y</MaskPerItem>
+                <ValidationMessage>Enter each sentinel as host:port, without spaces or quotes.</ValidationMessage>
             </sentinelAddresses>
         </redis>
     </items>

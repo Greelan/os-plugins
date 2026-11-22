@@ -95,7 +95,7 @@
     <div id="allowlists" class="tab-pane fade in">
         {{ partial('layout_partials/base_bootgrid_table', formGridAllowlist)}}
         <div style="padding: 10px;">
-            {{ lang._('Allow list entries override deny lists in the same list group.') }}
+            {{ lang._("An allow list entry in any of a client's list groups overrides the deny lists of all of them.") }}
         </div>
     </div>
 </div>

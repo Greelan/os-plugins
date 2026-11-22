@@ -2,7 +2,7 @@
 # the rc switch are ours alone; the settings stay in config.xml, so a reinstall
 # rebuilds them. List and secret files and query logs are the user's, so they stay.
 if [ "${PKG_UPGRADE}" != "true" ]; then
-	rm -f /usr/local/etc/blocky/config.yml /usr/local/etc/blocky/cert.pem /usr/local/etc/blocky/key.pem
+	rm -f /usr/local/etc/blocky/config.yml /usr/local/etc/blocky/config.yml.staging /usr/local/etc/blocky/config.yml.deploy.* /usr/local/etc/blocky/cert.pem /usr/local/etc/blocky/key.pem
 	rmdir /usr/local/etc/blocky/lists /usr/local/etc/blocky/secrets /usr/local/etc/blocky 2>/dev/null || true
 	rm -rf /var/cache/blocky
 	rm -f /etc/rc.conf.d/blocky

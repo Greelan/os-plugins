@@ -1,10 +1,6 @@
-# config.yml can hold a Redis password or query log database credentials, and the
-# template writer copies the mode of the directory it writes into (minus exec).
-install -d -m 0750 -o root -g wheel /usr/local/etc/blocky
-# list files Blocky may read from disk
-install -d -m 0750 -o root -g wheel /usr/local/etc/blocky/lists
-# secrets Blocky reads from file: values
-install -d -m 0700 -o root -g wheel /usr/local/etc/blocky/secrets
-if [ -f /usr/local/etc/blocky/config.yml ]; then
-	chmod 0640 /usr/local/etc/blocky/config.yml
-fi
+# files written while the directory was wider, by an earlier version or install
+for FILE in /usr/local/etc/blocky/config.yml /usr/local/etc/blocky/config.yml.staging; do
+	if [ -f "${FILE}" ]; then
+		chmod 0640 "${FILE}"
+	fi
+done

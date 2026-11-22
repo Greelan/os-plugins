@@ -15,7 +15,7 @@
         <type>text</type>
         <hint>10</hint>
         <advanced>true</advanced>
-        <help>Maximum domain label depth followed for chain-of-trust validation (protects against deeply nested domains).</help>
+        <help>Maximum number of zones in a chain of trust below its trust anchor, as protection against long chains of delegations. Labels that are no zone of their own are not counted.</help>
     </field>
     <field>
         <id>blocky.dnssec.cacheExpirationHours</id>
@@ -23,7 +23,7 @@
         <type>text</type>
         <hint>1</hint>
         <advanced>true</advanced>
-        <help>How long validated keys and signatures are cached, in hours, to avoid revalidating the same zones.</help>
+        <help>How long validation results are cached at most, in hours, to avoid revalidating the same zones. A result is dropped earlier when the TTL or the signature of the records that proved it ends.</help>
     </field>
     <field>
         <id>blocky.dnssec.maxUpstreamQueries</id>
@@ -31,7 +31,7 @@
         <type>text</type>
         <hint>30</hint>
         <advanced>true</advanced>
-        <help>Maximum number of upstream queries used to validate a single response, as protection against a chain that keeps asking for more.</help>
+        <help>Maximum number of upstream DNSKEY and DS lookups the validation for one client query makes, as protection against a chain that keeps asking for more.</help>
     </field>
     <field>
         <id>blocky.dnssec.maxNSEC3Iterations</id>
@@ -56,7 +56,7 @@
         <style>tokenize</style>
         <allownew>true</allownew>
         <advanced>true</advanced>
-        <hint>DNSKEY or DS record</hint>
+        <hint>DNSKEY record</hint>
         <help>DNSKEY records in zone-file format that replace the built-in IANA root anchors, e.g. . 172800 IN DNSKEY 257 3 8 AwEAAaz... Leave empty for the defaults; setting any anchor here replaces both root keys, so a private zone needs the root anchors listed as well.</help>
     </field>
     <field>

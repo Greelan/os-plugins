@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -54,163 +55,6 @@ POOL = [
     "a b", " lead", "trail ", "tab\tx", "back\\slash", "é", "日本", "x\nredis:\n  address: evil", "a,,b", ",",
 ]
 
-# zones on both sides of each rule Blocky's parser (miekg/dns, no origin) applies
-ZONES = [
-    "host IN A 10.0.0.1",
-    "host A 10.0.0.1",
-    "host 300 IN A 10.0.0.1",
-    "host IN 300 A 10.0.0.1",
-    "host 1h A 10.0.0.1",
-    "host 1W2D A 10.0.0.1",
-    "host a 10.0.0.1",
-    "host in a 10.0.0.1",
-    "  IN A 10.0.0.1",
-    "host IN A 10.0.0.1\n  IN A 10.0.0.2",
-    "@ IN A 10.0.0.1",
-    "$TTL 3600\nhost IN A 10.0.0.1",
-    "$ORIGIN lan.\nhost IN A 10.0.0.1",
-    "$ORIGIN lan\nhost A 1.1.1.1",
-    "$TTL\nhost A 1.1.1.1",
-    "$TTL abc\nhost A 1.1.1.1",
-    "$GENERATE 1-2 host$ A 10.0.0.$",
-    "$FOO bar",
-    "host IN A 10.0.0.256",
-    "host IN A ::1",
-    "host IN AAAA ::1",
-    "host IN AAAA 10.0.0.1",
-    "host IN A",
-    "host IN CNAME other",
-    "host IN CNAME other.lan.",
-    "host IN CNAME bad name",
-    "host IN MX 10 mail",
-    "host IN MX mail",
-    "host IN TXT \"hello world\"",
-    "host IN TXT hello",
-    "host IN TXT \"unterminated",
-    "host IN SRV 0 5 5060 sip",
-    "host IN SRV 0 5 sip",
-    "host IN PTR x.lan.",
-    "host IN NS ns1",
-    "host IN HTTPS 1 . alpn=h2",
-    "host IN CAA 0 issue \"x\"",
-    "host IN FOO 1.2.3.4",
-    "host IN A 10.0.0.1 ; comment",
-    "; only comment",
-    "host IN A ( 10.0.0.1 )",
-    "host IN SOA ns admin ( 1 2 3 4 5 )",
-    "host IN SOA ns admin ( 1 2 3 4 5",
-    "*.lan IN A 10.0.0.1",
-    "host.lan. IN A 10.0.0.1",
-    "ho st IN A 1.1.1.1",
-    "host IN A 1.1.1.1 extra",
-    "host IN CH A 1.1.1.1",
-    "host CH A 1.1.1.1",
-    "host CLASS1 A 1.1.1.1",
-    "host TYPE1 1.1.1.1",
-    "host IN TYPE1 \\# 4 0a000001",
-    "host 2147483648 A 1.1.1.1",
-    "host 4294967296 A 1.1.1.1",
-    "10",
-    "example.com",
-    "a b",
-    "host IN A 1.1.1.1\n\n\nh2 IN A 1.1.1.2",
-    "\thost IN A 1.1.1.1",
-    "host\tIN\tA\t1.1.1.1",
-    "host IN MX 70000 mail",
-    "host IN A 01.1.1.1",
-    "host IN AAAA fe80::1%em0",
-    "host IN CNAME .",
-    "host IN SRV 0 5 70000 sip",
-    "host IN A 1.1.1.1\r\nh2 IN A 1.1.1.2",
-    "host IN TXT \"a\" \"b\"",
-    "host IN TXT \"a\\\"b\"",
-    "host IN A 1.1.1.1 )",
-    "host IN NS ns1 ; c\n  IN NS ns2",
-    "$ORIGIN .\nhost A 1.1.1.1",
-    "@ A 1.1.1.1\n$ORIGIN x.\n@ A 1.1.1.2",
-    "h.lan. IN A 10.0.0.1",
-    "h.lan. A 10.0.0.1",
-    "h.lan. 300 IN A 10.0.0.1",
-    "h.lan. IN 300 A 10.0.0.1",
-    "h.lan. 1h A 10.0.0.1",
-    "h.lan. 1W2D A 10.0.0.1",
-    "h.lan. a 10.0.0.1",
-    "h.lan. in a 10.0.0.1",
-    "h.lan. IN A 10.0.0.1\n  IN A 10.0.0.2",
-    "$TTL 3600\nh.lan. A 10.0.0.1",
-    "$TTL 1h\nh.lan. A 10.0.0.1",
-    "$TTL\nh.lan. A 1.1.1.1",
-    "$GENERATE 1-2 h$.lan. A 10.0.0.$",
-    "$ORIGIN lan.\n@ A 1.1.1.1",
-    "$ORIGIN lan.\nh A 1.1.1.1\n$ORIGIN x.\nh A 1.1.1.2",
-    "$origin lan.\nh A 1.1.1.1",
-    "$ttl 60\nh.lan. A 1.1.1.1",
-    "h.lan. IN A 10.0.0.256",
-    "h.lan. IN A ::1",
-    "h.lan. IN AAAA ::1",
-    "h.lan. IN AAAA 10.0.0.1",
-    "h.lan. IN A",
-    "h.lan. IN",
-    "h.lan. IN CNAME other",
-    "h.lan. IN CNAME other.lan.",
-    "h.lan. IN CNAME bad name",
-    "h.lan. IN MX 10 mail.lan.",
-    "h.lan. IN MX mail.lan.",
-    "h.lan. IN TXT \"hello world\"",
-    "h.lan. IN TXT hello",
-    "h.lan. IN TXT \"unterminated",
-    "h.lan. IN SRV 0 5 5060 sip.lan.",
-    "h.lan. IN SRV 0 5 sip.lan.",
-    "h.lan. IN PTR x.lan.",
-    "h.lan. IN NS ns1.lan.",
-    "h.lan. IN HTTPS 1 . alpn=h2",
-    "h.lan. IN CAA 0 issue \"x\"",
-    "h.lan. IN FOO 1.2.3.4",
-    "h.lan. IN A 10.0.0.1 ; comment",
-    "h.lan. IN A ( 10.0.0.1 )",
-    "h.lan. IN A (\n 10.0.0.1 )",
-    "h.lan. IN SOA ns.lan. admin.lan. ( 1 2 3 4 5 )",
-    "h.lan. IN SOA ns.lan. admin.lan. ( 1 2 3 4 5",
-    "*.lan. IN A 10.0.0.1",
-    "h.lan. IN A 1.1.1.1 extra",
-    "h.lan. IN CH A 1.1.1.1",
-    "h.lan. CH A 1.1.1.1",
-    "h.lan. CLASS1 A 1.1.1.1",
-    "h.lan. TYPE1 1.1.1.1",
-    "h.lan. IN TYPE1 \\# 4 0a000001",
-    "h.lan. 2147483648 A 1.1.1.1",
-    "h.lan. 4294967296 A 1.1.1.1",
-    "\th.lan. IN A 1.1.1.1",
-    "h.lan.\tIN\tA\t1.1.1.1",
-    "h.lan. IN MX 70000 mail.lan.",
-    "h.lan. IN A 01.1.1.1",
-    "h.lan. IN AAAA fe80::1%em0",
-    "h.lan. IN CNAME .",
-    "h.lan. IN SRV 0 5 70000 sip.lan.",
-    "h.lan. IN TXT \"a\" \"b\"",
-    "h.lan. IN A 1.1.1.1 )",
-    "h.lan. IN NS ns1.lan. ; c\n  IN NS ns2.lan.",
-    "h..lan. A 1.1.1.1",
-    "h_x.lan. A 1.1.1.1",
-    "h.lan. A 1.1.1",
-    "h.lan. IN A 1.1.1.1\nh.lan. A 1.1.1.2",
-    "h.lan. 60 A 1.1.1.1\nx.lan. A 1.1.1.2",
-    "h.lan. IN A 1.1.1.1\n  1.1.1.2",
-    "h.lan. IN A 1.1.1.1 ; x (",
-    "h.lan. IN TXT \"a;b\"",
-    "h.lan. IN TXT \"a(b\"",
-    "h.lan. IN MX 10 mail",
-    "h.lan. IN AAAA ::ffff:1.2.3.4",
-    "h.lan. IN A 1.1.1.1\\",
-    "\\@.lan. A 1.1.1.1",
-    "h.lan. IN DS 1 2 3 ABCD",
-    "h.lan. IN OPT 1",
-    "h.lan. IN ANY 1.1.1.1",
-    "h.lan. IN SPF \"v=spf1\"",
-    "h.lan. IN NULL",
-    "h.lan. IN A 1.1.1.1 1.1.1.2",
-]
-
 # enough values from each sweep to build rich baselines and random combinations from
 SEED = 20260925
 RANDOM_CASES = 400
@@ -228,6 +72,8 @@ def model_fields():
                 arrays[ref] = [(f.tag, f) for f in child]
             elif kind == "CertificateField":
                 continue  # needs core's trust store, which the harness has not got
+            elif ref == "general.customZone":
+                continue  # left to Blocky, which checks it before Apply puts it in place
             elif kind:
                 scalars[ref] = child
             else:
@@ -290,7 +136,8 @@ class Renderer:
             handle.write(xml)
         self.engine.set_config(self.config.Config(path).get())
         self.engine._generate("OPNsense/Blocky")
-        with open(os.path.join(self.target, "usr", "local", "etc", "blocky", "config.yml")) as handle:
+        # staged: Blocky's start puts it in place once Blocky takes it (deploy.sh)
+        with open(os.path.join(self.target, "usr", "local", "etc", "blocky", "config.yml.staging")) as handle:
             return handle.read()
 
 
@@ -441,10 +288,11 @@ class BlockyValidates(unittest.TestCase):
         with concurrent.futures.ThreadPoolExecutor(8) as pool:
             reasons = pool.map(lambda item: blocky_validate(item[0]), configs.values())
             for (text, where, value), reason in zip(configs.values(), reasons):
-                if reason is not None:
-                    failures.setdefault(where, []).append((value, reason))
-                else:
+                if reason is None:
                     valid.append((text, where, value))
+                # whether a file the model allows exists is for Apply to say, which runs blocky validate
+                elif not re.search(r"failed to read secret file .*: no such file or directory", reason):
+                    failures.setdefault(where, []).append((value, reason))
 
         # a config Blocky runs must import: the importer's output, applied as importAction does
         with concurrent.futures.ProcessPoolExecutor(os.cpu_count() or 2) as pool:
@@ -457,19 +305,6 @@ class BlockyValidates(unittest.TestCase):
             f"    {value!r}: {reason}" for value, reason in found[:3]) for where, found in failures.items())
         self.assertFalse(failures, f"Blocky rejects settings the model accepts in {len(failures)} field(s) "
                                    f"({len(configs)} distinct configs checked):\n{report}")
-
-    def test_zone_check_matches_blocky(self):
-        """Stricter than Blocky refuses a working config on import; looser lets Blocky fail to start."""
-        results = run_model([{"fields": {"general.customZone": zone}, "rows": {}} for zone in ZONES])
-        mismatches = []
-        for zone, (messages, _) in zip(ZONES, results):
-            text = ("upstreams:\n  groups:\n    default: [1.1.1.1]\ncustomDNS:\n  zone: |2\n" +
-                    "".join("    " + line + "\n" for line in zone.replace("\r", "").split("\n")))
-            blocky = blocky_validate(text)
-            model = messages.get("general.customZone")
-            if (blocky is None) != (model is None):
-                mismatches.append(f"{zone!r}: blocky {blocky or 'accepts'}; model {model or 'accepts'}")
-        self.assertFalse(mismatches, "\n".join(mismatches))
 
 
 @unittest.skipUnless(CORE and shutil.which("php"), "needs OPNSENSE_CORE and php")
@@ -484,6 +319,43 @@ class ModelRefuses(unittest.TestCase):
         rows.setdefault("upstreams", [self.UPSTREAM])
         return run_model([{"fields": dict(self.DEFAULT, **(fields or {})), "rows": rows}])[0][0]
 
+    def test_spaces_around_list_items(self):
+        # as pasted or sent: the template, the model's own checks and Blocky trim each item
+        anchor = ". 172800 IN DNSKEY 257 3 8 AwEAA"
+        fields = {"dnssec.validate": "1", "dnssec.trustAnchors": anchor + ", " + anchor + ", ",
+                  "queryLog.ignoreDomains": "a.com, *.b.com, ", "queryLog.ignoreClients": "10.0.0.1, nas, ",
+                  "redis.address": "m", "redis.sentinelAddresses": "h1:26379, h2:26379, "}
+        found = self.messages(fields, conditional=[{"enabled": "1", "domain": "lan", "resolver": "10.0.0.1, 10.0.0.2"}])
+        for field in list(fields) + ["conditional.0.resolver"]:
+            self.assertNotIn(field, found)
+        found = self.messages({"queryLog.ignoreClients": "10.0.0.1, a b", "redis.address": "m",
+                               "redis.sentinelAddresses": "h1:26379, /tmp/s.sock"},
+                              conditional=[{"enabled": "1", "domain": "lan", "resolver": "10.0.0.1, "}])
+        for field in ("queryLog.ignoreClients", "redis.sentinelAddresses", "conditional.0.resolver"):
+            self.assertIn(field, found)
+
+    def test_trust_anchors(self):
+        def refused(anchor):
+            return "dnssec.trustAnchors" in self.messages({"dnssec.validate": "1", "dnssec.trustAnchors": anchor})
+        for anchor in (". 172800 IN DNSKEY 257 3 8 AwEAAaz/tAm8yTn4Mfeh AwEB", "@ 2d IN DNSKEY 257 3 13 mdss ; corp KSK",
+                       "example. IN 3600 DNSKEY 257 3 13 mdsswUyr3DPW132mOi8V9xESWE8jTo0dxCjjnopKl+GqJ=="):
+            self.assertFalse(refused(anchor), anchor)
+        # the first DNSKEY is the record, and a key may run over lines
+        self.assertFalse(refused(". 172800 IN DNSKEY 257 3 8 AwEAA\nAwEB"))
+        for anchor in (". 172800 IN DNSKEY 256 3 8 AwEAA", ". 172800 IN DNSKEY 256 3 8 AwEAA DNSKEY 257 3 8 AwEAA",
+                       "DNSKEY 257 3 8 AwEAA", ". 172800 IN DS 20326 8 2 E06D44B8"):
+            self.assertTrue(refused(anchor), anchor)
+
+    def test_dnssec_limits_blocky_reads_as_defaults(self):
+        for field in ("dnssec.cacheExpirationHours", "dnssec.maxNSEC3Iterations"):
+            self.assertIn(field, self.messages({field: "0"}), field)
+
+    def migrated(self, fields, migrations=("M1_0_6",), **rows):
+        """Migrations on values as an earlier version stored them: (messages, config.xml as saved)."""
+        rows.setdefault("upstreams", [self.UPSTREAM])
+        messages, xml = run_model([{"fields": fields, "rows": rows, "migrate": list(migrations)}])[0]
+        return messages, ET.fromstring(xml) if xml else None
+
     def test_what_blocky_exits_on(self):
         self.assertIn("general.blockType", self.messages({"general.blockType": "beef"}))
         self.assertIn("general.blockType", self.messages({"general.blockType": "999.1.1.1"}))
@@ -491,24 +363,6 @@ class ModelRefuses(unittest.TestCase):
         self.assertIn("queryLog.flushInterval", self.messages({"queryLog.type": "mysql", "queryLog.target": "u:p@tcp(db)/b",
                                                                "queryLog.flushInterval": "0s"}))
         self.assertIn("queryLog.flushInterval", self.messages({"queryLog.type": "sqlite", "queryLog.flushInterval": "0m0s"}))
-        # the server could read any file Blocky can, as root
-        self.assertIn("queryLog.target", self.messages({"queryLog.type": "mysql",
-                                                        "queryLog.target": "u:p@tcp(db)/b?allowAllFiles=true"}))
-        self.assertIn("queryLog.target", self.messages({"queryLog.type": "postgresql",
-                                                        "queryLog.target": "postgres://u@db/b?sslkey=/root/k.pem"}))
-        self.assertNotIn("queryLog.target", self.messages({"queryLog.type": "postgresql",
-                                                           "queryLog.target": "postgres://u@db/b?sslmode=require"}))
-        # the template drops a carriage return, and trims a hosts source as Python does, so a check
-        # would not see what Blocky reads: such values are refused outright
-        self.assertIn("queryLog.target", self.messages({"queryLog.type": "mysql",
-                                                        "queryLog.target": "u:p@tcp(db)/b?allowAll\rFiles=true"}))
-        redis = {"redis.address": "10.0.0.1:6379"}
-        self.assertIn("redis.password", self.messages(dict(redis, **{"redis.password": "fi\rle:/etc/master.passwd"})))
-        self.assertIn("redis.address", self.messages({"redis.address": "\r/var/run/configd.socket"}))
-        for source in ("\u2003/etc/master.passwd", "\x1f/etc/master.passwd", "/usr/local/etc/blocky/lists/\r../x"):
-            self.assertIn("hostsFile.sources", self.messages({"hostsFile.sources": source}), repr(source))
-        # spaces and tabs around an entry are trimmed, as core's HostnameField trims
-        self.assertNotIn("hostsFile.sources", self.messages({"hostsFile.sources": " /etc/hosts\t, 10.0.0.1 host.lan "}))
         self.assertNotIn("queryLog.flushInterval", self.messages({"queryLog.type": "csv", "queryLog.flushInterval": "0s"}),
                          "only a database log writes on a timer")
         self.assertIn("upstreams.1.server", self.messages(upstreams=[self.UPSTREAM, dict(self.UPSTREAM, server="tcp-tls:dns.quad9.net.")]))
@@ -525,9 +379,93 @@ class ModelRefuses(unittest.TestCase):
         self.assertIn("general.timeout", self.messages({"general.timeout": "2562048h"}))
 
     def test_a_key_given_twice_names_a_row(self):
-        rows = [{"enabled": "1", "fromDomain": "a.lan", "toDomain": "b.lan"}, {"enabled": "1", "fromDomain": "a.lan", "toDomain": "c.lan"}]
+        rows = [{"enabled": "1", "fromDomain": "a.lan", "toDomain": "b.lan"}, {"enabled": "1", "fromDomain": "A.lan.", "toDomain": "c.lan"}]
         found = self.messages(customdnsrewrite=rows)
         self.assertIn("customdnsrewrite.1.fromDomain", found, "a dialog shows the message on the row it edits")
+        # stored twice by an earlier version: the template keeps the first, and a save of anything
+        # else, such as an upgrade's, goes through
+        messages, _ = self.migrated({}, customdnsrewrite=rows)
+        self.assertEqual(messages, {})
+
+    def test_an_upgrade_gives_dnssec_limits_their_defaults(self):
+        messages, root = self.migrated({"dnssec.cacheExpirationHours": "0", "dnssec.maxNSEC3Iterations": "0"})
+        self.assertEqual(messages, {})
+        self.assertEqual(root.findtext(".//dnssec/cacheExpirationHours"), "1")
+        self.assertEqual(root.findtext(".//dnssec/maxNSEC3Iterations"), "150")
+
+    def test_a_schedule_that_ends_where_it_starts(self):
+        row = {"enabled": "1", "name": "kids", "weekdays": "mon", "groups": "ads", "start": "00:00", "end": "00:00"}
+        lists = [{"enabled": "1", "group": "ads", "source": "ads.example.com"}]
+        self.assertIn("schedules.0.end", self.messages(schedules=[row], denylists=lists))
+        self.assertNotIn("schedules.0.end", self.messages(schedules=[dict(row, end="06:00")], denylists=lists))
+
+    def test_a_dnstap_target_blocky_parses(self):
+        """Blocky parses the target only once it serves (querylog/dnstap_writer.go parseDnstapTarget)."""
+        def refused(target):
+            return "queryLog.target" in self.messages({"queryLog.type": "dnstap", "queryLog.target": target})
+        for target in ("tcp://127.0.0.1:6000", "tcp://[::1]:6000", "tcp://collector.lan:6000",
+                       "file:/usr/local/etc/blocky/secrets/dnstap"):
+            self.assertFalse(refused(target), target)
+        # Blocky would connect to a Unix socket as root, so none is taken
+        for target in ("127.0.0.1:6000", "tcp://", "tcp://127.0.0.1", "tcp://:6000", "tcp://::1:6000", "tcp://[::1]",
+                       "unix:/var/run/configd.socket", "/var/run/dnstap.sock", "TCP://127.0.0.1:6000",
+                       "file:/etc/master.passwd"):
+            self.assertTrue(refused(target), target)
+        self.assertNotIn("queryLog.target", self.messages({"queryLog.type": "mysql", "queryLog.target": "u:p@tcp(db)/b"}))
+
+    def test_files_and_sockets_blocky_reads_as_root(self):
+        lists = [{"enabled": "1", "group": "ads", "source": "/etc/master.passwd"}]
+        self.assertIn("denylists.0.source", self.messages(denylists=lists))
+        self.assertIn("hostsFile.sources", self.messages({"hostsFile.sources": "/etc/hosts,/etc/master.passwd"}))
+        self.assertNotIn("hostsFile.sources", self.messages({"hostsFile.sources": "/etc/hosts"}))
+        self.assertIn("bootstrap.0.content", self.messages(bootstrap=[{"enabled": "1", "type": "resolvfile",
+                                                                       "content": "/etc/resolv.conf"}]))
+        self.assertIn("redis.address", self.messages({"redis.address": "/var/run/configd.socket"}))
+        self.assertNotIn("redis.address", self.messages({"redis.address": "/var/run/redis/redis.sock"}))
+        self.assertIn("redis.sentinelAddresses", self.messages({"redis.address": "m", "redis.sentinelAddresses": "s:1,/x"}))
+        self.assertIn("redis.password", self.messages({"redis.address": "r:6379", "redis.password": "file:/etc/master.passwd"}))
+
+    def test_an_upgrade_from_before_the_directories_switches_off_what_is_outside(self):
+        """Values stored before 1.4_4, as the model then took them (M1_0_1, M1_0_3)."""
+        messages, root = self.migrated(
+            {"hostsFile.sources": "/etc/hosts,/etc/master.passwd", "redis.address": "/var/run/configd.socket",
+             "redis.required": "1", "redis.password": "file:/etc/master.passwd", "queryLog.type": "dnstap",
+             "queryLog.target": "unix:/var/run/configd.socket",
+             "general.customZone": "$INCLUDE /etc/master.passwd\nnas.lan. 60 IN A 10.0.0.1",
+             "redis.sentinelAddresses": "/tmp/s.sock, host2:26379, "},
+            ("M1_0_1", "M1_0_3"),
+            denylists=[{"enabled": "1", "group": "ads", "source": "/etc/master.passwd"},
+                       {"enabled": "1", "group": "ads", "source": "https://example.com/ads.txt"}],
+            bootstrap=[{"enabled": "1", "type": "resolvfile", "content": "/etc/resolv.conf"}])
+        self.assertEqual(messages, {})
+        self.assertEqual([row.findtext("enabled") for row in root.iter("denylists")], ["0", "1"])
+        self.assertEqual(root.findtext(".//hostsFile/sources"), "/etc/hosts")
+        self.assertEqual([row.findtext("enabled") for row in root.iter("bootstrap")
+                          if row.find("type") is not None], ["0"])
+        self.assertEqual((root.findtext(".//redis/address"), root.findtext(".//redis/required"),
+                          root.findtext(".//redis/password")), ("", "0", ""))
+        self.assertEqual(root.findtext(".//queryLog/type"), "none")
+        self.assertEqual(root.findtext(".//general/customZone"), "nas.lan. 60 IN A 10.0.0.1")
+        self.assertEqual(root.findtext(".//redis/sentinelAddresses"), "host2:26379")
+
+    def test_an_import_of_what_blocky_runs_saves(self):
+        """importAction saves nothing when the model refuses any imported value."""
+        for text in ("upstreams:\n  groups:\n    default: [1.1.1.1]\ncustomDNS:\n  rewrite:\n    Fritz.Box: fritz.lan\n"
+                     "    fritz.box: other.lan\n    fritz.box.: third.lan\n",
+                     "upstreams:\n  groups:\n    default: [1.1.1.1]\nblocking:\n  denylists:\n"
+                     "    ads: [https://example.com/ads.txt]\n  clientGroupsBlock:\n    default: [ads]\n  schedules:\n"
+                     "    never:\n      weekdays: [mon]\n      start: '00:00'\n      end: '00:00'\n"
+                     "  listSchedules:\n    ads: [never]\n",
+                     "upstreams:\n  groups:\n    default: [1.1.1.1]\nblocking:\n  denylists:\n    ads: [ads.example.com]\n"
+                     "    kids: [https://example.com/k.txt]\n  clientGroupsBlock:\n    default: [ads, kids]\n"
+                     "    10.0.0.5: [ads]\n  schedules:\n    work:\n      weekdays: [mon]\n  listSchedules:\n    ads: [work]\n",
+                     'upstreams:\n  groups:\n    default: [1.1.1.1]\nredis:\n  address: "r:6379\\r"\n  password: "pa\\nss"\n'
+                     'hostsFile:\n  sources:\n    - "/usr/local/etc/blocky/lists/a\\x01b"\n'
+                     'blocking:\n  denylists:\n    ads: ["a\\x7fb.com\\nads.example.com\\n"]\n'
+                     'queryLog:\n  type: mysql\n  target: "u:p@tcp(db)/b\\n"\n'):
+            if BLOCKY:
+                self.assertIsNone(blocky_validate(text), text)
+            self.assertEqual(run_model([imported(text)])[0][0], {}, text)
 
     def test_the_last_default_upstream(self):
         found = self.messages(upstreams=[dict(self.UPSTREAM, group="lan")])

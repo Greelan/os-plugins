@@ -50,7 +50,6 @@ import os
 import re
 import stat
 import sys
-import urllib.parse
 
 # PyYAML is vendored under lib/ (pure-Python, pinned in lib/VENDOR), so no pkg dependency is needed.
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
@@ -72,7 +71,14 @@ FALSY = ("n", "no", "false", "off", "0")
 
 class TextLoader(yaml.SafeLoader):
     """Plain scalars as text, null apart: blocky's yaml.v2 keeps a string field's spelling (a
-    password 0000, a client on:) where YAML 1.1 reads a number, a bool or a date."""
+    password 0000, a client on:) where YAML 1.1 reads a number, a bool or a date. An alias is
+    refused: a few of them can repeat a block of entries without end, and the importer runs as root."""
+
+    def compose_node(self, parent, index):
+        if self.check_event(yaml.AliasEvent):
+            raise yaml.composer.ComposerError(None, None, "aliases are not imported; write the entries out",
+                                              self.peek_event().start_mark)
+        return super().compose_node(parent, index)
 
 
 TextLoader.yaml_implicit_resolvers = {
@@ -88,18 +94,28 @@ def load(stream):
 # blocky takes a fractional duration, e.g. 1.5s; the model's masks want whole numbers per unit
 DURATION_UNITS = (("h", 3600 * 10 ** 9), ("m", 60 * 10 ** 9), ("s", 10 ** 9), ("ms", 10 ** 6), ("us", 10 ** 3),
                   ("ns", 1))
-DURATION_RE = re.compile(r"^((\d+(\.\d*)?|\.\d+)(ns|us|µs|μs|ms|s|m|h))+$")
+DURATION_RE = re.compile(r"^((\d+(\.\d*)?|\.\d+)(ns|us|µs|μs|ms|s|m|h))+$", re.ASCII)
+
+
+def duration_ns(text):
+    """A Go duration in nanoseconds, a bare number in minutes as blocky reads it, or None."""
+    if text.isascii() and text.isdigit():
+        return int(text) * 60 * 10 ** 9
+    if not DURATION_RE.match(text):
+        return None
+    total = 0
+    for number, _, unit in re.findall(r"(\d+(\.\d*)?|\.\d+)(ns|us|µs|μs|ms|s|m|h)", text, re.ASCII):
+        scale = dict(DURATION_UNITS)["us" if unit in ("µs", "μs") else unit]
+        whole, _, fraction = number.partition(".")
+        total += int(whole or 0) * scale + (int((fraction + "0" * 9)[:9]) * scale) // 10 ** 9
+    return total
 
 
 def whole_duration(text):
     """A Go duration rewritten with whole numbers per unit, or the text as it was."""
     if not DURATION_RE.match(text) or ("." not in text and "µ" not in text and "μ" not in text):
         return text
-    total = 0
-    for number, _, unit in re.findall(r"(\d+(\.\d*)?|\.\d+)(ns|us|µs|μs|ms|s|m|h)", text):
-        scale = dict(DURATION_UNITS)["us" if unit in ("µs", "μs") else unit]
-        whole, _, fraction = number.partition(".")
-        total += int(whole or 0) * scale + (int((fraction + "0" * 9)[:9]) * scale) // 10 ** 9
+    total = duration_ns(text)
     parts = []
     for unit, scale in DURATION_UNITS:
         if total >= scale:
@@ -109,18 +125,57 @@ def whole_duration(text):
 
 
 # download settings blocky applies to the sources
-DOWNLOAD_FIELDS = (
-    ("timeout", "downloadTimeout"),
-    ("attempts", "downloadAttempts"),
-    ("cooldown", "downloadCooldown"),
-)
-
 # files blocky may read from disk live here (and /etc/hosts for hosts files)
 LIST_DIR = "/usr/local/etc/blocky/lists/"
 # and a secret blocky reads from a file: value lives here
 SECRET_DIR = "/usr/local/etc/blocky/secrets/"
 # the one unix socket blocky may use for redis: the one the Redis plugin opens
 REDIS_SOCKET = "/var/run/redis/redis.sock"
+
+
+def in_directory(path, directory):
+    rest = path[len(directory):] if path.startswith(directory) else ""
+    return rest != "" and all(part not in ("", ".", "..") for part in rest.split("/"))
+
+
+def allowed_file(source, extra=()):
+    """A URL or inline entry, or a file the plugin lets blocky read; mirrors the model."""
+    path = source[7:] if source.lower().startswith("file://") else source
+    if path == source and (not source.startswith("/") or source.endswith("/")):
+        return True
+    return path in extra or in_directory(path, LIST_DIR)
+
+
+def allowed_secret(value):
+    """A literal secret, or a file: value naming a file in the secrets directory; mirrors the model."""
+    for prefix in ("file://", "file:"):
+        if value.startswith(prefix):
+            return in_directory(value[len(prefix):], SECRET_DIR)
+    return True
+
+
+def line_break(value):
+    """Fields that take one line refuse a line break."""
+    return "\n" in value or "\r" in value
+
+
+# the list and hosts source fields refuse these, and yaml.v2 a written one
+CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def dnstap_target(value):
+    """tcp:// and a host and port as Go's SplitHostPort takes them, or an allowed file: secret;
+    mirrors the model, which takes no unix socket."""
+    if value.startswith("file:"):
+        return allowed_secret(value)
+    return value.startswith("tcp://") and re.fullmatch(r"(\[[^\[\]]+\]|[^:\[\]]+):[^:\[\]]+", value[6:]) is not None
+
+
+DOWNLOAD_FIELDS = (
+    ("timeout", "downloadTimeout"),
+    ("attempts", "downloadAttempts"),
+    ("cooldown", "downloadCooldown"),
+)
 
 # blocky takes these from blocking.loading.downloads for its own HTTP server
 SERVER_TIMEOUT_FIELDS = (
@@ -157,7 +212,7 @@ SCHEMA = {
                 "prefetchExpires", "prefetchThreshold", "prefetchMaxItemsCount", "exclude"},
     "queryLog": {"target", "type", "logRetentionDays", "creationAttempts",
                  "creationCooldown", "fields", "flushInterval", "ignore"},
-    "queryLog.ignore": {"sudn", "domains"},
+    "queryLog.ignore": {"sudn", "domains", "clients"},
     "redis": {"address", "username", "password", "database", "required",
               "connectionAttempts", "connectionCooldown", "sentinelUsername",
               "sentinelPassword", "sentinelAddresses"},
@@ -166,7 +221,7 @@ SCHEMA = {
     "conditional": {"mapping", "rewrite", "fallbackUpstream"},
     "clientLookup": {"clients", "upstream", "singleNameOrder"},
     "filtering": {"queryTypes"},
-    "prometheus": {"enable", "path"},
+    "prometheus": {"enable", "path", "enableClientLabel"},
     "pprof": {"enable"},
     "statistics": {"enable"},
     "rateLimit": {"enable", "rate", "burst", "ipv4Prefix", "ipv6Prefix", "allowlist"},
@@ -238,52 +293,37 @@ MOVES = (
     ("hostsFile.refreshPeriod", "hostsFile.loading.refreshPeriod"),
 )
 
+# blocky's defaults for the keys a deprecated one moves to; the others default to empty
+MOVE_DEFAULTS = {
+    "upstreams.timeout": "2s", "upstreams.init.strategy": "blocking", "ports.dns": "53",
+    "log.level": "info", "log.format": "text", "log.privacy": "false",
+    "blocking.loading.downloads.timeout": "5s", "blocking.loading.downloads.attempts": "3",
+    "blocking.loading.downloads.cooldown": "500ms", "blocking.loading.refreshPeriod": "4h",
+    "blocking.loading.concurrency": "4", "blocking.loading.strategy": "blocking",
+    "blocking.loading.maxErrorsPerSource": "5", "hostsFile.loading.refreshPeriod": "4h",
+}
 
-def allowed_file(source, extra=()):
-    """A URL or inline entry, or a file the plugin lets blocky read; mirrors the model."""
-    path = source[7:] if source.lower().startswith("file://") else source
-    if path == source and (not source.startswith("/") or source.endswith("/")):
+
+def at_default(key, value):
+    """Whether blocky takes this value of a key as the key's default, as its migrations check; an
+    explicit {} or [] differs from an absent one there."""
+    if value is None or value == "":
         return True
-    return path in extra or in_directory(path, LIST_DIR)
-
-
-def in_directory(path, directory):
-    rest = path[len(directory):] if path.startswith(directory) else ""
-    return rest != "" and all(part not in ("", ".", "..") for part in rest.split("/"))
-
-
-def zone_without_includes(zone):
-    """The zone with its $INCLUDE lines removed, and whether there were any; mirrors the model, which
-    checks the zone as the template writes it, without carriage returns."""
-    zone = zone.replace("\r", "")
-    stripped = re.sub(r"^\s*\$INCLUDE\b.*(\r?\n|$)", "", zone, flags=re.I | re.M)
-    return stripped, stripped != zone
-
-
-def database_target(value):
-    """A database target naming no file for blocky to read; a file: value is root's own. Mirrors the
-    model: a key starts the string or follows ?, & or the whitespace PostgreSQL separates keywords with."""
-    return value.startswith("file:") or not re.search(
-        r"(^|[?&\t\n\v\f\r ])(allowAllFiles|sslcert|sslkey|sslrootcert|passfile|servicefile)[\t\n\v\f\r ]*=",
-        urllib.parse.unquote_plus(value), re.I)
-
-
-# a hosts file source, as the model's mask has it: no control characters, nothing a trim removes around it
-SPACES = "\x20\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000"
-HOSTS_SOURCE = re.compile("[^\x00-\x1f\x7f-\x9f%s]([^\x00-\x1f\x7f-\x9f]*[^\x00-\x1f\x7f-\x9f%s])?" % (SPACES, SPACES))
-
-
-def dnstap_target(value):
-    """A tcp:// address or an allowed file: secret; blocky's own prefix check is case-sensitive."""
-    return value.startswith("tcp://") or (value.startswith("file:") and allowed_secret(value))
-
-
-def allowed_secret(value):
-    """A literal secret, or a file: value naming a file in the secrets directory; mirrors the model."""
-    for prefix in ("file://", "file:"):
-        if value.startswith(prefix):
-            return in_directory(value[len(prefix):], SECRET_DIR)
-    return True
+    if value in ([], {}):
+        return False
+    if key == "ports.dns" and isinstance(value, (list, str, int)) and not isinstance(value, bool):
+        # blocky reads a list or comma separated ports, and puts a colon before a bare port
+        ports = [str(port) for port in value] if isinstance(value, list) else str(value).split(",")
+        return [port if ":" in port else ":" + port for port in ports] == [":53"]
+    default = MOVE_DEFAULTS.get(key)
+    if default is None or isinstance(value, (list, dict)):
+        return False
+    text = str(value).strip().lower()
+    if default == "false":
+        return text in FALSY
+    if not (default.isascii() and default.isdigit()) and duration_ns(default) is not None:
+        return duration_ns(text) == duration_ns(default)
+    return text == default
 
 
 class Mapper:
@@ -294,6 +334,8 @@ class Mapper:
         self.seen = set()
         self.skipped = []
         self.warnings = []
+        # keys found empty, each warned about once
+        self.emptied: set = set()
 
     # -- value helpers -----------------------------------------------------
     def _bool(self, value, label):
@@ -421,13 +463,18 @@ class Mapper:
             return
         value = (transform or self._scalar)(value, label)
         if not value:
-            return  # an empty key is an absent one: the import starts from the defaults
-        if value.startswith("-") and "%s.%s" % (section, field) in NEGATIVE_FIELDS:
-            value = "-1"
-        elif "%s.%s" % (section, field) in DURATION_FIELDS:
+            return  # the import starts from the defaults
+        if "%s.%s" % (section, field) in DURATION_FIELDS and value[:1] in ("+", "-"):
+            # Go reads +d as d and -0 as 0; blocky only checks the sign of a NEGATIVE_FIELDS one
+            if value[0] == "+" or duration_ns(value[1:]) == 0:
+                value = value[1:]
+            elif "%s.%s" % (section, field) in NEGATIVE_FIELDS:
+                self.scalars.setdefault(section, {})[field] = "-1"
+                return
+        if "%s.%s" % (section, field) in DURATION_FIELDS:
             if value == "0" and "%s.%s" % (section, field) in BARE_ZERO_FIELDS:
                 pass  # the field's own spelling for off
-            elif value.isdigit():
+            elif value.isascii() and value.isdigit():
                 self.warnings.append("%s: %s has no unit; imported as %sm, the way blocky reads it."
                                      % (label, value, value))
                 value += "m"
@@ -435,8 +482,29 @@ class Mapper:
                 value = whole_duration(value)
         self.scalars.setdefault(section, {})[field] = value
 
+    def _empty(self, parts):
+        """The key on this path that is present but empty, if any: a null section or value, or an
+        empty text or list, which blocky reads as its zero value rather than its default."""
+        node = self.doc
+        for depth, key in enumerate(parts):
+            if not isinstance(node, dict) or key not in node:
+                return None
+            node = node[key]
+            if node is None or (depth == len(parts) - 1 and node in ("", [])):
+                return ".".join(parts[:depth + 1])
+        return None
+
     def _map(self, path, section, field, transform=None):
-        self._put(section, field, self._get(*path.split(".")), path, transform)
+        parts = path.split(".")
+        empty = self._empty(parts)
+        if empty is None:
+            self._put(section, field, self._get(*parts), path, transform)
+        elif transform == self._bool:
+            self.scalars.setdefault(section, {})[field] = "0"
+            self.warnings.append("%s: empty, which blocky reads as off; imported as off." % path)
+        elif empty not in self.emptied:
+            self.emptied.add(empty)
+            self.warnings.append("%s: empty, which blocky reads as zero or nothing; the default was kept." % empty)
 
     def _row(self, name, row, label):
         key = (name, tuple(sorted(row.items())))
@@ -480,7 +548,12 @@ class Mapper:
 
     # -- deprecated keys ---------------------------------------------------
     def _migrate(self):
-        """Move deprecated keys as blocky does, replacement wins when both are set."""
+        """Move deprecated keys as blocky does."""
+        # blocky applies it before blocking.startStrategy, which then counts the strategy as set
+        fail_start = self._pop("blocking.failStartOnListError")
+        if fail_start is not None and self._bool(fail_start, "blocking.failStartOnListError") == "1":
+            self._migrate_set("blocking.failStartOnListError", "blocking.loading.strategy",
+                              "failOnError")
         for old, new in MOVES:
             value = self._pop(old)
             if value is not None:
@@ -497,17 +570,14 @@ class Mapper:
         no_ipv6 = self._pop("disableIPv6")
         if no_ipv6 is not None and self._bool(no_ipv6, "disableIPv6") == "1":
             self._migrate_set("disableIPv6", "filtering.queryTypes", ["AAAA"])
-        fail_start = self._pop("blocking.failStartOnListError")
-        if fail_start is not None and self._bool(fail_start, "blocking.failStartOnListError") == "1":
-            self._migrate_set("blocking.failStartOnListError", "blocking.loading.strategy",
-                              "failOnError")
         file_path = self._pop("hostsFile.filePath")
         if file_path is not None:
             self._migrate_set("hostsFile.filePath", "hostsFile.sources", [file_path])
 
     def _migrate_set(self, old, new, value):
+        """blocky takes the deprecated value unless the new key holds something other than its default."""
         parts = new.split(".")
-        if self._get(*parts) is not None:
+        if not at_default(new, self._get(*parts)):
             self.warnings.append(
                 "%s: deprecated and %s is also set; the deprecated key was ignored." % (old, new))
             return
@@ -621,29 +691,54 @@ class Mapper:
                 self._row("bootstrap", {"enabled": "1", "type": "resolver", "content": upstream},
                           "bootstrapDns: %s" % upstream)
 
-    def _inline_sources(self, value):
-        """A list or hosts source may be a URL/path (single line) or a YAML block with several
-        inline entries; expand blocks into one row each, a tab as the space blocky reads it as."""
-        out = []
-        for line in value.splitlines():
-            line = line.strip().replace("\t", " ")
-            if line and not line.startswith("#"):
+    def _sources(self, value, label, extra=()):
+        """A list or hosts source as blocky reads it, in the form the settings read the same way: text
+        with a line break is inline entries, one per line, a tab as the space blocky reads it as; a
+        line starting with http is a download; anything else is a file, which only the list directory
+        (and extra) may hold."""
+        if isinstance(value, (dict, list, tuple)) or isinstance(value, bool) or value is None:
+            self._scalar(value, label)  # says why
+            return []
+        text = str(value)
+        if "\n" in text:
+            out = []
+            for line in text.splitlines():
+                line = line.strip().replace("\t", " ")
+                if not line or line.startswith("#"):
+                    continue
+                if CONTROL.search(line):
+                    self.warnings.append("%s: %r has control characters; not imported." % (label, line))
+                    continue
+                if line.startswith(("http://", "https://", "file://")) or (line.startswith("/") and not line.endswith("/")):
+                    # a single entry like this would be a download or a file to the settings
+                    self.warnings.append("%s: %s is a line of inline text to blocky, which matches no "
+                                         "name; not imported." % (label, line))
+                    continue
                 out.append(line)
-        return out
+            return out
+        text = text.strip()
+        if text.startswith("http") and not text.startswith(("http://", "https://")):
+            self.warnings.append("%s: blocky would download %s, which is no URL; not imported." % (label, text))
+            return []
+        path = text[len("file://"):] if text.startswith("file://") else text
+        if not text.startswith("http") and (not path.startswith("/") or path.endswith("/")):
+            self.warnings.append("%s: blocky reads %s as a file, which needs a full path to a file "
+                                 "here; not imported." % (label, text))
+            return []
+        if CONTROL.search(text):
+            self.warnings.append("%s: %r has control characters; not imported." % (label, text))
+            return []
+        if not allowed_file(text, extra):
+            self.warnings.append("%s: %s is a file outside %s; not imported." % (label, text, LIST_DIR.rstrip("/")))
+            return []
+        return [text]
 
     def _blocking(self):
         for yml_key, name in (("denylists", "denylists"), ("allowlists", "allowlists")):
             for group, sources in self._mapping("blocking.%s" % yml_key).items():
                 label = "blocking.%s.%s" % (yml_key, group)
                 for source in self._sequence(sources, label):
-                    text = self._scalar(source, label)
-                    if text is None:
-                        continue
-                    for one in self._inline_sources(text):
-                        if not allowed_file(one):
-                            self.warnings.append("%s: %s is a file outside %s; not imported."
-                                                 % (label, one, LIST_DIR.rstrip("/")))
-                            continue
+                    for one in self._sources(source, label):
                         self._row(name, {
                             "enabled": "1", "group": str(group), "source": one,
                         }, "%s: %s" % (label, one))
@@ -651,10 +746,16 @@ class Mapper:
             label = "blocking.clientGroupsBlock.%s" % client
             value = self._list(groups, label)
             name = self._client_key(client, label)
-            if value is not None and name is not None:
-                self._row("clientgroups", {
-                    "enabled": "1", "client": name, "groups": value,
-                }, label)
+            if value is None or name is None:
+                continue
+            kept = self._listed(value.split(","), label)
+            if not kept:
+                self.warnings.append("%s: none of its groups has a list; not imported%s." % (
+                    label, "" if name == "default" else ", so the default groups apply to this client"))
+                continue
+            self._row("clientgroups", {
+                "enabled": "1", "client": name, "groups": ",".join(kept),
+            }, label)
         self._map("blocking.blockType", "general", "blockType", self._list)
         self._map("blocking.blockTTL", "general", "blockTTL")
         self._map("blocking.loading.refreshPeriod", "general", "refreshPeriod")
@@ -666,18 +767,33 @@ class Mapper:
         self._download_cache("blocking.loading.downloads.cachePath", "general", "/var/cache/blocky/lists")
         self._schedules()
 
+    def _listed(self, groups, label):
+        """The groups that have a list: blocky only warns about one without, whose blocking never
+        applies, and the settings refuse it."""
+        listed = {row["group"].strip() for name in ("denylists", "allowlists") for row in self.arrays.get(name, [])}
+        kept = []
+        for group in groups:
+            if group.strip() in listed:
+                kept.append(group)
+            elif group.strip():
+                self.warnings.append("%s: group %s has no list; the reference was not imported." % (label, group))
+        return kept
+
     def _schedules(self):
         schedules = self._mapping("blocking.schedules")
         # invert group -> [schedule names] into schedule name -> [groups]
         sched_groups: dict = {}
         for group, names in self._mapping("blocking.listSchedules").items():
             label = "blocking.listSchedules.%s" % group
+            if not self._listed([str(group)], label):
+                continue
             for name in self._sequence(names, label):
                 if str(name) not in schedules:
                     self.warnings.append("%s: there is no schedule named %s; the reference "
                                          "was not imported." % (label, name))
                     continue
                 sched_groups.setdefault(str(name), []).append(str(group))
+        parsed = {}
         for name, spec in schedules.items():
             label = "blocking.schedules.%s" % name
             spec = self._as_mapping(spec, label)
@@ -685,24 +801,41 @@ class Mapper:
                 self.warnings.append("%s.%s: not recognized; not imported." % (label, key))
             weekdays = (self._list(spec.get("weekdays"), "%s.weekdays" % label) or "").lower()
             if weekdays == "":
-                # blocky requires weekdays too
+                # blocky only warns about a schedule without weekdays, which never applies
                 self.warnings.append("%s: no weekdays; not imported." % label)
                 continue
-            groups = sched_groups.get(str(name), [])
-            if not groups:
+            if not sched_groups.get(str(name)):
                 # the model needs a group, blocky allows an unused schedule
                 self.warnings.append("%s: no list group uses this schedule; not imported." % label)
                 continue
             start = self._timeofday(spec.get("start"), "%s.start" % label) or ""
             end = self._timeofday(spec.get("end"), "%s.end" % label) or ""
             if (start == "") != (end == ""):
-                # both or neither, as blocky requires
+                # blocky only warns about one without the other; the settings take both or neither
                 self.warnings.append("%s: a schedule needs both start and end, or neither; "
                                      "imported as all day." % label)
                 start = end = ""
+            parsed[str(name)] = (label, weekdays, start, end)
+        # blocky never opens a window that ends where it starts, which the settings refuse: a group
+        # with another schedule only loses it, as in blocky; one without gets it as all day
+        never = {name for name, (_, _, start, end) in parsed.items() if start != "" and start == end}
+        opens = {group for name in parsed if name not in never for group in sched_groups[name]}
+        for name, (label, weekdays, start, end) in parsed.items():
+            groups = sched_groups[name]
+            if name in never:
+                covered = [group for group in groups if group in opens]
+                groups = [group for group in groups if group not in opens]
+                if covered:
+                    self.warnings.append("%s: blocky never applies a schedule that ends where it starts, so %s "
+                                         "keeps only its other schedules." % (label, ", ".join(covered)))
+                if not groups:
+                    continue
+                self.warnings.append("%s: blocky never applies a schedule that ends where it starts; imported "
+                                     "as all day for %s." % (label, ", ".join(groups)))
+                start = end = ""
             self._row("schedules", {
                 "enabled": "1",
-                "name": str(name),
+                "name": name,
                 "groups": ",".join(groups),
                 "weekdays": weekdays,
                 "start": start,
@@ -745,6 +878,7 @@ class Mapper:
     def _prometheus_log(self):
         self._map("prometheus.enable", "general", "prometheus", self._bool)
         self._map("prometheus.path", "general", "prometheusPath")
+        self._map("prometheus.enableClientLabel", "general", "prometheusClientLabel", self._bool)
         self._map("pprof.enable", "general", "pprof", self._bool)
         self._map("log.level", "general", "logLevel", self._log_level)
         self._map("log.format", "general", "logFormat")
@@ -760,19 +894,9 @@ class Mapper:
                 self._row("customdns", {
                     "enabled": "1", "domain": str(domain), "ip": value,
                 }, label)
-        for src, dst in self._mapping("customDNS.rewrite").items():
-            label = "customDNS.rewrite.%s" % src
-            value = self._scalar(dst, label)
-            if value:
-                self._row("customdnsrewrite", {
-                    "enabled": "1", "fromDomain": str(src), "toDomain": value,
-                }, label)
+        self._rewrites("customDNS.rewrite", "customdnsrewrite")
         zone = self._zone_text(self._get("customDNS", "zone"), "customDNS.zone")
         if zone:
-            zone, included = zone_without_includes(zone)
-            if included:
-                self.warnings.append("customDNS.zone: $INCLUDE lines would make blocky read other files; "
-                                     "they were left out.")
             self._put("general", "customZone", zone, "customDNS.zone", lambda value, label: value)
 
     def _conditional(self):
@@ -784,42 +908,66 @@ class Mapper:
                 self._row("conditional", {
                     "enabled": "1", "domain": str(domain), "resolver": value,
                 }, label)
-        for src, dst in self._mapping("conditional.rewrite").items():
-            label = "conditional.rewrite.%s" % src
+        self._rewrites("conditional.rewrite", "conditionalrewrite")
+
+    def _rewrites(self, path, name):
+        """Rewrite keys as the settings match them, lowercase and without a trailing dot: blocky
+        keeps one of the keys that differ only in case, and the first of them is imported. Blocky
+        never matches a key with a trailing dot, so one without it is imported first."""
+        first: dict = {}
+        for src, dst in sorted(self._mapping(path).items(), key=lambda item: str(item[0]).strip().endswith(".")):
+            label = "%s.%s" % (path, src)
             value = self._scalar(dst, label)
-            if value:
-                self._row("conditionalrewrite", {
-                    "enabled": "1", "fromDomain": str(src), "toDomain": value,
-                }, label)
+            if not value:
+                continue
+            # the settings also trim the key
+            key = str(src).strip().lower().rstrip(".")
+            if key in first:
+                self.warnings.append("%s: the same domain as %s, which is imported instead." % (label, first[key]))
+                continue
+            first[key] = src
+            self._row(name, {
+                "enabled": "1", "fromDomain": str(src).strip(), "toDomain": value,
+            }, label)
 
     def _query_log(self):
         for field in ("type", "logRetentionDays", "creationAttempts", "creationCooldown", "flushInterval"):
             self._map("queryLog.%s" % field, "queryLog", field)
+        if self._get("queryLog", "type") is None:
+            # blocky logs to the console when no type is set
+            self.scalars.setdefault("queryLog", {})["type"] = "console"
+            self.warnings.append("queryLog.type: not set, which blocky reads as Console, logging every query; "
+                                 "imported as Console.")
         fixed = {"csv": "/var/db/blocky/querylog", "csv-client": "/var/db/blocky/querylog",
                  "sqlite": "/var/db/blocky/querylog.db"}.get(str(self._get("queryLog", "type") or "").strip())
         target = self._get("queryLog", "target")
-        if self._get("queryLog", "type") in ("mysql", "postgresql", "timescale") and isinstance(target, str) \
-                and not database_target(target):
-            # MySQL's allowAllFiles and PostgreSQL's file options are read as root, so the log is left off
-            self.warnings.append("queryLog.target: options that read a file are taken only from a file: value; "
-                                 "query logging was left off.")
-            self.scalars.setdefault("queryLog", {})["type"] = "none"
-        elif self._get("queryLog", "type") == "dnstap" and isinstance(target, str) and not dnstap_target(target):
+        if fixed is None and self._get("queryLog", "type") == "dnstap" and isinstance(target, str) \
+                and (line_break(target) or not dnstap_target(target)):
             # a unix socket would be connected to as root, so the log is left off
-            self.warnings.append("queryLog.target: only a tcp:// address is taken for dnstap; query logging "
+            self.warnings.append("queryLog.target: only tcp://host:port is taken for dnstap; query logging "
                                  "was left off.")
-            self.scalars.setdefault("queryLog", {})["type"] = "none"
+            self.scalars["queryLog"]["type"] = "none"
+        elif fixed is None and isinstance(target, str) and (line_break(target) or not allowed_secret(target)):
+            why = "line breaks are not taken" if line_break(target) else \
+                "a file: value must name a file in %s" % SECRET_DIR.rstrip("/")
+            if self._get("queryLog", "type") in ("mysql", "postgresql", "timescale"):
+                # these need a target, so the log is left off
+                self.warnings.append("queryLog.target: %s; query logging was left off." % why)
+                self.scalars["queryLog"]["type"] = "none"
+            else:
+                self.warnings.append("queryLog.target: %s; not imported." % why)
         elif fixed is None:
-            self._secret("queryLog.target", "queryLog", "target")
-        elif self._get("queryLog", "target") is not None:
+            self._map("queryLog.target", "queryLog", "target")
+        elif target is not None:
             self.warnings.append("queryLog.target: this log type is written to %s; not imported." % fixed)
         self._map("queryLog.fields", "queryLog", "fields", self._list)
         self._map("queryLog.ignore.sudn", "queryLog", "ignoreSudn", self._bool)
         self._map("queryLog.ignore.domains", "queryLog", "ignoreDomains", self._list)
+        self._map("queryLog.ignore.clients", "queryLog", "ignoreClients", self._list)
 
     def _redis(self):
         address = self._get("redis", "address")
-        if isinstance(address, str) and ("\r" in address or "\n" in address):
+        if isinstance(address, str) and line_break(address):
             self.warnings.append("redis.address: line breaks are not taken; not imported.")
         elif isinstance(address, str) and address.startswith("/") and address != REDIS_SOCKET:
             self.warnings.append("redis.address: only the Redis plugin socket %s is taken; not imported."
@@ -829,16 +977,27 @@ class Mapper:
         for field in ("username", "database", "connectionAttempts", "connectionCooldown", "sentinelUsername"):
             self._map("redis.%s" % field, "redis", field)
         for field in ("password", "sentinelPassword"):
-            self._secret("redis.%s" % field, "redis", field)
+            value = self._get("redis", field)
+            if isinstance(value, str) and line_break(value):
+                self.warnings.append("redis.%s: line breaks are not taken; not imported." % field)
+            elif isinstance(value, str) and not allowed_secret(value):
+                self.warnings.append("redis.%s: a file: value must name a file in %s; not imported."
+                                     % (field, SECRET_DIR.rstrip("/")))
+            else:
+                self._map("redis.%s" % field, "redis", field)
         if "address" in self.scalars.get("redis", {}):
             self._map("redis.required", "redis", "required", self._bool)
-        sentinels = self._list(self._get("redis", "sentinelAddresses"), "redis.sentinelAddresses")
-        kept = [one for one in (sentinels or "").split(",") if one and not one.startswith("/")]
-        if sentinels and len(kept) < len(sentinels.split(",")):
-            self.warnings.append("redis.sentinelAddresses: unix sockets would be connected to as root; "
-                                 "not imported.")
-        if kept:
-            self.scalars.setdefault("redis", {})["sentinelAddresses"] = ",".join(kept)
+        self._map("redis.sentinelAddresses", "redis", "sentinelAddresses", self._list)
+        sentinels = self.scalars.get("redis", {}).get("sentinelAddresses")
+        if sentinels:
+            kept = [one for one in sentinels.split(",") if not one.strip().startswith("/")]
+            if len(kept) < len(sentinels.split(",")):
+                self.warnings.append("redis.sentinelAddresses: unix sockets would be connected to as root; "
+                                     "not imported.")
+            if kept:
+                self.scalars["redis"]["sentinelAddresses"] = ",".join(kept)
+            else:
+                del self.scalars["redis"]["sentinelAddresses"]
 
     def _filtering(self):
         self._map("filtering.queryTypes", "filtering", "queryTypes", self._list)
@@ -864,22 +1023,8 @@ class Mapper:
     def _hosts_file(self):
         entries: list = []
         for source in self._sequence(self._get("hostsFile", "sources"), "hostsFile.sources"):
-            text = self._scalar(source, "hostsFile.sources")
-            if text is not None:
-                entries += self._inline_sources(text) if "\n" in text else [text]
-        sources = self._list(entries, "hostsFile.sources")
-        kept = []
-        for one in (sources or "").split(","):
-            if one and not HOSTS_SOURCE.fullmatch(one):
-                self.warnings.append("hostsFile.sources: %r has control characters or surrounding spaces; "
-                                     "not imported." % one)
-            elif one and not allowed_file(one, ("/etc/hosts",)):
-                self.warnings.append("hostsFile.sources: %s is a file other than /etc/hosts outside %s; "
-                                     "not imported." % (one, LIST_DIR.rstrip("/")))
-            elif one:
-                kept.append(one)
-        if kept:
-            self.scalars.setdefault("hostsFile", {})["sources"] = ",".join(kept)
+            entries += self._sources(source, "hostsFile.sources", ("/etc/hosts",))
+        self._put("hostsFile", "sources", entries, "hostsFile.sources", self._list)
         self._map("hostsFile.hostsTTL", "hostsFile", "hostsTTL")
         self._map("hostsFile.filterLoopback", "hostsFile", "filterLoopback", self._bool)
         self._map("hostsFile.loading.refreshPeriod", "hostsFile", "refreshPeriod")
@@ -889,18 +1034,6 @@ class Mapper:
         for yml_key, field in DOWNLOAD_FIELDS:
             self._map("hostsFile.loading.downloads.%s" % yml_key, "hostsFile", field)
         self._download_cache("hostsFile.loading.downloads.cachePath", "hostsFile", "/var/cache/blocky/hosts")
-
-    def _secret(self, path, section, field):
-        """blocky reads a file: value from disk as root, so only the secrets directory is allowed."""
-        value = self._get(*path.split("."))
-        if isinstance(value, str) and ("\r" in value or "\n" in value):
-            self.warnings.append("%s: line breaks are not taken; not imported." % path)
-            return
-        if isinstance(value, str) and not allowed_secret(value):
-            self.warnings.append("%s: a file: value must name a file in %s; not imported."
-                                 % (path, SECRET_DIR.rstrip("/")))
-            return
-        self._map(path, section, field)
 
     def _download_cache(self, path, section, directory):
         """The plugin keeps each download cache in a fixed directory, so a path turns it on."""
@@ -917,11 +1050,19 @@ class Mapper:
         self._map("ecs.ipv4Mask", "ecs", "ipv4Mask")
         self._map("ecs.ipv6Mask", "ecs", "ipv6Mask")
 
+    def _dnssec_limit(self, value, label):
+        """blocky reads a limit of 0 as its default, which is what the field is left at."""
+        text = self._scalar(value, label)
+        if text == "0":
+            self.warnings.append("%s: 0 means blocky's default; imported as that." % label)
+            return None
+        return text
+
     def _dnssec(self):
         self._map("dnssec.validate", "dnssec", "validate", self._bool)
-        for field in ("maxChainDepth", "cacheExpirationHours", "maxUpstreamQueries",
-                      "maxNSEC3Iterations", "clockSkewToleranceSec"):
-            self._map("dnssec.%s" % field, "dnssec", field)
+        self._map("dnssec.clockSkewToleranceSec", "dnssec", "clockSkewToleranceSec")
+        for field in ("maxChainDepth", "cacheExpirationHours", "maxNSEC3Iterations", "maxUpstreamQueries"):
+            self._map("dnssec.%s" % field, "dnssec", field, self._dnssec_limit)
         self._map("dnssec.trustAnchors", "dnssec", "trustAnchors", self._list)
 
     def _dns64(self):

@@ -101,7 +101,7 @@
     <div id="servers" class="tab-pane fade in">
         {{ partial('layout_partials/base_bootgrid_table', formGridUpstream)}}
         <div style="padding: 10px;">
-            {{ lang._('Resolvers Blocky forwards queries to. The "default" group applies to every client, so define at least one resolver there. To give specific clients their own resolvers, set the Upstream Group to a client selector - a client name (with * and [0-9] wildcards), an IP, or a CIDR. See the Resolver field for accepted server formats.') }}
+            {{ lang._('Resolvers Blocky forwards queries to. The "default" group applies to every client that matches no other group, so define at least one resolver there. To give specific clients their own resolvers, set the Upstream Group to a client selector - a client name (with * and [0-9] wildcards), an IP, or a CIDR. See the Resolver field for accepted server formats.') }}
         </div>
     </div>
     <div id="bootstrap" class="tab-pane fade in">

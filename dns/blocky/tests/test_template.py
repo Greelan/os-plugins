@@ -83,9 +83,18 @@ class Template(unittest.TestCase):
         for key in ("certFile", "keyFile", "redis"):
             self.assertNotIn(key, doc)
         self.assertEqual(doc["pprof"], {"enable": True}, "Blocky's default")
+        self.assertIs(doc["prometheus"]["enableClientLabel"], True, "Blocky's default")
 
     def test_profiler_can_be_turned_off(self):
         self.assertEqual(render(general={"pprof": "0"})["pprof"], {"enable": False})
+
+    def test_client_label_can_be_turned_off(self):
+        self.assertIs(render(general={"prometheusClientLabel": "0"})["prometheus"]["enableClientLabel"], False)
+
+    def test_ignored_clients(self):
+        doc = render(queryLog={"type": "console", "ignoreClients": "192.168.1.1,10.0.0.0/8,*-ap"})
+        self.assertEqual(doc["queryLog"]["ignore"], {"clients": ["192.168.1.1", "10.0.0.0/8", "*-ap"]})
+        self.assertNotIn("ignore", render(queryLog={"type": "none", "ignoreClients": "192.168.1.1"})["queryLog"])
 
     def test_free_text_stays_a_value(self):
         # each value tries to open a top-level section of its own; none may appear
@@ -168,6 +177,43 @@ class Template(unittest.TestCase):
         doc = render(customdns=rows, conditional=forwards)
         self.assertEqual(doc["customDNS"]["mapping"], {"a.lan": "10.0.0.1,10.0.0.2", "b.lan": "10.0.0.3"})
         self.assertEqual(doc["conditional"]["mapping"], {"x.lan": "10.0.0.1,10.0.0.2"})
+
+    def test_domains_as_blocky_matches_them(self):
+        # Blocky folds case, and keeps one of two such keys at random; a trailing dot never matches
+        rows = [{"enabled": "1", "domain": "NAS.lan", "ip": "10.0.0.1"}, {"enabled": "1", "domain": "nas.lan.", "ip": "10.0.0.2"}]
+        forwards = [{"enabled": "1", "domain": "Home.Arpa.", "resolver": "10.0.0.1"},
+                    {"enabled": "1", "domain": ".", "resolver": "10.0.0.2"}]
+        rewrites = [{"enabled": "1", "fromDomain": "Fritz.Box.", "toDomain": "fritz.lan"}]
+        doc = render(customdns=rows, conditional=forwards, customdnsrewrite=rewrites)
+        self.assertEqual(doc["customDNS"]["mapping"], {"nas.lan": "10.0.0.1,10.0.0.2"})
+        self.assertEqual(doc["conditional"]["mapping"], {"home.arpa": "10.0.0.1", ".": "10.0.0.2"})
+        self.assertEqual(doc["customDNS"]["rewrite"], {"fritz.box": "fritz.lan"})
+        # two rows one key, as an earlier version could store: the one Blocky matched stays, else the first
+        rewrites.append({"enabled": "1", "fromDomain": "fritz.box", "toDomain": "other.lan"})
+        rewrites.append({"enabled": "1", "fromDomain": "Fritz.Box", "toDomain": "third.lan"})
+        self.assertEqual(render(customdnsrewrite=rewrites)["customDNS"]["rewrite"], {"fritz.box": "other.lan"})
+        doc = render(conditional=forwards, conditionalrewrite=rewrites)
+        self.assertEqual(doc["conditional"]["rewrite"], {"fritz.box": "other.lan"})
+        forwards.append({"enabled": "1", "domain": "home.arpa", "resolver": "10.0.0.3"})
+        self.assertEqual(render(conditional=forwards)["conditional"]["mapping"], {"home.arpa": "10.0.0.3", ".": "10.0.0.2"})
+
+    def test_addresses_stay_text(self):
+        # unquoted, fd00:: would be a key
+        doc = render(clientlookupclients=[{"enabled": "1", "name": "nas", "ips": "fd00::,10.0.0.5"}],
+                     bootstrap=[{"enabled": "1", "type": "resolver", "content": "tcp-tls:dns.quad9.net", "ips": "2620:fe::"}])
+        self.assertEqual(doc["clientLookup"]["clients"], {"nas": ["fd00::", "10.0.0.5"]})
+        self.assertEqual(doc["bootstrapDns"][0]["ips"], ["2620:fe::"])
+
+    def test_server_timeouts_without_lists(self):
+        # Blocky's own HTTP server takes them from blocking.loading.downloads, lists or not
+        doc = render(general={"downloadWriteTimeout": "45s"})
+        self.assertNotIn("denylists", doc["blocking"])
+        self.assertEqual(doc["blocking"]["loading"]["downloads"]["writeTimeout"], "45s")
+
+    def test_an_empty_trust_anchor_is_left_out(self):
+        anchor = ". 172800 IN DNSKEY 257 3 8 AwEAA"
+        doc = render(dnssec={"validate": "1", "trustAnchors": anchor + ", "})
+        self.assertEqual(doc["dnssec"]["trustAnchors"], [anchor])
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
         <id>blocky.general.strategy</id>
         <label>Resolver strategy</label>
         <type>dropdown</type>
-        <help>How the resolvers in an upstream group are queried. Parallel best races two resolvers and takes the fastest answer. Random picks one and asks a second if it does not respond, which is slower but sends each query to a single upstream. Both pick at random, weighted so a resolver that failed within the last hour is less likely to be chosen. Strict tries them in order, moving on only when one does not respond.</help>
+        <help>How the resolvers in an upstream group are queried. Parallel best races two resolvers and takes the fastest answer. Random picks one and asks a second if it does not respond, which is slower but sends each query to a single upstream. Both pick at random, weighted so a resolver that failed within the last hour is less likely to be chosen. Strict tries them in the order they were added, which the list of resolvers may not show, moving on only when one does not respond.</help>
     </field>
     <field>
         <id>blocky.general.timeout</id>

@@ -21,7 +21,7 @@
         <height>8</height>
         <advanced>true</advanced>
         <help>
-            <![CDATA[Optional DNS zone-file content for advanced records (e.g. CNAME), in standard zone format, e.g. <code>printer.lan. IN A 192.168.1.20</code>. Names end with a dot unless an $ORIGIN line comes before them, and every record needs a TTL, the class IN or a $TTL line before it. $INCLUDE is not accepted. Blocky answers A, AAAA, CNAME, TXT and SRV records; other types, such as SOA or MX, may be present but are not answered. Applied in addition to the simple entries on the <a href="/ui/blocky/customdns#overrides">Host Overrides</a> tab.]]>
+            <![CDATA[Optional DNS zone-file content for advanced records (e.g. CNAME), in standard zone format, e.g. <code>printer.lan. IN A 192.168.1.20</code>. Names end with a dot unless an $ORIGIN line comes before them, and every record needs a TTL, the class IN or a $TTL line before it. Blocky answers A, AAAA, CNAME, TXT, SRV, HTTPS and SVCB records; other types, such as SOA or MX, may be present but are not answered. HTTPS and SVCB records are answered as written, except that ipv6hint is left out while AAAA is a dropped query type; e.g. <code>app.lan. 3600 IN A 192.168.1.10</code> with <code>app.lan. 3600 IN HTTPS 1 . alpn="h3,h2"</code> announces HTTP/3 for app.lan. Combined with the simple entries on the <a href="/ui/blocky/customdns#overrides">Host Overrides</a> tab, but a name in the zone is answered from the zone alone, so its addresses belong in the zone too.]]>
         </help>
     </field>
 </form>

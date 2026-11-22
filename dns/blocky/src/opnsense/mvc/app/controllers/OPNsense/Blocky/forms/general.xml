@@ -16,7 +16,7 @@
         <style>tokenize</style>
         <allownew>true</allownew>
         <hint>53</hint>
-        <help>Where Blocky answers DNS (TCP and UDP). Enter one or more listeners; a bare port listens on every address, including ones added later, while an address is bound when Blocky starts and is not followed if it changes. With a bare port, IPv4 answers are sent from the interface's own address, so enter an IP alias or CARP address explicitly. Examples: 53, :53, 127.0.0.1:53, [::1]:53.</help>
+        <help>Where Blocky answers DNS (TCP and UDP). Enter one or more listeners; a bare port listens on every address, including ones added later, while an address is bound when Blocky starts and is not followed if it changes. With a bare port, IPv4 answers are sent from the interface's own address, so enter an IP alias or CARP address explicitly. The firewall itself, router advertisements and the ISC DHCP server point at Blocky only when it listens on every address on port 53 (53, :53, 0.0.0.0:53 or [::]:53); Kea and Dnsmasq DHCP hand out the firewall's address either way. Examples: 53, :53, 127.0.0.1:53, [::1]:53.</help>
     </field>
     <field>
         <id>blocky.general.httpPort</id>
@@ -136,7 +136,7 @@
         <label>Minimum cache time</label>
         <type>text</type>
         <hint>0</hint>
-        <help>Entries are cached at least this long, even if the record TTL is lower. Use 0 (default) to follow the record's own TTL.</help>
+        <help>Entries are cached at least this long, even if the record TTL is lower. Use 0 (default) to follow the record's own TTL. An answer that carries DNSSEC signatures keeps its own TTL.</help>
     </field>
     <field>
         <id>blocky.general.cacheMaxTime</id>
@@ -198,7 +198,7 @@
         <allownew>true</allownew>
         <advanced>true</advanced>
         <hint>/lan$/</hint>
-        <help>Regex patterns for domains that are never cached, e.g. /lan$/ or /^.*\.host\.com$/. The surrounding slashes are required; Blocky refuses to start without them. Avoid commas inside a pattern.</help>
+        <help>Regex patterns for domains that are never cached, in Go (RE2) syntax, e.g. /lan$/ or /^.*\.host\.com$/. The surrounding slashes are required; Blocky refuses to start without them, or with a pattern Go cannot compile, even while caching is off. Avoid commas inside a pattern.</help>
     </field>
     <field>
         <type>header</type>
@@ -219,6 +219,13 @@
         <hint>/metrics</hint>
         <advanced>true</advanced>
         <help>URL path on the HTTP port where Prometheus metrics are served.</help>
+    </field>
+    <field>
+        <id>blocky.general.prometheusClientLabel</id>
+        <label>Client label</label>
+        <type>checkbox</type>
+        <advanced>true</advanced>
+        <help>Label the blocky_query_total and blocky_client_response_total metrics with each client's name, or its address when it has none. Turn this off to count every client as unknown, which keeps the number of series bounded when Blocky serves many clients or names that clients choose, e.g. on a DoH listener reachable from the internet.</help>
     </field>
     <field>
         <id>blocky.statistics.enable</id>

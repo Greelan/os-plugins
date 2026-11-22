@@ -39,13 +39,13 @@ use OPNsense\Trust\Store;
  */
 class Blocky extends BaseModel
 {
-    /* Blocky runs as root, so a list it reads from disk lives in the plugin's own directory */
-    private const ETC_DIR = '/usr/local/etc/blocky';
+    /* Blocky runs as root, so a file it reads from disk lives in the plugin's own directory */
     public const HOSTS_FILES = ['/etc/hosts'];
     /* the socket the Redis plugin (databases/redis) opens */
     public const REDIS_SOCKETS = ['/var/run/redis/redis.sock'];
     private const LIST_DIR = '/^\/usr\/local\/etc\/blocky\/lists(\/(?!\.\.?(\/|$))[^\/\0]+)+$/u';
-    /* the DNS type names Blocky 0.36 knows */
+    private const SECRET_DIR = '/^\/usr\/local\/etc\/blocky\/secrets(\/(?!\.\.?(\/|$))[^\/\0]+)+$/u';
+    /* the DNS type names Blocky 0.37 knows */
     private const QUERY_TYPES = ['A', 'AAAA', 'AFSDB', 'AMTRELAY', 'ANY', 'APL', 'ATMA', 'AVC', 'AXFR', 'CAA',
         'CDNSKEY', 'CDS', 'CERT', 'CNAME', 'CSYNC', 'DHCID', 'DLV', 'DNAME', 'DNSKEY', 'DS', 'EID', 'EUI48', 'EUI64',
         'GID', 'GPOS', 'HINFO', 'HIP', 'HTTPS', 'IPSECKEY', 'ISDN', 'IXFR', 'KEY', 'KX', 'L32', 'L64', 'LOC', 'LP',
@@ -61,10 +61,6 @@ class Blocky extends BaseModel
         'general.customTTL', 'queryLog.creationCooldown', 'queryLog.flushInterval', 'hostsFile.hostsTTL',
         'hostsFile.refreshPeriod', 'hostsFile.downloadTimeout', 'hostsFile.downloadCooldown',
         'redis.connectionCooldown'];
-    /* database connection options that read a file, as root (isDatabaseTarget); a key starts the string
-       or follows ?, & or the whitespace PostgreSQL separates keywords with */
-    private const FILE_OPTIONS = '/(^|[?&\s])(allowAllFiles|sslcert|sslkey|sslrootcert|passfile|servicefile)\s*=/i';
-    private const SECRET_DIR = '/^\/usr\/local\/etc\/blocky\/secrets(\/(?!\.\.?(\/|$))[^\/\0]+)+$/u';
 
     /**
      * {@inheritdoc}
@@ -120,12 +116,15 @@ class Blocky extends BaseModel
         }
 
         /* each is a key in config.yml, and Blocky refuses a key given twice; the message goes on
-         * the row being edited, else on the later rows */
+         * the row being edited, else (checking the whole model) on the later rows. The template
+         * writes a domain as Blocky matches it, lowercase and without a trailing dot, and keeps the
+         * first of the rows stored that way, so a duplicate saved earlier does not stop Blocky. */
         foreach ([['customdnsrewrite', 'fromDomain'], ['conditionalrewrite', 'fromDomain'], ['schedules', 'name']] as [$array, $key]) {
             $rows = [];
             foreach ($this->$array->iterateItems() as $row) {
                 if ((string)$row->enabled == '1') {
-                    $rows[(string)$row->$key][] = $row;
+                    $name = (string)$row->$key;
+                    $rows[$key == 'fromDomain' ? strtolower(rtrim($name, '.')) : $name][] = $row;
                 }
             }
             foreach ($rows as $same) {
@@ -135,6 +134,9 @@ class Blocky extends BaseModel
                 $changed = array_filter($same, function ($row) {
                     return $row->isFieldChanged();
                 });
+                if (!$changed && !$validateFullModel) {
+                    continue;
+                }
                 foreach ($changed ?: array_slice($same, 1) as $row) {
                     $messages->appendMessage(new Message(
                         gettext('Another enabled entry already uses this; combine them or disable one.'),
@@ -210,7 +212,8 @@ class Blocky extends BaseModel
             }
         }
 
-        /* a schedule window needs both start and end, or neither (all-day) */
+        /* a schedule window needs both start and end, or neither (all-day); Blocky reads a window that
+         * ends where it starts as one that is never open */
         foreach ($this->schedules->iterateItems() as $schedule) {
             $start = (string)$schedule->start;
             $end = (string)$schedule->end;
@@ -219,6 +222,14 @@ class Blocky extends BaseModel
                 $messages->appendMessage(new Message(
                     gettext('Set both Start and End, or leave both empty for an all-day schedule.'),
                     $target->__reference
+                ));
+            } elseif (
+                $start !== '' && $start === $end &&
+                ($validateFullModel || $schedule->start->isFieldChanged() || $schedule->end->isFieldChanged())
+            ) {
+                $messages->appendMessage(new Message(
+                    gettext('Set an End other than Start, or leave both empty for an all-day schedule.'),
+                    $schedule->end->__reference
                 ));
             }
         }
@@ -253,21 +264,6 @@ class Blocky extends BaseModel
                     $messages->appendMessage(new Message(
                         gettext('Enter a resolver, e.g. tcp-tls:dns.quad9.net or 192.168.1.1, with no trailing dot.'),
                         $mapping->resolver->__reference
-                    ));
-                    break;
-                }
-            }
-        }
-
-        /* Blocky exits when a trust anchor is not a DNSKEY record with the SEP flag */
-        if ($validateFullModel || $this->dnssec->trustAnchors->isFieldChanged()) {
-            foreach (explode(',', (string)$this->dnssec->trustAnchors) as $anchor) {
-                $anchor = trim($anchor);
-                $is_ksk = preg_match('/\sDNSKEY\s+([0-9]+)\s/i', $anchor, $flags) && ($flags[1] & 1);
-                if ($anchor !== '' && !$is_ksk) {
-                    $messages->appendMessage(new Message(
-                        gettext('Enter key signing keys as DNSKEY records, e.g. ". 172800 IN DNSKEY 257 3 8 AwEAA".'),
-                        'dnssec.trustAnchors'
                     ));
                     break;
                 }
@@ -313,6 +309,16 @@ class Blocky extends BaseModel
         ) {
             $messages->appendMessage(new Message(
                 gettext('Enter a target for this log type.'),
+                'queryLog.target'
+            ));
+        } elseif (
+            ($validateFullModel || $this->queryLog->type->isFieldChanged() ||
+                $this->queryLog->target->isFieldChanged()) &&
+            (string)$this->queryLog->type == 'dnstap' &&
+            !self::isDnstapTarget($this->queryLog->target->getValue())
+        ) {
+            $messages->appendMessage(new Message(
+                gettext('Enter a dnstap target as tcp://host:port.'),
                 'queryLog.target'
             ));
         }
@@ -441,56 +447,15 @@ class Blocky extends BaseModel
             }
         }
 
-        /* Blocky reads a secret from the file a file: value names, as root, and refuses to start
-         * when it cannot; a stored secret is checked again once a change puts it to use */
-        $secrets = [
-            'redis.password' => [['redis.address'], trim((string)$this->redis->address) !== ''],
-            'redis.sentinelPassword' => [
-                ['redis.address', 'redis.sentinelAddresses'],
-                trim((string)$this->redis->address) !== '' && trim((string)$this->redis->sentinelAddresses) !== '',
-            ],
-            'queryLog.target' => [
-                ['queryLog.type'],
-                in_array((string)$this->queryLog->type, ['mysql', 'postgresql', 'timescale', 'dnstap']),
-            ],
-        ];
-        /* a GUI running as wwwonly (Strict security) cannot see into root's directory; Blocky
-         * refuses to start on a missing file anyway */
-        $blind = file_exists(self::ETC_DIR) && !is_readable(self::ETC_DIR);
-        foreach ($secrets as $ref => [$users, $used]) {
+        /* Blocky reads a secret from the file a file: value names, as root */
+        foreach (['redis.password', 'redis.sentinelPassword', 'queryLog.target'] as $ref) {
             $node = $this->getNodeByReference($ref);
-            $changed = $validateFullModel || $node->isFieldChanged();
-            if ($changed && !self::isAllowedSecret($node->getValue())) {
+            if (($validateFullModel || $node->isFieldChanged()) && !self::isAllowedSecret($node->getValue())) {
                 $messages->appendMessage(new Message(
                     gettext('A file: value must name a file in /usr/local/etc/blocky/secrets.'),
                     $ref
                 ));
-                continue;
             }
-            $recheck = false;
-            foreach ($users as $user) {
-                $recheck = $recheck || $this->getNodeByReference($user)->isFieldChanged();
-            }
-            $file = self::secretFile($node->getValue());
-            if (($changed || ($used && $recheck)) && $file !== null && !$blind && !is_file($file)) {
-                $messages->appendMessage(new Message(gettext('This file does not exist.'), $ref));
-            }
-        }
-
-        /* Blocky reads a zone $INCLUDE from disk as root */
-        if (
-            ($validateFullModel || $this->general->customZone->isFieldChanged()) &&
-            self::hasZoneInclude((string)$this->general->customZone)
-        ) {
-            $messages->appendMessage(new Message(
-                gettext('Enter the records themselves; Blocky would read an $INCLUDE file from disk.'),
-                'general.customZone'
-            ));
-        } elseif (
-            ($validateFullModel || $this->general->customZone->isFieldChanged()) &&
-            ($error = self::zoneError((string)$this->general->customZone)) !== null
-        ) {
-            $messages->appendMessage(new Message($error, 'general.customZone'));
         }
 
         /* a resolv file Blocky reads is one the plugin keeps */
@@ -529,28 +494,6 @@ class Blocky extends BaseModel
                 }
             }
         }
-        if (
-            ($validateFullModel || $this->queryLog->type->isFieldChanged() ||
-                $this->queryLog->target->isFieldChanged()) &&
-            (string)$this->queryLog->type == 'dnstap' &&
-            !self::isDnstapTarget($this->queryLog->target->getValue())
-        ) {
-            $messages->appendMessage(new Message(
-                gettext('Enter a tcp:// address, not a Unix socket.'),
-                'queryLog.target'
-            ));
-        }
-        if (
-            ($validateFullModel || $this->queryLog->type->isFieldChanged() ||
-                $this->queryLog->target->isFieldChanged()) &&
-            in_array((string)$this->queryLog->type, ['mysql', 'postgresql', 'timescale']) &&
-            !self::isDatabaseTarget($this->queryLog->target->getValue())
-        ) {
-            $messages->appendMessage(new Message(
-                gettext('Leave out allowAllFiles, sslcert, sslkey, sslrootcert, passfile and servicefile, or give the connection string as a file: value.'),
-                'queryLog.target'
-            ));
-        }
 
         /* a list or hosts file on disk must be one the plugin keeps, or the system hosts file */
         foreach (['denylists', 'allowlists'] as $section) {
@@ -582,199 +525,6 @@ class Blocky extends BaseModel
     }
 
     /**
-     * Does this custom zone pull in a file? The directive is matched case-insensitively.
-     */
-    public static function hasZoneInclude($zone)
-    {
-        return preg_match('/^\s*\$INCLUDE\b/mi', self::rendered($zone)) === 1;
-    }
-
-    /**
-     * Why Blocky would not parse this zone, or null. It follows miekg/dns as Blocky calls it, with no
-     * origin; record types it does not know in detail pass, so a zone Blocky takes is never refused.
-     */
-    public static function zoneError($zone)
-    {
-        $zone = self::rendered($zone);
-        /* split into records: quotes, ; comments and ( ) continuations as the zone format has them */
-        $records = [];
-        $tokens = [];
-        $token = null;
-        $blank = false;
-        $depth = 0;
-        $quoted = false;
-        $line = 1;
-        $start = 1;
-        $zone = str_replace("\r", '', (string)$zone);
-        $length = strlen($zone);
-        for ($i = 0; $i <= $length; $i++) {
-            $c = $i < $length ? $zone[$i] : "\n";
-            if ($quoted) {
-                if ($c === "\n") {
-                    return sprintf(gettext('Line %d: a quote is not closed.'), $line);
-                }
-                $token .= $c;
-                if ($c === '\\' && $i + 1 < $length) {
-                    $token .= $zone[++$i];
-                } elseif ($c === '"') {
-                    $quoted = false;
-                }
-                continue;
-            }
-            if ($c === '"') {
-                $token .= $c;
-                $quoted = true;
-                continue;
-            }
-            if ($c === ';') {
-                while ($i + 1 < $length && $zone[$i + 1] !== "\n") {
-                    $i++;
-                }
-                continue;
-            }
-            if (in_array($c, [' ', "\t", "\n", '(', ')'], true)) {
-                if ($token !== null) {
-                    $tokens[] = $token;
-                    $token = null;
-                }
-                if (($c === ' ' || $c === "\t") && empty($tokens) && ($i === 0 || $zone[$i - 1] === "\n")) {
-                    $blank = true;
-                } elseif ($c === '(') {
-                    $depth++;
-                } elseif ($c === ')' && --$depth < 0) {
-                    return sprintf(gettext('Line %d: a ) has no ( before it.'), $line);
-                } elseif ($c === "\n") {
-                    if ($depth === 0) {
-                        if (!empty($tokens)) {
-                            $records[] = [$start, $blank, $tokens];
-                        }
-                        $tokens = [];
-                        $blank = false;
-                        $start = $line + 1;
-                    }
-                    $line++;
-                }
-                continue;
-            }
-            $token .= $c;
-            if ($c === '\\' && $i + 1 < $length) {
-                $token .= $zone[++$i];
-            }
-        }
-        if ($depth > 0) {
-            return sprintf(gettext('Line %d: a ( is not closed.'), $start);
-        }
-
-        $origin = false;
-        $defaultTtl = false;
-        $lastTtl = false;
-        $isTtl = function ($value) {
-            if (!preg_match('/^([0-9]+[smhdw]?)+$/i', $value)) {
-                return false;
-            }
-            $total = 0;
-            preg_match_all('/([0-9]+)([smhdw]?)/i', $value, $parts, PREG_SET_ORDER);
-            foreach ($parts as $part) {
-                $total += (int)$part[1] * ['' => 1, 's' => 1, 'm' => 60, 'h' => 3600, 'd' => 86400,
-                    'w' => 604800][strtolower($part[2])];
-            }
-            return $total <= 4294967295;
-        };
-        $isName = function ($value) use (&$origin) {
-            if ($value === '@') {
-                return $origin;
-            }
-            if ($value !== '.' && preg_match('/(^|[^\\\\])\.\.|^\./', $value)) {
-                return false;
-            }
-            return substr($value, -1) === '.' || $origin;
-        };
-        $isPort = function ($value) {
-            return preg_match('/^[0-9]+$/', $value) && (int)$value <= 65535;
-        };
-        foreach ($records as [$at, $blank, $tokens]) {
-            if (!$blank && $tokens[0][0] === '$') {
-                $directive = strtoupper($tokens[0]);
-                if ($directive === '$TTL' && count($tokens) === 2 && $isTtl($tokens[1])) {
-                    $defaultTtl = true;
-                } elseif ($directive === '$ORIGIN' && count($tokens) === 2 && $isName($tokens[1])) {
-                    $origin = true;
-                } elseif ($directive === '$GENERATE' && count($tokens) > 2 && !$isName($tokens[2])) {
-                    return sprintf(
-                        gettext('Line %d: end the name %s with a dot, or put an $ORIGIN line before it.'),
-                        $at,
-                        $tokens[2]
-                    );
-                } elseif ($directive !== '$GENERATE' && $directive !== '$INCLUDE') {
-                    return sprintf(gettext('Line %d: %s is not a directive Blocky reads this way.'), $at, $tokens[0]);
-                }
-                continue;
-            }
-            $i = 0;
-            if (!$blank && !$isName($tokens[$i++])) {
-                return sprintf(
-                    gettext('Line %d: end the name %s with a dot, or put an $ORIGIN line before it.'),
-                    $at,
-                    $tokens[0]
-                );
-            }
-            $ttl = $class = false;
-            while ($i < count($tokens)) {
-                if (!$ttl && $isTtl($tokens[$i])) {
-                    $ttl = true;
-                } elseif (!$class && preg_match('/^(IN|CS|CH|HS|NONE|ANY|CLASS[0-9]+)$/i', $tokens[$i])) {
-                    $class = true;
-                } else {
-                    break;
-                }
-                $i++;
-            }
-            $type = strtoupper($tokens[$i++] ?? '');
-            if (
-                !preg_match('/^TYPE[0-9]+$/', $type) &&
-                (!in_array($type, self::QUERY_TYPES, true) || in_array($type, ['ANY', 'OPT'], true))
-            ) {
-                return sprintf(gettext('Line %d: expected a record type such as A, AAAA or CNAME.'), $at);
-            }
-            if (!$ttl && !$class && !$defaultTtl && !$lastTtl) {
-                return sprintf(gettext('Line %d: give the record a TTL or the class IN, or put a $TTL line before it.'), $at);
-            }
-            $lastTtl = $lastTtl || $ttl;
-            $data = array_slice($tokens, $i);
-            $valid = true;
-            if (count($data) > 0) {
-                switch ($type) {
-                    case 'A':
-                        $valid = count($data) === 1 && preg_match('/^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}' .
-                            '(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$/', $data[0]);
-                        break;
-                    case 'AAAA':
-                        $valid = count($data) === 1 && filter_var($data[0], FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false;
-                        break;
-                    case 'CNAME':
-                    case 'DNAME':
-                    case 'NS':
-                    case 'PTR':
-                        $valid = count($data) === 1 && $isName($data[0]);
-                        break;
-                    case 'MX':
-                        $valid = count($data) === 2 && $isPort($data[0]) && $isName($data[1]);
-                        break;
-                    case 'SRV':
-                        $valid = count($data) === 4 && $isPort($data[0]) && $isPort($data[1]) && $isPort($data[2]) &&
-                            $isName($data[3]);
-                        break;
-                }
-            }
-            if (!$valid) {
-                return sprintf(gettext('Line %d: the %s record data is not valid; names end with a dot unless ' .
-                    'an $ORIGIN line comes first.'), $at, $type);
-            }
-        }
-        return null;
-    }
-
-    /**
      * Is this a file in the plugin's list directory?
      */
     public static function isListFile($path)
@@ -783,8 +533,8 @@ class Blocky extends BaseModel
     }
 
     /**
-     * A value as the template writes it, which drops carriage returns; for fields that cannot refuse
-     * line breaks themselves (AllowNewlines): the zone, and a bootstrap entry's content.
+     * A value as the template writes it, which drops carriage returns; for a bootstrap entry's
+     * content, which cannot refuse line breaks itself (AllowNewlines).
      */
     private static function rendered($value)
     {
@@ -805,26 +555,6 @@ class Blocky extends BaseModel
     public static function isAllowedRedisAddress($address)
     {
         return !self::isSocket($address) || in_array((string)$address, self::REDIS_SOCKETS, true);
-    }
-
-    /**
-     * Is this dnstap target empty, a tcp:// address, or a file: secret the plugin allows?
-     */
-    public static function isDnstapTarget($target)
-    {
-        $target = trim((string)$target);
-        return $target === '' || strpos($target, 'tcp://') === 0 ||
-            (self::secretFile($target) !== null && self::isAllowedSecret($target));
-    }
-
-    /**
-     * Does this database target leave files alone? MySQL's allowAllFiles lets the server read any
-     * file, and PostgreSQL reads the files these options name, as root; a file: value is root's own.
-     * Matched after URL decoding, as PostgreSQL decodes a URL's option names.
-     */
-    public static function isDatabaseTarget($target)
-    {
-        return self::secretFile($target) !== null || preg_match(self::FILE_OPTIONS, urldecode((string)$target)) !== 1;
     }
 
     /**
@@ -922,6 +652,20 @@ class Blocky extends BaseModel
     }
 
     /**
+     * A dnstap target as Blocky parses it once it serves, which blocky validate does not: tcp:// and a
+     * host and port as Go's SplitHostPort takes them. Blocky would connect to a Unix socket as root, so
+     * none is taken. A file: value is read for one, and its directory checked with the other secrets.
+     */
+    public static function isDnstapTarget($target)
+    {
+        if (strpos((string)$target, 'file:') === 0) {
+            return true;
+        }
+        return strpos((string)$target, 'tcp://') === 0 &&
+            preg_match('/^(\[[^\[\]]+\]|[^:\[\]]+):[^:\[\]]+$/D', substr((string)$target, strlen('tcp://'))) === 1;
+    }
+
+    /**
      * A host name as Blocky's upstream parser takes it: no trailing dot, which PHP's filter allows.
      */
     private static function isHostName($host)
@@ -1004,8 +748,27 @@ class Blocky extends BaseModel
      */
     private function bootstrapIsPlain($value)
     {
-        return (bool)preg_match('/^(tcp\+udp|tcp|udp):/i', trim($value)) ||
+        return (bool)preg_match('/^tcp\+udp:/i', trim($value)) ||
             !preg_match('/^(tcp-tls|https|quic|sdns):/i', trim($value));
+    }
+
+    /**
+     * DNS ports Blocky answers on at every address: a bare port, :port, 0.0.0.0:port or [::]:port. Core
+     * points clients and the firewall itself at the DNS service registered for port 53, so a listener on
+     * one address is left out of that, as dns/bind and dns/dnscrypt-proxy do.
+     */
+    public function wildcardPorts()
+    {
+        $ports = [];
+        foreach (explode(',', (string)$this->general->dnsPort) as $listener) {
+            if (
+                preg_match('/^(?:|:|0\.0\.0\.0:|\[::\]:)([0-9]+)$/', trim($listener), $match) &&
+                !in_array($match[1], $ports, true)
+            ) {
+                $ports[] = $match[1];
+            }
+        }
+        return trim((string)$this->general->dnsPort) === '' ? ['53'] : $ports;
     }
 
     /**
