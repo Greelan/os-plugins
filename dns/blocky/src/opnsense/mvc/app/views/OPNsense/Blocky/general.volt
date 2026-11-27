@@ -98,7 +98,7 @@
         <i class="fa fa-upload"></i> {{ lang._('Import config.yml') }}
     </button>
     <div class="text-muted" style="margin-top: 0.5em;">
-        {{ lang._('Import an existing Blocky config.yml. This replaces the current configuration: list entries are rebuilt and any setting not present in the file is reset to its default. Unsupported keys are reported and skipped. If the file cannot be imported nothing is changed. After a successful import, review the settings and then apply them; Apply checks first that Blocky can read them.') }}
+        {{ lang._('Import an existing Blocky config.yml. This replaces the current configuration: list entries are rebuilt and any setting not present in the file is reset to its default. Unsupported keys and values the settings refuse are reported and left out. If the file cannot be imported nothing is changed. After a successful import, review the settings and then apply them; Apply checks first that Blocky can read them.') }}
     </div>
     <div id="importResult" style="margin-top: 1em;"></div>
 </div>

@@ -1,5 +1,6 @@
-"""Whatever the model accepts, Blocky accepts: values are swept through every field, the model
-decides which it takes, core's template engine renders those, and `blocky validate` checks each.
+"""Whatever the model accepts, Blocky accepts, or refuses with a reason of its own that Apply shows:
+values are swept through every field, the model decides which it takes, core's template engine
+renders those, and `blocky validate` checks each.
 
 Needs OPNSENSE_CORE, php and a blocky binary (BLOCKY, or blocky on PATH) of the pinned version."""
 
@@ -59,6 +60,14 @@ POOL = [
 SEED = 20260925
 RANDOM_CASES = 400
 
+# what the template writes from no field the import could fill: fixed paths and logging
+WRITTEN_FROM_NO_FIELD = {"certFile", "keyFile", "log.timestamp", "log.target", "log.syslog",
+                         "blocking.loading.downloads.cachePath", "hostsFile.loading.downloads.cachePath"}
+
+# Blocky's own reasons for the checks left to it, which Apply shows (deploy.sh)
+LEFT_TO_BLOCKY = re.compile(r"invalid duration|unknown DNS query type|can't convert upstream|"
+                            r"ports\.proxyProtocol includes|rateLimit: |DNS64")
+
 
 def model_fields():
     """(scalar fields as {ref: node}, arrays as {name: [(field, node)]}) from the model XML."""
@@ -100,9 +109,19 @@ def candidates(node):
 
 def run_model(cases):
     """The model's verdict on each case: (messages as {field: text}, config.xml text or None)."""
+    return [({field: text for field, text in r["messages"]}, r["xml"]) for r in harness(cases)]
+
+
+def run_import(texts):
+    """importAction's verdict on each config.yml: (what it left out, errors, config.xml text or None)."""
+    return [(r["import"]["left"], r["import"]["errors"], r["xml"]) for r in harness([imported(t) for t in texts])]
+
+
+def harness(cases):
+    """model_harness.php's answer for each case."""
     if len(cases) > 500:
         with concurrent.futures.ThreadPoolExecutor(os.cpu_count() or 2) as pool:
-            chunks = pool.map(run_model, [cases[i:i + 500] for i in range(0, len(cases), 500)])
+            chunks = pool.map(harness, [cases[i:i + 500] for i in range(0, len(cases), 500)])
             return [r for chunk in chunks for r in chunk]
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
         handle.write(json.dumps(cases))  # one write: dump() writes piecemeal, which is slow
@@ -115,7 +134,7 @@ def run_model(cases):
     assert run.returncode == 0, (run.stdout + run.stderr)[-2000:]
     results = [json.loads(line) for line in out.splitlines() if line.startswith("{")]
     assert len(results) == len(cases), out[-2000:]
-    return [({field: text for field, text in r["messages"]}, r["xml"]) for r in results]
+    return results
 
 
 class Renderer:
@@ -158,14 +177,12 @@ def rendered(xml):
 
 
 def imported(text):
-    """The importer's output for a config.yml, as a harness case (run in a worker process)."""
+    """The importer's output for a config.yml, as a harness case applying it to an enabled Blocky
+    (run in a worker process)."""
     if SCRIPTS not in sys.path:
         sys.path[:0] = [SCRIPTS, os.path.join(SCRIPTS, "lib")]
     from import_config import Mapper, load
-    mapped = Mapper(load(text)).run()
-    return {"fields": dict({f"{section}.{field}": v for section, fields in mapped["scalars"].items()
-                            for field, v in fields.items()}, **{"general.enabled": "1"}),
-            "rows": mapped["arrays"]}
+    return {"fields": {"general.enabled": "1"}, "rows": {}, "import": Mapper(load(text)).run()}
 
 
 def blocky_validate(text):
@@ -230,11 +247,40 @@ class BlockyValidates(unittest.TestCase):
                             rows={name: [dict(row_base[name], **{field: value})]}, start=start)
             return cases
 
+        failures, configs = {}, {}
+
+        def blocky_verdicts(cases):
+            """{(where, value): (config.yml, None when Blocky takes it, else its reason)} for each case
+            the model accepts; a template that does not render is a failure too."""
+            results = run_model([c for _, c in cases])
+            accepted = [(key, xml) for (key, _), (_, xml) in zip(cases, results) if xml is not None]
+            with concurrent.futures.ProcessPoolExecutor(os.cpu_count() or 2) as pool:
+                texts = list(pool.map(rendered, [xml for _, xml in accepted], chunksize=50))
+            distinct = {}
+            for (key, _), (text, error) in zip(accepted, texts):
+                if error is not None:
+                    failures.setdefault(key[0], []).append((key[1], f"render: {error}"))
+                else:
+                    distinct.setdefault(hashlib.sha256(text.encode()).hexdigest(), (text, []))[1].append(key)
+            configs.update(distinct)
+            verdicts = {}
+            with concurrent.futures.ThreadPoolExecutor(8) as pool:
+                for (text, keys), reason in zip(distinct.values(), pool.map(blocky_validate, [t for t, _ in distinct.values()])):
+                    for key in keys:
+                        verdicts[key] = (text, reason)
+                    # whether a file the model allows exists is for Apply to say, as are the checks
+                    # left to Blocky, whose reason Apply shows
+                    if reason is not None and not re.search(r"failed to read secret file .*: no such file or "
+                                                            r"directory", reason) and not LEFT_TO_BLOCKY.search(reason):
+                        failures.setdefault(keys[0][0], []).append((keys[0][1], reason))
+            return verdicts
+
         first = sweep(base)
-        verdicts = dict(zip(first, run_model(list(first.values()))))
+        verdicts = blocky_verdicts(list(first.items()))
+        # what the model and Blocky both take, to build on
         taken = {}
-        for (where, value), (_, xml) in verdicts.items():
-            if xml is not None:
+        for (where, value), (_, reason) in verdicts.items():
+            if reason is None:
                 taken.setdefault(where, []).append(value)
 
         # a rich baseline: one of every row, then each field on something other than its default
@@ -253,11 +299,11 @@ class BlockyValidates(unittest.TestCase):
                 if not choices[ref]:
                     del choices[ref]
         rich = case({ref: values[0] for ref, values in choices.items()}, start=rows)
-        if xml is None:
-            rich = rows  # a rule across fields no single field answers for
+        # a rule across fields no single field answers for, the model's or Blocky's
+        if xml is None or blocky_validate(rendered(xml)[0] or "") is not None:
+            rich = rows
 
-        cases = list(first.items())
-        cases += list(sweep(rich).items())
+        cases = list(sweep(rich).items())
         rng = random.Random(SEED)
         for n in range(RANDOM_CASES):
             fields = {ref: rng.choice(values) for ref, values in taken.items()
@@ -272,34 +318,17 @@ class BlockyValidates(unittest.TestCase):
                             row[field] = rng.choice(choices)
                     rows[name] = [row]
             cases.append(((f"random#{n}", ""), case(fields, rows, start=rich)))
+        verdicts.update(blocky_verdicts(cases))
 
-        results = run_model([c for _, c in cases])
-        accepted = [(where, value, xml) for ((where, value), _), (_, xml) in zip(cases, results) if xml is not None]
+        # a config Blocky runs imports whole: the importer's output, applied as importAction does
+        valid = {text: key for key, (text, reason) in verdicts.items() if reason is None}
         with concurrent.futures.ProcessPoolExecutor(os.cpu_count() or 2) as pool:
-            texts = list(pool.map(rendered, [xml for _, _, xml in accepted], chunksize=50))
-        configs, failures = {}, {}
-        for (where, value, _), (text, error) in zip(accepted, texts):
-            if error is not None:  # a template that does not render is a failure too
-                failures.setdefault(where, []).append((value, f"render: {error}"))
-            else:
-                configs.setdefault(hashlib.sha256(text.encode()).hexdigest(), (text, where, value))
-
-        valid = []
-        with concurrent.futures.ThreadPoolExecutor(8) as pool:
-            reasons = pool.map(lambda item: blocky_validate(item[0]), configs.values())
-            for (text, where, value), reason in zip(configs.values(), reasons):
-                if reason is None:
-                    valid.append((text, where, value))
-                # whether a file the model allows exists is for Apply to say, which runs blocky validate
-                elif not re.search(r"failed to read secret file .*: no such file or directory", reason):
-                    failures.setdefault(where, []).append((value, reason))
-
-        # a config Blocky runs must import: the importer's output, applied as importAction does
-        with concurrent.futures.ProcessPoolExecutor(os.cpu_count() or 2) as pool:
-            imports = list(pool.map(imported, [text for text, _, _ in valid], chunksize=50))
-        for (_, where, value), (messages, _) in zip(valid, run_model(imports)):
-            for field, text in messages.items():
-                failures.setdefault(f"import {where}", []).append((value, f"{field}: {text}"))
+            imports = list(pool.map(imported, list(valid), chunksize=50))
+        for (where, value), case, result in zip(valid.values(), imports, harness(imports)):
+            for text in result["import"]["left"] + result["import"]["errors"]:
+                failures.setdefault(f"import {where}", []).append((value, text))
+            for key in set(case["import"]["skipped"]) - WRITTEN_FROM_NO_FIELD:
+                failures.setdefault(f"import {where}", []).append((value, f"{key}: not read back"))
 
         report = "\n".join(f"{where}: {len(found)} value(s), e.g.\n" + "\n".join(
             f"    {value!r}: {reason}" for value, reason in found[:3]) for where, found in failures.items())
@@ -343,40 +372,71 @@ class ModelRefuses(unittest.TestCase):
         # the first DNSKEY is the record, and a key may run over lines
         self.assertFalse(refused(". 172800 IN DNSKEY 257 3 8 AwEAA\nAwEB"))
         for anchor in (". 172800 IN DNSKEY 256 3 8 AwEAA", ". 172800 IN DNSKEY 256 3 8 AwEAA DNSKEY 257 3 8 AwEAA",
-                       "DNSKEY 257 3 8 AwEAA", ". 172800 IN DS 20326 8 2 E06D44B8"):
+                       "DNSKEY 257 3 8 AwEAA", ". 172800 IN DS 20326 8 2 E06D44B8",
+                       # Blocky parses these numbers only once it serves, and exits on one out of range
+                       ". 172800 IN DNSKEY 257 x 8 AwEAA", ". 172800 IN DNSKEY 257 3 256 AwEAA",
+                       ". 172800 IN DNSKEY 65537 3 8 AwEAA"):
             self.assertTrue(refused(anchor), anchor)
 
     def test_dnssec_limits_blocky_reads_as_defaults(self):
         for field in ("dnssec.cacheExpirationHours", "dnssec.maxNSEC3Iterations"):
             self.assertIn(field, self.messages({field: "0"}), field)
 
-    def migrated(self, fields, migrations=("M1_0_6",), **rows):
-        """Migrations on values as an earlier version stored them: (messages, config.xml as saved)."""
+    def migrated(self, fields, migrations=("M1_0_6",), after=None, **rows):
+        """Migrations on values as an earlier version stored them, then what a later save changes:
+        (messages, config.xml as saved)."""
         rows.setdefault("upstreams", [self.UPSTREAM])
-        messages, xml = run_model([{"fields": fields, "rows": rows, "migrate": list(migrations)}])[0]
+        messages, xml = run_model([{"fields": fields, "rows": rows, "migrate": list(migrations), "after": after or {}}])[0]
         return messages, ET.fromstring(xml) if xml else None
+
+    def test_switching_a_row_on_checks_what_it_reads(self):
+        """A row switched off for a file outside the plugin's directories stays off until the file is."""
+        for section, row, field in (("denylists", {"enabled": "0", "group": "ads", "source": "/etc/master.passwd"}, "source"),
+                                    ("bootstrap", {"enabled": "0", "type": "resolvfile", "content": "/etc/resolv.conf"}, "content")):
+            messages, _ = self.migrated({}, after={f"{section}.0.enabled": "1"}, **{section: [row]})
+            self.assertIn(f"{section}.0.{field}", messages, section)
 
     def test_what_blocky_exits_on(self):
         self.assertIn("general.blockType", self.messages({"general.blockType": "beef"}))
         self.assertIn("general.blockType", self.messages({"general.blockType": "999.1.1.1"}))
+        for mode in ("ZEROIP", "NxDomain", "::ffff:192.0.2.1", "0.0.0.0, ::"):
+            self.assertNotIn("general.blockType", self.messages({"general.blockType": mode}), "Blocky takes " + mode)
         self.assertNotIn("general.blockType", self.messages({"general.blockType": "0.0.0.0, ::"}))
         self.assertIn("queryLog.flushInterval", self.messages({"queryLog.type": "mysql", "queryLog.target": "u:p@tcp(db)/b",
                                                                "queryLog.flushInterval": "0s"}))
         self.assertIn("queryLog.flushInterval", self.messages({"queryLog.type": "sqlite", "queryLog.flushInterval": "0m0s"}))
         self.assertNotIn("queryLog.flushInterval", self.messages({"queryLog.type": "csv", "queryLog.flushInterval": "0s"}),
                          "only a database log writes on a timer")
-        self.assertIn("upstreams.1.server", self.messages(upstreams=[self.UPSTREAM, dict(self.UPSTREAM, server="tcp-tls:dns.quad9.net.")]))
-        self.assertNotIn("upstreams.1.server", self.messages(upstreams=[self.UPSTREAM, dict(self.UPSTREAM, server="tcp-tls:dns.quad9.net")]))
         self.assertIn("bootstrap.0.ips", self.messages(bootstrap=[{"enabled": "1", "type": "resolver", "content": self.DOH_STAMP}]))
         self.assertNotIn("bootstrap.0.ips", self.messages(bootstrap=[{"enabled": "1", "type": "resolver", "content": self.DOH_STAMP,
                                                                       "ips": "1.0.0.1"}]))
         self.assertNotIn("bootstrap.0.ips", self.messages(bootstrap=[{"enabled": "1", "type": "resolver",
                                                                       "content": "sdns://AAcAAAAAAAAABzEuMS4xLjE"}]),
                          "a plain stamp carries its address")
-        self.assertNotIn("general.proxyProtocol", self.messages({"general.proxyProtocol": "dns", "general.dnsPort": ""}),
-                         "the DNS port falls back to 53")
-        self.assertEqual(list(self.messages({"general.timeout": "2562047h"})), [], "the largest Go duration")
-        self.assertIn("general.timeout", self.messages({"general.timeout": "2562048h"}))
+
+    @unittest.skipUnless(BLOCKY, "needs blocky")
+    def test_what_blocky_says_why_on_apply(self):
+        """Left to Blocky, whose own reason Apply shows (deploy.sh): the model takes these, Blocky does not."""
+        dotted = "tcp-tls:dns.quad9.net."
+        for fields, rows in (({"general.timeout": "2562048h"}, {}),
+                             ({"filtering.queryTypes": "FOO"}, {}), ({"general.proxyProtocol": "http"}, {}),
+                             ({"rateLimit.enable": "1", "rateLimit.rate": "0"}, {}),
+                             ({"rateLimit.enable": "1", "rateLimit.rate": "10", "rateLimit.burst": "5"}, {}),
+                             ({"dns64.enable": "1", "filtering.queryTypes": "AAAA"}, {}),
+                             ({"dns64.enable": "1", "dns64.prefix": "64:ff9b::/33"}, {}),
+                             ({"general.clientLookupUpstream": dotted}, {}),
+                             ({}, {"upstreams": [self.UPSTREAM, dict(self.UPSTREAM, server=dotted)]}),
+                             ({}, {"conditional": [{"enabled": "1", "domain": "lan", "resolver": dotted}]}),
+                             ({}, {"bootstrap": [{"enabled": "1", "type": "resolver", "content": dotted, "ips": "9.9.9.9"}]}),
+                             ({"dns64.enable": "1", "dns64.prefix": "any"}, {}),
+                             ({"rateLimit.enable": "1", "rateLimit.rate": "10", "rateLimit.allowlist": "any"}, {}),
+                             ({}, {"customdns": [{"enabled": "1", "domain": "nas.lan", "ip": "any"}]})):
+            rows.setdefault("upstreams", [self.UPSTREAM])
+            messages, xml = run_model([{"fields": dict(self.DEFAULT, **fields), "rows": rows}])[0]
+            self.assertEqual(messages, {}, (fields, rows))
+            text, error = rendered(xml)
+            self.assertIsNone(error)
+            self.assertIsNotNone(blocky_validate(text), (fields, rows))
 
     def test_a_key_given_twice_names_a_row(self):
         rows = [{"enabled": "1", "fromDomain": "a.lan", "toDomain": "b.lan"}, {"enabled": "1", "fromDomain": "A.lan.", "toDomain": "c.lan"}]
@@ -393,11 +453,14 @@ class ModelRefuses(unittest.TestCase):
         self.assertEqual(root.findtext(".//dnssec/cacheExpirationHours"), "1")
         self.assertEqual(root.findtext(".//dnssec/maxNSEC3Iterations"), "150")
 
-    def test_a_schedule_that_ends_where_it_starts(self):
-        row = {"enabled": "1", "name": "kids", "weekdays": "mon", "groups": "ads", "start": "00:00", "end": "00:00"}
-        lists = [{"enabled": "1", "group": "ads", "source": "ads.example.com"}]
-        self.assertIn("schedules.0.end", self.messages(schedules=[row], denylists=lists))
-        self.assertNotIn("schedules.0.end", self.messages(schedules=[dict(row, end="06:00")], denylists=lists))
+    def test_what_blocky_runs_with(self):
+        # Blocky runs without Redis when it has no address, logs a group without lists and falls back to
+        # the console without a log target; the template writes a schedule without both times as all day
+        self.assertEqual(self.messages(
+            {"redis.required": "1", "queryLog.type": "mysql"},
+            clientgroups=[{"enabled": "1", "client": "default", "groups": "missing"}],
+            schedules=[{"enabled": "1", "name": "a", "weekdays": "mon", "groups": "missing", "start": "08:00"},
+                       {"enabled": "1", "name": "b", "weekdays": "mon", "groups": "missing", "start": "08:00", "end": "08:00"}]), {})
 
     def test_a_dnstap_target_blocky_parses(self):
         """Blocky parses the target only once it serves (querylog/dnstap_writer.go parseDnstapTarget)."""
@@ -413,6 +476,105 @@ class ModelRefuses(unittest.TestCase):
             self.assertTrue(refused(target), target)
         self.assertNotIn("queryLog.target", self.messages({"queryLog.type": "mysql", "queryLog.target": "u:p@tcp(db)/b"}))
 
+    def test_control_characters_in_a_list_source(self):
+        # yaml.v2 refuses them written out, which Blocky would only say as a YAML error
+        for source in ("a\x7fb.com", "a\x85b.com", "a\x01b.com"):
+            self.assertIn("denylists.0.source", self.messages(denylists=[{"enabled": "1", "group": "ads", "source": source}]),
+                          repr(source))
+            self.assertIn("allowlists.0.source", self.messages(allowlists=[{"enabled": "1", "group": "ads", "source": source}]),
+                          repr(source))
+
+    def test_control_characters_blocky_refuses_anywhere(self):
+        # Blocky's YAML parser refuses DEL and the C1 controls, naming no setting; the template writes
+        # NEL, LS and PS as the space YAML would read, and core drops the C0 controls on save
+        for char in ("\x7f", "\x80", "\x85", "\x9f", "\x00", "\x01", "\x1b", "\u2028", "\u2029"):
+            value = f"a{char}b.lan"
+            found = self.messages({"general.userAgent": value, "general.customZone": f"nas.lan. 60 IN A 10.0.0.1{char}",
+                                   "redis.address": value, "general.clientLookupUpstream": value},
+                                  upstreams=[self.UPSTREAM, dict(self.UPSTREAM, server=value)],
+                                  clientgroups=[{"enabled": "1", "client": value, "groups": "ads"}],
+                                  denylists=[{"enabled": "1", "group": "ads", "source": "ads.example.com"}])
+            for field in ("general.userAgent", "general.customZone", "redis.address", "general.clientLookupUpstream",
+                          "upstreams.1.server", "clientgroups.0.client"):
+                self.assertIn(field, found, (repr(char), field))
+        found = self.messages({"general.userAgent": "Mozilla/5.0 (é ∞ 日本)",
+                               "general.customZone": "nas\tIN A 10.0.0.1\r\nnas.lan. 60 IN A 10.0.0.1\n"})
+        self.assertNotIn("general.userAgent", found)
+        self.assertNotIn("general.customZone", found)
+
+    def test_every_listener_port(self):
+        # blocky validate parses only the first DNS and HTTP listener; Blocky exits at start on the others
+        for field in ("general.dnsPort", "general.httpPort", "general.tlsPort", "general.httpsPort"):
+            for value, refused in (("53,65535", False), ("53,70000", True), ("127.0.0.1:65536", True),
+                                   ("[::1]:99999", True), (":0", False)):
+                self.assertEqual(field in self.messages({field: value}), refused, (field, value))
+
+    def test_cache_exclusions_as_go_compiles_them(self):
+        # Blocky compiles them with RE2 only once it serves, and exits on one it cannot; a comma splits one
+        for value, refused in (("/\\.example\\.com$/", False), ("/^ad[sx]?\\./,/(?i)tracker/", False),
+                               ("/a(b/", True), ("/(?=x)a/", True), ("/(a)\\1/", True), ("/a++/", True),
+                               ("/a{1,3}/", True)):
+            self.assertEqual("general.cacheExclude" in self.messages({"general.cacheExclude": value}), refused, value)
+
+    def test_values_blocky_takes(self):
+        # prefix 0 is one bucket for all clients, concurrency 0 no limit, -1 attempts no retries (go-redis)
+        for fields in ({"rateLimit.enable": "1", "rateLimit.rate": "10", "rateLimit.ipv4Prefix": "0", "rateLimit.ipv6Prefix": "0"},
+                       {"general.loadingConcurrency": "0", "hostsFile.concurrency": "0"},
+                       {"redis.connectionAttempts": "-1"}, {"redis.connectionAttempts": "0"},
+                       {"general.dohPath": "/dns~query/a:b@c", "general.prometheusPath": "/a:b@c"}):
+            self.assertEqual(self.messages(fields), {}, fields)
+        # names are written quoted; only the comma lists they appear in limit them
+        self.assertEqual(self.messages(
+            {}, customdns=[{"enabled": "1", "domain": "_dmarc.example.lan", "ip": "192.0.2.1"}],
+            denylists=[{"enabled": "1", "group": "kids:1<b>", "source": "ads.example.com"}],
+            clientgroups=[{"enabled": "1", "client": "default", "groups": "kids:1<b>"}],
+            schedules=[{"enabled": "1", "name": "school: days", "weekdays": "mon", "groups": "kids:1<b>"}],
+            clientlookupclients=[{"enabled": "1", "name": "nas:1", "ips": "192.0.2.2"}]), {})
+
+    def test_what_blocky_cannot_route_or_retry(self):
+        # chi panics at start on { or * in a route, and needs the leading slash Blocky checks only for DoH;
+        # go-redis runs no command at all with fewer than -1 retries
+        for fields, field in (({"general.dohPath": "/dns{x"}, "general.dohPath"), ({"general.dohPath": "/dns*"}, "general.dohPath"),
+                              ({"general.prometheusPath": "metrics"}, "general.prometheusPath"),
+                              ({"redis.connectionAttempts": "-2"}, "redis.connectionAttempts")):
+            self.assertIn(field, self.messages(fields), fields)
+        found = self.messages({}, denylists=[{"enabled": "1", "group": "a b", "source": "ads.example.com"},
+                                             {"enabled": "1", "group": "a,b", "source": "ads.example.com"}])
+        self.assertIn("denylists.0.group", found)
+        self.assertIn("denylists.1.group", found)
+
+    def test_a_zone_reads_no_file(self):
+        # Blocky reads what an $INCLUDE names as root; the zone's own records need none. Go uppercases
+        # the dotless ı to I, so $ınclude is one too
+        for zone in ("$INCLUDE /etc/master.passwd", "nas.lan. 60 IN A 10.0.0.1\r\n  $include /dev/zero\n",
+                     "$ınclude /etc/master.passwd", "$ıNCLUDE /etc/master.passwd"):
+            self.assertIn("general.customZone", self.messages({"general.customZone": zone}), zone)
+        for zone in ('nas.lan. 60 IN TXT "$INCLUDE x"\n', "$includes.lan. 60 IN A 10.0.0.1\n"):
+            self.assertNotIn("general.customZone", self.messages({"general.customZone": zone}), zone)
+
+    def test_lengths_blocky_reads(self):
+        # a client is a YAML key, which may run to 1024 characters; a position is an unsigned integer
+        lists = [{"enabled": "1", "group": "ads", "source": "ads.example.com"}]
+        for client, refused in (("a" * 253, False), ("a" * 254, True)):
+            found = self.messages(denylists=lists, clientgroups=[{"enabled": "1", "client": client, "groups": "ads"}])
+            self.assertEqual("clientgroups.0.client" in found, refused, len(client))
+        for order, refused in (("2,1", False), ("999", False), ("1000", True), ("99999999999999999999", True)):
+            self.assertEqual("general.clientLookupOrder" in self.messages({"general.clientLookupOrder": order}), refused, order)
+
+    @unittest.skipUnless(BLOCKY, "needs blocky")
+    def test_integers_as_blocky_reads_them(self):
+        # core's integer check takes a sign, which Blocky's ECS mask parser does not
+        for mask in ("+5", "-0", "24"):
+            messages, xml = run_model([{"fields": dict(self.DEFAULT, **{"ecs.useAsClient": "1", "ecs.ipv4Mask": mask,
+                                                                        "ecs.ipv6Mask": mask}),
+                                        "rows": {"upstreams": [self.UPSTREAM]}}])[0]
+            self.assertEqual(messages, {}, mask)
+            self.assertIsNone(blocky_validate(rendered(xml)[0]), mask)
+        # a mask of -0 is no mask, as 0 is
+        _, xml = run_model([{"fields": dict(self.DEFAULT, **{"ecs.ipv4Mask": "-0", "ecs.ipv6Mask": "-0"}),
+                             "rows": {"upstreams": [self.UPSTREAM]}}])[0]
+        self.assertNotIn("\necs:", rendered(xml)[0])
+
     def test_files_and_sockets_blocky_reads_as_root(self):
         lists = [{"enabled": "1", "group": "ads", "source": "/etc/master.passwd"}]
         self.assertIn("denylists.0.source", self.messages(denylists=lists))
@@ -424,6 +586,12 @@ class ModelRefuses(unittest.TestCase):
         self.assertNotIn("redis.address", self.messages({"redis.address": "/var/run/redis/redis.sock"}))
         self.assertIn("redis.sentinelAddresses", self.messages({"redis.address": "m", "redis.sentinelAddresses": "s:1,/x"}))
         self.assertIn("redis.password", self.messages({"redis.address": "r:6379", "redis.password": "file:/etc/master.passwd"}))
+        # the server could read any file Blocky can, as root; PostgreSQL reads the files its options name
+        for kind, target in (("mysql", "u:p@tcp(db)/b?allowAllFiles=true"), ("postgresql", "postgres://u@db/b?sslkey=/root/k.pem"),
+                             ("timescale", "host=db sslrootcert=/etc/master.passwd")):
+            self.assertIn("queryLog.target", self.messages({"queryLog.type": kind, "queryLog.target": target}), target)
+        for target in ("postgres://u@db/b?sslmode=verify-full", "file:/usr/local/etc/blocky/secrets/db"):
+            self.assertNotIn("queryLog.target", self.messages({"queryLog.type": "postgresql", "queryLog.target": target}), target)
 
     def test_an_upgrade_from_before_the_directories_switches_off_what_is_outside(self):
         """Values stored before 1.4_4, as the model then took them (M1_0_1, M1_0_3)."""
@@ -448,8 +616,123 @@ class ModelRefuses(unittest.TestCase):
         self.assertEqual(root.findtext(".//general/customZone"), "nas.lan. 60 IN A 10.0.0.1")
         self.assertEqual(root.findtext(".//redis/sentinelAddresses"), "host2:26379")
 
-    def test_an_import_of_what_blocky_runs_saves(self):
-        """importAction saves nothing when the model refuses any imported value."""
+    def test_the_last_default_upstream(self):
+        found = self.messages(upstreams=[dict(self.UPSTREAM, group="lan")])
+        self.assertIn("general.enabled", found)
+
+
+@unittest.skipUnless(CORE and shutil.which("php"), "needs OPNSENSE_CORE and php")
+class Import(unittest.TestCase):
+    """importAction leaves out what the settings refuse, as core's importCsv() leaves out a refused record,
+    and saves the rest."""
+
+    BASE = "upstreams:\n  groups:\n    default: [1.1.1.1]\n"
+
+    def left_out(self, left, label, message):
+        self.assertTrue(any(line.startswith(label + ":") and message in line for line in left), (label, left))
+
+    def test_what_the_settings_refuse_is_left_out(self):
+        left, errors, xml = run_import([
+            self.BASE + "blocking:\n  denylists:\n    ads: [/etc/master.passwd, https://example.com/ads.txt]\n"
+            "bootstrapDns:\n  - resolvFile: /etc/resolv.conf\n  - upstream: 9.9.9.9\n"
+            "hostsFile:\n  sources: [/etc/hosts, /etc/master.passwd]\n  hostsTTL: 2h\n"
+            "redis:\n  address: /var/run/configd.socket\n  password: file:/etc/master.passwd\n  database: 2\n"])[0]
+        self.assertEqual(errors, [])
+        root = ET.fromstring(xml)
+        self.assertEqual([row.findtext("source") for row in root.iter("denylists")], ["https://example.com/ads.txt"])
+        self.assertEqual([row.findtext("content") for row in root.iter("bootstrap") if row.find("type") is not None],
+                         ["9.9.9.9"])
+        self.assertEqual((root.findtext(".//hostsFile/sources"), root.findtext(".//hostsFile/hostsTTL")), ("/etc/hosts", "2h"))
+        self.assertEqual((root.findtext(".//redis/address") or "", root.findtext(".//redis/password") or "",
+                          root.findtext(".//redis/database")), ("", "", "2"))
+        self.left_out(left, "blocking.denylists.ads: /etc/master.passwd", "A file must be in /usr/local/etc/blocky/lists.")
+        self.left_out(left, "bootstrapDns: /etc/resolv.conf", "A resolv file must be in /usr/local/etc/blocky/lists.")
+        self.left_out(left, "hostsFile.sources: /etc/master.passwd", "A file must be /etc/hosts or in /usr/local/etc/blocky/lists.")
+        self.left_out(left, "redis.address", "the Redis plugin socket")
+        self.left_out(left, "redis.password", "A file: value must name a file in /usr/local/etc/blocky/secrets.")
+
+    def test_a_refused_setting_goes_back_to_its_default(self):
+        left, errors, xml = run_import([self.BASE + "blocking:\n  blockType: beef\n  blockTTL: 2m\n"])[0]
+        self.assertEqual(errors, [])
+        root = ET.fromstring(xml)
+        self.assertEqual((root.findtext(".//general/blockType"), root.findtext(".//general/blockTTL")), ("zeroIP", "2m"))
+        self.left_out(left, "blocking.blockType", "zeroIP")
+
+    def test_a_setting_still_refused_at_its_default_takes_its_section(self):
+        # without its target, a dnstap log is still refused, so query logging goes back to its defaults
+        left, errors, xml = run_import([self.BASE + "queryLog:\n  type: dnstap\n  target: unix:/var/run/configd.socket\n"])[0]
+        self.assertEqual(errors, [])
+        root = ET.fromstring(xml)
+        self.assertEqual((root.findtext(".//queryLog/type"), root.findtext(".//queryLog/target") or ""), ("none", ""))
+        self.left_out(left, "queryLog.target", "tcp://host:port")
+        self.left_out(left, "queryLog", "tcp://host:port")
+
+    def test_a_list_keeps_the_entries_the_settings_take(self):
+        left, errors, xml = run_import([
+            self.BASE + "hostsFile:\n  sources: [/etc/hosts, /etc/blocky/hosts.local, https://example.com/h.txt]\n"
+            "redis:\n  address: r:6379\n  sentinelAddresses: [s1:26379, /tmp/x.sock, s2:26379]\n"])[0]
+        self.assertEqual(errors, [])
+        root = ET.fromstring(xml)
+        self.assertEqual(root.findtext(".//hostsFile/sources"), "/etc/hosts,https://example.com/h.txt")
+        self.assertEqual(root.findtext(".//redis/sentinelAddresses"), "s1:26379,s2:26379")
+        self.left_out(left, "hostsFile.sources: /etc/blocky/hosts.local", "A file must be /etc/hosts or in")
+        self.left_out(left, "redis.sentinelAddresses: /tmp/x.sock", "not Unix sockets")
+
+    def test_a_group_left_without_lists_keeps_its_references(self):
+        # the kids list is a file the settings refuse, so kids has no list, which Blocky logs and runs with
+        left, errors, xml = run_import([
+            self.BASE + "blocking:\n  denylists:\n    ads: [https://example.com/ads.txt]\n    kids: [/etc/blocky/kids.txt]\n"
+            "  clientGroupsBlock:\n    default: [ads, kids]\n    10.0.0.5: [kids]\n"
+            "  schedules:\n    evenings:\n      weekdays: [mon]\n  listSchedules:\n    ads: [evenings]\n    kids: [evenings]\n"])[0]
+        self.assertEqual(errors, [])
+        root = ET.fromstring(xml)
+        self.assertEqual([row.findtext("group") for row in root.iter("denylists") if row.find("group") is not None], ["ads"])
+        self.assertEqual([(row.findtext("client"), row.findtext("groups")) for row in root.iter("clientgroups")],
+                         [("default", "ads,kids"), ("10.0.0.5", "kids")])
+        self.assertEqual([(row.findtext("name"), row.findtext("groups")) for row in root.iter("schedules")
+                          if row.find("name") is not None], [("evenings", "ads,kids")])
+        self.left_out(left, "blocking.denylists.kids", "/usr/local/etc/blocky/lists")
+
+    def test_negative_durations_as_the_template_writes_them(self):
+        fields = {"general.cacheMinTime": "-1", "general.cacheMaxTime": "-5", "general.cacheTimeNegative": "-1",
+                  "general.downloadReadHeaderTimeout": "-1"}
+        _, xml = run_model([{"fields": dict(fields, **{"general.enabled": "1"}),
+                             "rows": {"upstreams": [{"enabled": "1", "group": "default", "server": "1.1.1.1"}]}}])[0]
+        text, _ = rendered(xml)
+        left, errors, xml = run_import([text])[0]
+        self.assertEqual((left, errors), ([], []))
+        root = ET.fromstring(xml)
+        self.assertEqual([root.findtext(".//general/" + ref.split(".")[1]) for ref in fields], ["-1m", "-5m", "-1m", "-1m"])
+
+    def test_of_keys_blocky_reads_as_one_the_first_stays(self):
+        left, errors, xml = run_import([self.BASE + "customDNS:\n  rewrite:\n    Fritz.Box: fritz.lan\n    fritz.box.: other.lan\n"
+                                        "    nas.lan: n.lan\n"])[0]
+        self.assertEqual(errors, [])
+        root = ET.fromstring(xml)
+        self.assertEqual([(row.findtext("fromDomain"), row.findtext("toDomain")) for row in root.iter("customdnsrewrite")],
+                         [("Fritz.Box", "fritz.lan"), ("nas.lan", "n.lan")])
+        self.left_out(left, "customDNS.rewrite.fritz.box.", "Another enabled entry already uses this")
+
+    @unittest.skipUnless(BLOCKY, "needs blocky")
+    def test_control_characters_are_left_out_before_apply(self):
+        left, errors, xml = run_import(['upstreams:\n  userAgent: "a\\x7fb"\n  groups:\n    default: [1.1.1.1, "9.9.9\\x85.9"]\n'
+                                        'blocking:\n  denylists:\n    ads: [https://example.com/ads.txt]\n'
+                                        '  clientGroupsBlock:\n    "laptop\\x9f": [ads]\n    default: [ads]\n'])[0]
+        self.assertEqual(errors, [])
+        root = ET.fromstring(xml)
+        self.assertEqual(root.findtext(".//general/userAgent") or "", "")
+        self.assertEqual([row.findtext("server") for row in root.iter("upstreams") if row.find("server") is not None], ["1.1.1.1"])
+        self.assertEqual([row.findtext("client") for row in root.iter("clientgroups")], ["default"])
+        self.left_out(left, "upstreams.userAgent", "Enter text without control characters.")
+        self.assertIsNone(blocky_validate(rendered(xml)[0]), "Apply takes what was saved")
+
+    def test_what_leaving_out_cannot_answer_saves_nothing(self):
+        left, errors, xml = run_import(["upstreams:\n  groups:\n    lan: [1.1.1.1]\n"])[0]
+        self.assertIsNone(xml)
+        self.assertTrue(any(line.startswith("general.enabled:") for line in errors), errors)
+
+    def test_a_config_blocky_runs_imports(self):
+        """Whatever the settings leave out, an import of a file Blocky runs saves."""
         for text in ("upstreams:\n  groups:\n    default: [1.1.1.1]\ncustomDNS:\n  rewrite:\n    Fritz.Box: fritz.lan\n"
                      "    fritz.box: other.lan\n    fritz.box.: third.lan\n",
                      "upstreams:\n  groups:\n    default: [1.1.1.1]\nblocking:\n  denylists:\n"
@@ -465,11 +748,9 @@ class ModelRefuses(unittest.TestCase):
                      'queryLog:\n  type: mysql\n  target: "u:p@tcp(db)/b\\n"\n'):
             if BLOCKY:
                 self.assertIsNone(blocky_validate(text), text)
-            self.assertEqual(run_model([imported(text)])[0][0], {}, text)
-
-    def test_the_last_default_upstream(self):
-        found = self.messages(upstreams=[dict(self.UPSTREAM, group="lan")])
-        self.assertIn("general.enabled", found)
+            _, errors, xml = run_import([text])[0]
+            self.assertEqual(errors, [], text)
+            self.assertIsNotNone(xml, text)
 
 
 if __name__ == "__main__":

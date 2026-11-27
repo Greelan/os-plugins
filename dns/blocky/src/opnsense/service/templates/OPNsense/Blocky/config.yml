@@ -225,7 +225,7 @@ caching:
 {% set clc = helpers.toList('OPNsense.blocky.clientlookupclients') %}
 {% set clc_on = clc|selectattr('enabled', 'equalto', '1')|list %}
 {% set lookup = (OPNsense.blocky.general.clientLookupUpstream|default(''))|trim %}
-{% if lookup or clc_on %}
+{% if lookup or clc_on or OPNsense.blocky.general.clientLookupOrder %}
 clientLookup:
 {% if lookup %}
   upstream: {{ q(lookup) }}
@@ -503,15 +503,15 @@ specialUseDomains:
   enable: {{ 'true' if OPNsense.blocky.specialUseDomains.enable != '0' else 'false' }}
   rfc6762-appendixG: {{ 'true' if OPNsense.blocky.specialUseDomains.rfc6762 != '0' else 'false' }}
 {% endif %}
-{% if OPNsense.blocky.ecs is defined and (OPNsense.blocky.ecs.useAsClient == '1' or OPNsense.blocky.ecs.forward == '1' or (OPNsense.blocky.ecs.ipv4Mask and OPNsense.blocky.ecs.ipv4Mask != '0') or (OPNsense.blocky.ecs.ipv6Mask and OPNsense.blocky.ecs.ipv6Mask != '0')) %}
+{% if OPNsense.blocky.ecs is defined and (OPNsense.blocky.ecs.useAsClient == '1' or OPNsense.blocky.ecs.forward == '1' or OPNsense.blocky.ecs.ipv4Mask|int != 0 or OPNsense.blocky.ecs.ipv6Mask|int != 0) %}
 ecs:
   useAsClient: {{ 'true' if OPNsense.blocky.ecs.useAsClient == '1' else 'false' }}
   forward: {{ 'true' if OPNsense.blocky.ecs.forward == '1' else 'false' }}
-{% if OPNsense.blocky.ecs.ipv4Mask and OPNsense.blocky.ecs.ipv4Mask != '0' %}
-  ipv4Mask: {{ OPNsense.blocky.ecs.ipv4Mask }}
+{% if OPNsense.blocky.ecs.ipv4Mask|int != 0 %}
+  ipv4Mask: {{ OPNsense.blocky.ecs.ipv4Mask|int }}
 {% endif %}
-{% if OPNsense.blocky.ecs.ipv6Mask and OPNsense.blocky.ecs.ipv6Mask != '0' %}
-  ipv6Mask: {{ OPNsense.blocky.ecs.ipv6Mask }}
+{% if OPNsense.blocky.ecs.ipv6Mask|int != 0 %}
+  ipv6Mask: {{ OPNsense.blocky.ecs.ipv6Mask|int }}
 {% endif %}
 {% endif %}
 {% if OPNsense.blocky.dnssec is defined and OPNsense.blocky.dnssec.validate == '1' %}

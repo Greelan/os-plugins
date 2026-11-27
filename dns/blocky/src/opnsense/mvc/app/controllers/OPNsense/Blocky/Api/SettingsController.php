@@ -42,13 +42,6 @@ class SettingsController extends ApiMutableModelControllerBase
      * cannot be checked strictly enough to be safe input, as core does for Monit */
     protected static $internalSaveRequiresAdmin = true;
 
-    /* array (grid) sections replaced wholesale on import */
-    private static $importArrays = [
-        'upstreams', 'bootstrap', 'denylists', 'allowlists', 'customdns', 'conditional',
-        'customdnsrewrite', 'conditionalrewrite', 'clientgroups',
-        'clientlookupclients', 'schedules',
-    ];
-
     /**
      * Import an upstream Blocky config.yml: parse it via the Python helper,
      * replace the grid sections, overlay the scalar settings, validate, and
@@ -88,60 +81,25 @@ class SettingsController extends ApiMutableModelControllerBase
         }
 
         Config::getInstance()->lock();
-        $model = $this->getModel();
-
-        // faithful mirror: reset everything to defaults so keys absent from the
-        // file fall back to blocky's defaults (no stale values); keep the service
-        // state and the certificate, plugin controls outside blocky's config.
-        $enabled = (string)$model->general->enabled;
-        $certificate = (string)$model->general->certificate;
-        foreach ($model->getFlatNodes() as $node) {
-            $node->applyDefault();
-        }
-        $model->general->enabled = $enabled;
-        $model->general->certificate = $certificate;
-
-        foreach (self::$importArrays as $name) {
-            $uuids = [];
-            foreach ($model->$name->iterateItems() as $uuid => $node) {
-                $uuids[] = $uuid;
-            }
-            foreach ($uuids as $uuid) {
-                $model->$name->del($uuid);
-            }
-        }
-        foreach (($parsed['scalars'] ?? []) as $section => $fields) {
-            $model->$section->setNodes($fields);
-        }
-        $counts = [];
-        foreach (($parsed['arrays'] ?? []) as $name => $rows) {
-            foreach ($rows as $row) {
-                $model->$name->Add()->setNodes($row);
-            }
-            $counts[$name] = count($rows);
-        }
-
-        $errors = [];
-        foreach ($model->performValidation(true) as $msg) {
-            $errors[] = $msg->getField() . ': ' . $msg->getMessage();
-        }
-        if (!empty($errors)) {
+        $result = $this->getModel()->applyImport($parsed);
+        $warnings = array_merge($parsed['warnings'] ?? [], $result['left']);
+        if (!empty($result['errors'])) {
             return [
                 'status' => 'failed',
-                'errors' => $errors,
+                'errors' => $result['errors'],
                 'message' => gettext('Imported values failed validation; nothing was saved.'),
                 'skipped' => $parsed['skipped'] ?? [],
-                'warnings' => $parsed['warnings'] ?? [],
+                'warnings' => $warnings,
             ];
         }
 
-        /* the base save refuses read-only users and records the change */
+        /* validated above; the base save refuses read-only users and records the change */
         $this->save(false, true);
         return [
             'status' => 'ok',
-            'counts' => $counts,
+            'counts' => $result['counts'],
             'skipped' => $parsed['skipped'] ?? [],
-            'warnings' => $parsed['warnings'] ?? [],
+            'warnings' => $warnings,
         ];
     }
 

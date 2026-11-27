@@ -3,9 +3,9 @@
 # Blocky reads config.yml only when it starts. The template writes config.yml.staging, which
 # replaces config.yml only when Blocky can read it, so a configuration Blocky would refuse to read
 # never replaces the one it last started with. What fails only once Blocky serves, such as a
-# listener on an address the firewall does not have, is not caught, except a missing bootstrap resolv
-# file. Without an argument, print why the staged configuration would not be put in place, or nothing;
-# with "deploy", put it in place, or log why not.
+# listener on an address the firewall does not have, is not caught, except a bootstrap resolv file
+# that is missing or names no nameserver address. Without an argument, print why the staged
+# configuration would not be put in place, or nothing; with "deploy", put it in place, or log why not.
 
 BLOCKY=/usr/local/sbin/blocky
 CONFIG=/usr/local/etc/blocky/config.yml
@@ -35,14 +35,20 @@ else
 	fi
 fi
 
-# Blocky reads a bootstrap resolv file only once it serves, and exits when it is missing; the
-# template writes each on a line of its own, quoted as any value
+# Blocky reads a bootstrap resolv file only once it serves, and exits when it is missing or names
+# no nameserver address; the template writes each on a line of its own, quoted as any value
 if [ ${STATUS} -eq 0 ]; then
-	MISSING=$(sed -n "s/^  - resolvFile: '\(.*\)'\$/\1/p" "${COPY}" | sed "s/''/'/g" |
-	    while IFS= read -r FILE; do [ -f "${FILE}" ] || echo "${FILE}"; done | head -n 1)
-	if [ -n "${MISSING}" ]; then
+	UNUSABLE=$(sed -n "s/^  - resolvFile: '\(.*\)'\$/\1/p" "${COPY}" | sed "s/''/'/g" |
+	    while IFS= read -r FILE; do
+		if [ ! -f "${FILE}" ]; then
+			echo "${FILE} does not exist"
+		elif ! grep -Eq '^[[:space:]]*nameserver[[:space:]]+[0-9A-Fa-f.:]+([[:space:]]|$)' "${FILE}"; then
+			echo "${FILE} has no nameserver address"
+		fi
+	    done | head -n 1)
+	if [ -n "${UNUSABLE}" ]; then
 		STATUS=1
-		REASON="Error: the bootstrap resolv file ${MISSING} does not exist"
+		REASON="Error: the bootstrap resolv file ${UNUSABLE}"
 	fi
 fi
 

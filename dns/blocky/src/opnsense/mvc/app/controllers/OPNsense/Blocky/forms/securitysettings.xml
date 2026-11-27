@@ -108,7 +108,7 @@
         <type>text</type>
         <hint>32</hint>
         <advanced>true</advanced>
-        <help>Clients are grouped into IPv4 subnets of this prefix length for rate-limit accounting (32 = per address).</help>
+        <help>Clients are grouped into IPv4 subnets of this prefix length for rate-limit accounting (32 = per address, 0 = one limit for all clients).</help>
     </field>
     <field>
         <id>blocky.rateLimit.ipv6Prefix</id>
@@ -116,7 +116,7 @@
         <type>text</type>
         <hint>64</hint>
         <advanced>true</advanced>
-        <help>Clients are grouped into IPv6 subnets of this prefix length for rate-limit accounting.</help>
+        <help>Clients are grouped into IPv6 subnets of this prefix length for rate-limit accounting (0 = one limit for all clients).</help>
     </field>
     <field>
         <id>blocky.rateLimit.allowlist</id>

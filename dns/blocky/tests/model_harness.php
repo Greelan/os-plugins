@@ -60,6 +60,8 @@ namespace {
                 }
             }
         }
+        /* a case may carry an importer answer, applied on top of what it set as importAction does */
+        $imported = isset($case['import']) ? $model->applyImport($case['import']) : null;
         /* a case may name migrations to run on what it set, as an upgrade would: on the values as
          * config.xml holds them, checking what changed, as core's runMigrations() saves */
         $validateFullModel = empty($case['migrate']);
@@ -72,6 +74,16 @@ namespace {
                 $migration = "OPNsense\\Blocky\\Migrations\\{$name}";
                 (new $migration())->run($model);
             }
+            /* then what a later save changes, as array.index.field or section.field */
+            foreach ($case['after'] ?? [] as $ref => $value) {
+                $parts = explode('.', $ref);
+                if (count($parts) == 3) {
+                    $row = array_values(iterator_to_array($model->getNodeByReference($parts[0])->iterateItems()))[$parts[1]];
+                    $row->{$parts[2]}->setValue($value);
+                } else {
+                    $model->getNodeByReference($ref)->setValue($value);
+                }
+            }
         }
         $messages = [];
         foreach ($model->performValidation($validateFullModel) as $message) {
@@ -82,7 +94,8 @@ namespace {
         }
         echo json_encode([
             'messages' => $messages,
-            'xml' => $messages ? null :
+            'import' => $imported,
+            'xml' => $messages || !empty($imported['errors']) ? null :
                 '<opnsense>' . preg_replace('/^<\?xml[^>]*>\s*/', '', $model->toXML()->asXML()) . '</opnsense>',
         ]) . "\n";
         if (!$validateFullModel) {

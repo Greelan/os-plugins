@@ -86,6 +86,17 @@ class Deploy(unittest.TestCase):
         self.assertEqual(self.read("config.yml"), GOOD)
         self.assertEqual([n for n in os.listdir(self.folder) if n.startswith("config.yml.")], ["config.yml.staging"])
 
+    def test_a_resolv_file_without_a_nameserver(self):
+        # Blocky exits at start when it finds no nameserver address in it
+        resolv = os.path.join(self.folder, "resolv.conf")
+        staged = GOOD + "bootstrapDns:\n  - resolvFile: '%s'\n" % resolv
+        self.write("config.yml", GOOD)
+        self.write("config.yml.staging", staged)
+        self.write("resolv.conf", "search lan\n# nameserver 1.1.1.1\nnameserver dns.example\n")
+        self.assertEqual(self.run_script().strip(), "Error: the bootstrap resolv file %s has no nameserver address" % resolv)
+        self.write("resolv.conf", "search lan\n  nameserver\t2606:4700::1111 # cloudflare\n")
+        self.assertEqual(self.run_script(), "")
+
     def test_a_missing_resolv_file(self):
         # Blocky reads it only once it serves, and exits without it
         resolv = os.path.join(self.folder, "it's resolv.conf")

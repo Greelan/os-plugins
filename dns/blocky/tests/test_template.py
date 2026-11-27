@@ -91,6 +91,11 @@ class Template(unittest.TestCase):
     def test_client_label_can_be_turned_off(self):
         self.assertIs(render(general={"prometheusClientLabel": "0"})["prometheus"]["enableClientLabel"], False)
 
+    def test_name_order_without_an_upstream(self):
+        # Blocky orders the names it finds in the hosts file and custom DNS too, with no lookup upstream
+        self.assertEqual(render(general={"clientLookupOrder": "2,1"})["clientLookup"]["singleNameOrder"], [2, 1])
+        self.assertNotIn("clientLookup", render())
+
     def test_ignored_clients(self):
         doc = render(queryLog={"type": "console", "ignoreClients": "192.168.1.1,10.0.0.0/8,*-ap"})
         self.assertEqual(doc["queryLog"]["ignore"], {"clients": ["192.168.1.1", "10.0.0.0/8", "*-ap"]})

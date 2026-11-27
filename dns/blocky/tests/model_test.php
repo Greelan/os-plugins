@@ -55,6 +55,30 @@ foreach (['tcp://127.0.0.1:6000' => true, 'file:/usr/local/etc/blocky/secrets/dn
     check("dnstap target {$target}", Blocky::isDnstapTarget($target), $allowed);
 }
 
+/* no database connection option that reads a file, unless the whole string is root's own file: value */
+foreach ([
+    'u:p@tcp(db:3306)/blocky?parseTime=true' => true,
+    'postgres://u:p@db:5432/blocky?sslmode=verify-full' => true,
+    'host=db user=u dbname=blocky sslmode=require' => true,
+    'file:/usr/local/etc/blocky/secrets/db' => true,
+    'postgres://u:mypassfile@db/b' => true,
+    'postgres://u@db/sslkeys' => true,
+    'u:p@tcp(evil:3306)/b?allowAllFiles=true' => false,
+    'u:p@tcp(evil:3306)/b?x=1&allowallfiles=1' => false,
+    'postgres://u:p@db/b?sslrootcert=/etc/master.passwd' => false,
+    'postgres://u:p@db/b?ssl%63ert=/root/c.pem&sslkey=/root/k.pem' => false,
+    'host=db sslkey = /root/k.pem' => false,
+    "host=db\tsslkey=/root/k.pem" => false,
+    'host=db passfile=/etc/master.passwd' => false,
+    'host=db service=a servicefile=/etc/master.passwd' => false,
+    /* PostgreSQL starts the next keyword right after a quoted value */
+    "host='db'sslrootcert=/etc/master.passwd" => false,
+    "host='db' sslmode='require'passfile='/etc/master.passwd'" => false,
+    'FILE:/etc/x?allowAllFiles=true' => false,
+] as $target => $allowed) {
+    check('database target ' . json_encode($target), Blocky::isDatabaseTarget($target), $allowed);
+}
+
 /* a write-only secret: kept on empty, replaced on text, removed only by CLEAR, never rendered */
 $secret = new SecretField();
 $secret->setValue('hunter2');

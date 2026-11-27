@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7 - 2026-11-28
+
+- Import copies the file as it is, and leaves out and reports what the settings refuse.
+- Fewer checks repeat Blocky's own: Apply shows why Blocky refuses a setting.
+- Settings that would stop Blocky at start are refused.
+- Zone $INCLUDE lines and database options that read a file are refused again; a database connection string can still be a file: value.
+- The client name order applies without a lookup upstream.
+
 ## 1.6 - 2026-11-26
 
 - Blocky 0.37.0 and PyYAML 6.0.4.

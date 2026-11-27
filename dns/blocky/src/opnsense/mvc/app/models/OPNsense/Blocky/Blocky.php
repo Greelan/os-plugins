@@ -29,6 +29,8 @@
 namespace OPNsense\Blocky;
 
 use OPNsense\Base\BaseModel;
+use OPNsense\Base\FieldTypes\BaseListField;
+use OPNsense\Base\FieldTypes\BaseSetField;
 use OPNsense\Base\Messages\Message;
 use OPNsense\Core\Backend;
 use OPNsense\Trust\Store;
@@ -43,24 +45,18 @@ class Blocky extends BaseModel
     public const HOSTS_FILES = ['/etc/hosts'];
     /* the socket the Redis plugin (databases/redis) opens */
     public const REDIS_SOCKETS = ['/var/run/redis/redis.sock'];
+    /* the grid sections an import replaces */
+    public const IMPORT_ARRAYS = ['upstreams', 'bootstrap', 'denylists', 'allowlists', 'customdns', 'conditional',
+        'customdnsrewrite', 'conditionalrewrite', 'clientgroups', 'clientlookupclients', 'schedules'];
+    /* control characters, but tab and line breaks, which fields take or refuse themselves */
+    private const CONTROLS = '/[\x{0}-\x{8}\x{b}\x{c}\x{e}-\x{1f}\x{7f}-\x{9f}\x{2028}\x{2029}]/u';
+    /* comma lists the settings keep as text */
+    private const TEXT_LISTS = ['clientgroups.groups', 'schedules.groups'];
     private const LIST_DIR = '/^\/usr\/local\/etc\/blocky\/lists(\/(?!\.\.?(\/|$))[^\/\0]+)+$/u';
     private const SECRET_DIR = '/^\/usr\/local\/etc\/blocky\/secrets(\/(?!\.\.?(\/|$))[^\/\0]+)+$/u';
-    /* the DNS type names Blocky 0.37 knows */
-    private const QUERY_TYPES = ['A', 'AAAA', 'AFSDB', 'AMTRELAY', 'ANY', 'APL', 'ATMA', 'AVC', 'AXFR', 'CAA',
-        'CDNSKEY', 'CDS', 'CERT', 'CNAME', 'CSYNC', 'DHCID', 'DLV', 'DNAME', 'DNSKEY', 'DS', 'EID', 'EUI48', 'EUI64',
-        'GID', 'GPOS', 'HINFO', 'HIP', 'HTTPS', 'IPSECKEY', 'ISDN', 'IXFR', 'KEY', 'KX', 'L32', 'L64', 'LOC', 'LP',
-        'MAILA', 'MAILB', 'MB', 'MD', 'MF', 'MG', 'MINFO', 'MR', 'MX', 'NAPTR', 'NID', 'NIMLOC', 'NINFO', 'NS',
-        'NSAP-PTR', 'NSEC', 'NSEC3', 'NSEC3PARAM', 'NULL', 'NXNAME', 'NXT', 'OPENPGPKEY', 'OPT', 'PTR', 'PX', 'RESINFO',
-        'RKEY', 'RP', 'RRSIG', 'RT', 'SIG', 'SMIMEA', 'SOA', 'SPF', 'SRV', 'SSHFP', 'SVCB', 'TA', 'TALINK', 'TKEY',
-        'TLSA', 'TSIG', 'TXT', 'UID', 'UINFO', 'UNSPEC', 'URI', 'X25', 'ZONEMD'];
-    /* the fields Blocky reads as a Go duration; a bare number is minutes, as the template writes it */
-    private const DURATION_FIELDS = ['general.timeout', 'general.quicMaxIdleTimeout', 'general.quicKeepAlivePeriod',
-        'general.blockTTL', 'general.refreshPeriod', 'general.downloadTimeout', 'general.downloadCooldown',
-        'general.downloadWriteTimeout', 'general.downloadReadTimeout', 'general.downloadReadHeaderTimeout',
-        'general.cacheMinTime', 'general.cacheMaxTime', 'general.cacheTimeNegative', 'general.prefetchExpires',
-        'general.customTTL', 'queryLog.creationCooldown', 'queryLog.flushInterval', 'hostsFile.hostsTTL',
-        'hostsFile.refreshPeriod', 'hostsFile.downloadTimeout', 'hostsFile.downloadCooldown',
-        'redis.connectionCooldown'];
+    /* database connection options that read a file, as root; matched anywhere, since PostgreSQL also
+     * starts a keyword right after a quoted value */
+    private const FILE_OPTIONS = '/(allowAllFiles|sslcert|sslkey|sslrootcert|passfile|servicefile)\s*=/i';
 
     /**
      * {@inheritdoc}
@@ -68,6 +64,15 @@ class Blocky extends BaseModel
     public function performValidation($validateFullModel = false)
     {
         $messages = parent::performValidation($validateFullModel);
+
+        /* Blocky's YAML parser refuses DEL and the C1 controls, naming no setting; the template writes
+         * NEL, LS and PS as the space YAML would read, and core drops the C0 controls on save */
+        foreach ($this->getFlatNodes() as $ref => $node) {
+            $value = $node->getValue();
+            if (($validateFullModel || $node->isFieldChanged()) && preg_match(self::CONTROLS, $value)) {
+                $messages->appendMessage(new Message(gettext('Enter text without control characters.'), $ref));
+            }
+        }
 
         /* Blocky refuses to start without an enabled upstream in the "default" group; a grid
          * dialog only sees messages on its own row, so the row edited away gets one too */
@@ -137,7 +142,8 @@ class Blocky extends BaseModel
                 if (!$changed && !$validateFullModel) {
                     continue;
                 }
-                foreach ($changed ?: array_slice($same, 1) as $row) {
+                /* rows that are all new, as an import adds them, keep the first */
+                foreach (count($changed) < count($same) ? $changed : array_slice($same, 1) as $row) {
                     $messages->appendMessage(new Message(
                         gettext('Another enabled entry already uses this; combine them or disable one.'),
                         $row->$key->__reference
@@ -154,132 +160,6 @@ class Blocky extends BaseModel
             preg_match('/^(0+(ns|us|ms|s|m|h))+$/', (string)$this->queryLog->flushInterval)
         ) {
             $messages->appendMessage(new Message(gettext('Enter a flush interval above zero.'), 'queryLog.flushInterval'));
-        }
-
-        /* Go refuses a duration past about 292 years (2^63-1 ns) */
-        foreach (self::DURATION_FIELDS as $ref) {
-            $field = $this->getNodeByReference($ref);
-            $value = ltrim((string)$field, '-');
-            if ((!$validateFullModel && !$field->isFieldChanged()) || $value === '') {
-                continue;
-            }
-            $ns = 0.0;
-            preg_match_all('/([0-9]+)(ns|us|ms|s|m|h)?/', ctype_digit($value) ? $value . 'm' : $value, $parts, PREG_SET_ORDER);
-            foreach ($parts as $part) {
-                $ns += (float)$part[1] * ['ns' => 1, 'us' => 1e3, 'ms' => 1e6, 's' => 1e9, 'm' => 6e10,
-                    'h' => 3.6e12][$part[2] ?? 'm'];
-            }
-            if ($ns > PHP_INT_MAX) {
-                $messages->appendMessage(new Message(gettext('Enter a duration of at most 2562047h.'), $field->__reference));
-            }
-        }
-
-        /* Blocky exits when a listener set to expect the PROXY header has no port */
-        foreach (['http' => 'httpPort', 'https' => 'httpsPort', 'tls' => 'tlsPort'] as $proto => $port) {
-            /* the template leaves out a listener of 0, which means off */
-            $listeners = array_diff(array_map('trim', explode(',', (string)$this->general->$port)), ['', '0']);
-            if (in_array($proto, explode(',', (string)$this->general->proxyProtocol), true) && empty($listeners)) {
-                $messages->appendMessage(new Message(
-                    sprintf(gettext('Set the %s port, or leave %s out.'), strtoupper($proto), $proto),
-                    'general.proxyProtocol'
-                ));
-            }
-        }
-
-        /* the masks take any five digits */
-        foreach (['dnsPort', 'httpPort', 'tlsPort', 'httpsPort'] as $name) {
-            $field = $this->general->$name;
-            if (!$validateFullModel && !$field->isFieldChanged()) {
-                continue;
-            }
-            foreach (explode(',', (string)$field) as $listener) {
-                $pos = strrpos($listener, ':');
-                if ((int)trim($pos === false ? $listener : substr($listener, $pos + 1)) > 65535) {
-                    $messages->appendMessage(new Message(gettext('Enter a port no higher than 65535.'), $field->__reference));
-                    break;
-                }
-            }
-        }
-        if ($validateFullModel || $this->filtering->queryTypes->isFieldChanged()) {
-            foreach (explode(',', (string)$this->filtering->queryTypes) as $type) {
-                if (trim($type) !== '' && !in_array(trim($type), self::QUERY_TYPES, true)) {
-                    $messages->appendMessage(new Message(
-                        sprintf(gettext('Blocky does not know the DNS type %s.'), trim($type)),
-                        $this->filtering->queryTypes->__reference
-                    ));
-                    break;
-                }
-            }
-        }
-
-        /* a schedule window needs both start and end, or neither (all-day); Blocky reads a window that
-         * ends where it starts as one that is never open */
-        foreach ($this->schedules->iterateItems() as $schedule) {
-            $start = (string)$schedule->start;
-            $end = (string)$schedule->end;
-            if (($start === '') !== ($end === '')) {
-                $target = $start === '' ? $schedule->start : $schedule->end;
-                $messages->appendMessage(new Message(
-                    gettext('Set both Start and End, or leave both empty for an all-day schedule.'),
-                    $target->__reference
-                ));
-            } elseif (
-                $start !== '' && $start === $end &&
-                ($validateFullModel || $schedule->start->isFieldChanged() || $schedule->end->isFieldChanged())
-            ) {
-                $messages->appendMessage(new Message(
-                    gettext('Set an End other than Start, or leave both empty for an all-day schedule.'),
-                    $schedule->end->__reference
-                ));
-            }
-        }
-
-        /* Blocky exits when a resolver it is given does not parse */
-        if ($validateFullModel || $this->general->clientLookupUpstream->isFieldChanged()) {
-            $lookup = trim((string)$this->general->clientLookupUpstream);
-            if ($lookup !== '' && !$this->isUpstream($lookup)) {
-                $messages->appendMessage(new Message(
-                    gettext('Enter a resolver, e.g. tcp-tls:dns.quad9.net or 192.168.1.1, with no trailing dot.'),
-                    'general.clientLookupUpstream'
-                ));
-            }
-        }
-        foreach ($this->upstreams->iterateItems() as $upstream) {
-            if (
-                (string)$upstream->enabled == '1' && ($validateFullModel || $upstream->server->isFieldChanged()) &&
-                !$this->isUpstream((string)$upstream->server)
-            ) {
-                $messages->appendMessage(new Message(
-                    gettext('Enter a resolver, e.g. tcp-tls:dns.quad9.net or 192.168.1.1, with no trailing dot.'),
-                    $upstream->server->__reference
-                ));
-            }
-        }
-        foreach ($this->conditional->iterateItems() as $mapping) {
-            if ((string)$mapping->enabled != '1' || !($validateFullModel || $mapping->resolver->isFieldChanged())) {
-                continue;
-            }
-            foreach (explode(',', (string)$mapping->resolver) as $resolver) {
-                if (!$this->isUpstream($resolver)) { /* an empty entry too, which Blocky gets as '' */
-                    $messages->appendMessage(new Message(
-                        gettext('Enter a resolver, e.g. tcp-tls:dns.quad9.net or 192.168.1.1, with no trailing dot.'),
-                        $mapping->resolver->__reference
-                    ));
-                    break;
-                }
-            }
-        }
-
-        /* Blocky exits when Redis is required but cannot be reached, so at least insist on an address */
-        if (
-            ($validateFullModel || $this->redis->required->isFieldChanged() ||
-                $this->redis->address->isFieldChanged()) &&
-            (string)$this->redis->required == '1' && trim((string)$this->redis->address) === ''
-        ) {
-            $messages->appendMessage(new Message(
-                gettext('Enter an address when Redis is required.'),
-                'redis.address'
-            ));
         }
 
         /* Blocky exits on a block type that is neither a mode nor a list of addresses */
@@ -299,19 +179,9 @@ class Blocky extends BaseModel
             }
         }
 
-        /* database and dnstap logs need a target (write-only, so read the stored value);
-         * CSV and SQLite logs have fixed locations */
+        /* Blocky would connect to a dnstap socket, or a database that reads files, as root; the target is
+         * write-only, so read the stored value */
         if (
-            ($validateFullModel || $this->queryLog->type->isFieldChanged() ||
-                $this->queryLog->target->isFieldChanged()) &&
-            in_array((string)$this->queryLog->type, ['mysql', 'postgresql', 'timescale', 'dnstap']) &&
-            trim($this->queryLog->target->getValue()) === ''
-        ) {
-            $messages->appendMessage(new Message(
-                gettext('Enter a target for this log type.'),
-                'queryLog.target'
-            ));
-        } elseif (
             ($validateFullModel || $this->queryLog->type->isFieldChanged() ||
                 $this->queryLog->target->isFieldChanged()) &&
             (string)$this->queryLog->type == 'dnstap' &&
@@ -321,22 +191,25 @@ class Blocky extends BaseModel
                 gettext('Enter a dnstap target as tcp://host:port.'),
                 'queryLog.target'
             ));
+        } elseif (
+            ($validateFullModel || $this->queryLog->type->isFieldChanged() ||
+                $this->queryLog->target->isFieldChanged()) &&
+            in_array((string)$this->queryLog->type, ['mysql', 'postgresql', 'timescale']) &&
+            !self::isDatabaseTarget($this->queryLog->target->getValue())
+        ) {
+            $messages->appendMessage(new Message(
+                gettext('Leave out allowAllFiles, sslcert, sslkey, sslrootcert, passfile and servicefile, or give the connection string as a file: value.'),
+                'queryLog.target'
+            ));
         }
 
-        /* Blocky resolves a bootstrap host name with the pinned addresses only, and refuses a
-         * plain resolver it would have to look up first */
+        /* Blocky resolves a bootstrap host name with the pinned addresses only, and refuses a plain
+         * resolver it would have to look up first; one it cannot parse, blocky validate refuses */
         foreach ($this->bootstrap->iterateItems() as $bootstrap) {
             if ((string)$bootstrap->enabled != '1' || (string)$bootstrap->type != 'resolver') {
                 continue;
             }
             if (!$validateFullModel && !$bootstrap->content->isFieldChanged() && !$bootstrap->ips->isFieldChanged()) {
-                continue;
-            }
-            if (!$this->isUpstream((string)$bootstrap->content)) {
-                $messages->appendMessage(new Message(
-                    gettext('Enter a resolver, e.g. 1.1.1.1, tcp+udp:1.1.1.1 or https://1.1.1.1/dns-query.'),
-                    $bootstrap->content->__reference
-                ));
                 continue;
             }
             $host = $this->upstreamHost((string)$bootstrap->content) ?? $this->stampHost((string)$bootstrap->content);
@@ -356,80 +229,13 @@ class Blocky extends BaseModel
             }
         }
 
-        /* Blocky only warns about a group with no list, and that blocking never applies */
-        $list_groups = [];
-        foreach (['denylists', 'allowlists'] as $section) {
-            foreach ($this->$section->iterateItems() as $item) {
-                if ((string)$item->enabled == '1') {
-                    $list_groups[(string)$item->group] = true;
-                }
-            }
-        }
-        foreach (['clientgroups', 'schedules'] as $section) {
-            foreach ($this->$section->iterateItems() as $item) {
-                if ((string)$item->enabled != '1' || !($validateFullModel || $item->groups->isFieldChanged())) {
-                    continue;
-                }
-                foreach (explode(',', (string)$item->groups) as $group) {
-                    $group = trim($group);
-                    if ($group !== '' && empty($list_groups[$group])) {
-                        $messages->appendMessage(new Message(
-                            sprintf(gettext('There is no enabled deny or allow list in group "%s".'), $group),
-                            $item->groups->__reference
-                        ));
-                        break;
-                    }
-                }
-            }
-        }
-
-        /* Blocky exits on rate limiting with no rate, or a burst below it */
-        if (
-            ($validateFullModel || $this->rateLimit->enable->isFieldChanged() ||
-                $this->rateLimit->rate->isFieldChanged() || $this->rateLimit->burst->isFieldChanged()) &&
-            (string)$this->rateLimit->enable == '1'
-        ) {
-            $rate = (int)(string)$this->rateLimit->rate;
-            $burst = (int)(string)$this->rateLimit->burst;
-            if ($rate < 1) {
-                $messages->appendMessage(new Message(
-                    gettext('Set a rate of at least 1 when rate limiting is enabled.'),
-                    'rateLimit.rate'
-                ));
-            }
-            if ($burst > 0 && $burst < $rate) {
-                $messages->appendMessage(new Message(
-                    gettext('Burst must be at least the rate, or 0 to allow twice the rate.'),
-                    'rateLimit.burst'
-                ));
-            }
-        }
-
-        /* Blocky exits on DNS64 with AAAA filtered, or a prefix it cannot synthesize with */
-        if (
-            ($validateFullModel || $this->dns64->enable->isFieldChanged() ||
-                $this->dns64->prefix->isFieldChanged() || $this->filtering->queryTypes->isFieldChanged()) &&
-            (string)$this->dns64->enable == '1'
-        ) {
-            foreach (explode(',', (string)$this->filtering->queryTypes) as $qtype) {
-                if (strcasecmp(trim($qtype), 'AAAA') == 0) {
+        /* Blocky compiles the cache exclusions with Go's RE2 only once it serves, and exits on one it cannot */
+        if ($validateFullModel || $this->general->cacheExclude->isFieldChanged()) {
+            foreach (explode(',', (string)$this->general->cacheExclude) as $entry) {
+                if (!self::isRegex(substr(trim($entry), 1, -1))) {
                     $messages->appendMessage(new Message(
-                        gettext('Blocky will not start with DNS64 enabled while AAAA is a filtered query type.'),
-                        'dns64.enable'
-                    ));
-                    break;
-                }
-            }
-            foreach (explode(',', (string)$this->dns64->prefix) as $prefix) {
-                $prefix = trim($prefix);
-                if ($prefix === '') {
-                    continue;
-                }
-                $bits = strpos($prefix, '/') === false ? '' : substr($prefix, strpos($prefix, '/') + 1);
-                if (!in_array($bits, ['32', '40', '48', '56', '64', '96'], true)) {
-                    $messages->appendMessage(new Message(
-                        gettext('A DNS64 prefix must be /32, /40, /48, /56, /64 or /96.'),
-                        'dns64.prefix'
+                        gettext('Enter each pattern in Go syntax, without lookaround or backreferences.'),
+                        'general.cacheExclude'
                     ));
                     break;
                 }
@@ -461,9 +267,8 @@ class Blocky extends BaseModel
         /* a resolv file Blocky reads is one the plugin keeps */
         foreach ($this->bootstrap->iterateItems() as $bootstrap) {
             if (
-                (string)$bootstrap->type == 'resolvfile' &&
-                ($validateFullModel || $bootstrap->content->isFieldChanged() || $bootstrap->type->isFieldChanged()) &&
-                !self::isListFile((string)$bootstrap->content)
+                (string)$bootstrap->enabled == '1' && (string)$bootstrap->type == 'resolvfile' &&
+                ($validateFullModel || $bootstrap->isFieldChanged()) && !self::isListFile((string)$bootstrap->content)
             ) {
                 $messages->appendMessage(new Message(
                     gettext('A resolv file must be in /usr/local/etc/blocky/lists.'),
@@ -495,11 +300,12 @@ class Blocky extends BaseModel
             }
         }
 
-        /* a list or hosts file on disk must be one the plugin keeps, or the system hosts file */
+        /* a list or hosts file on disk must be one the plugin keeps, or the system hosts file; a row is
+         * checked whenever it changes, so switching one on that an upgrade switched off checks it too */
         foreach (['denylists', 'allowlists'] as $section) {
             foreach ($this->$section->iterateItems() as $item) {
                 if (
-                    ($validateFullModel || $item->source->isFieldChanged()) &&
+                    (string)$item->enabled == '1' && ($validateFullModel || $item->isFieldChanged()) &&
                     !self::isAllowedFile((string)$item->source)
                 ) {
                     $messages->appendMessage(new Message(
@@ -522,6 +328,145 @@ class Blocky extends BaseModel
         }
 
         return $messages;
+    }
+
+    /**
+     * Apply what import_config.py mapped: every setting back to its default except the service state and
+     * the certificate, which are the plugin's own, and the grid sections replaced. As core's importCsv()
+     * leaves out a record the model refuses, a refused row is left out and a refused setting goes back
+     * to its default, or its whole section when the default is refused too; a refused list first keeps
+     * the entries the model takes on their own.
+     * @param array $parsed scalars, arrays and labels as import_config.py returns them
+     * @return array 'left' says what was left out, 'errors' what no left out value answers (nothing is
+     *               to be saved then), 'counts' the rows imported per grid section
+     */
+    public function applyImport(array $parsed)
+    {
+        $keep = ['general.enabled', 'general.certificate'];
+        foreach ($this->getFlatNodes() as $ref => $node) {
+            if (!in_array($ref, $keep)) {
+                $node->applyDefault();
+            }
+        }
+        foreach (self::IMPORT_ARRAYS as $name) {
+            foreach (array_keys(iterator_to_array($this->$name->iterateItems())) as $uuid) {
+                $this->$name->del($uuid);
+            }
+        }
+        $labels = $parsed['labels']['scalars'] ?? [];
+        $imported = [];
+        foreach (($parsed['scalars'] ?? []) as $section => $fields) {
+            $this->$section->setNodes($fields);
+            foreach (array_keys($fields) as $field) {
+                $imported["{$section}.{$field}"] = true;
+            }
+        }
+        $rows = [];
+        foreach (($parsed['arrays'] ?? []) as $name => $list) {
+            foreach ($list as $index => $values) {
+                $row = $this->$name->Add();
+                $row->setNodes($values);
+                $rows[$row->getAttributes()['uuid']] = [$name, $parsed['labels']['arrays'][$name][$index] ?? $name];
+            }
+        }
+
+        $left = [];
+        $reset = [];
+        $tried = [];
+        do {
+            $errors = [];
+            $todo = [];
+            foreach ($this->performValidation(true) as $message) {
+                $field = $message->getField();
+                $text = (string)$message->getMessage();
+                $section = strstr($field, '.', true);
+                if (preg_match('/^\w+\.([0-9a-f-]{36})\./', $field, $match)) {
+                    if (isset($rows[$match[1]])) {
+                        $todo[] = [$match[1], $field, $rows[$match[1]][1], $text];
+                    } else {
+                        $errors[] = "{$field}: {$text}";
+                    }
+                } elseif (in_array($field, $keep) || isset($reset[$section])) {
+                    $errors[] = ($labels[$field] ?? $field) . ": {$text}";
+                } elseif (isset($imported[$field]) && !isset($reset[$field])) {
+                    $todo[] = [$field, $field, $labels[$field] ?? $field, $text];
+                } else {
+                    $todo[] = [$section, null, $section, $text];
+                }
+            }
+            if ($errors) {
+                return ['left' => $left, 'errors' => $errors, 'counts' => []];
+            }
+            $done = [];
+            foreach ($todo as [$what, $ref, $label, $text]) {
+                if (isset($done[$what])) {
+                    continue;
+                }
+                $done[$what] = true;
+                if ($ref !== null && empty($tried[$ref])) {
+                    $tried[$ref] = true;
+                    if ($this->keepEntries($ref, $label, $left)) {
+                        continue;
+                    }
+                }
+                $left[] = sprintf(gettext('%s: not imported. %s'), $label, $text);
+                if (isset($rows[$what])) {
+                    $this->{$rows[$what][0]}->del($what);
+                } elseif (strpos($what, '.') !== false) {
+                    $this->getNodeByReference($what)->applyDefault();
+                } else {
+                    foreach ($this->getFlatNodes() as $ref => $node) {
+                        if (strpos($ref, "{$what}.") === 0 && !in_array($ref, $keep)) {
+                            $node->applyDefault();
+                        }
+                    }
+                }
+                $reset[$what] = true;
+            }
+        } while ($todo);
+
+        $counts = [];
+        foreach (array_keys($parsed['arrays'] ?? []) as $name) {
+            $counts[$name] = count(iterator_to_array($this->$name->iterateItems()));
+        }
+        return ['left' => $left, 'errors' => [], 'counts' => $counts];
+    }
+
+    /**
+     * Keep the entries of a refused list that the model takes on their own, saying in $left what it refuses.
+     * @return bool whether an entry was kept
+     */
+    private function keepEntries($ref, $label, array &$left)
+    {
+        $node = $this->getNodeByReference($ref);
+        if (
+            !($node instanceof BaseSetField && $node->isList()) && !($node instanceof BaseListField) &&
+            !in_array(preg_replace('/\.[0-9a-f-]{36}\./', '.', $ref), self::TEXT_LISTS)
+        ) {
+            return false;
+        }
+        $entries = array_values(array_filter(array_map('trim', explode(',', (string)$node)), 'strlen'));
+        if (count($entries) < 2) {
+            return false;
+        }
+        $kept = [];
+        foreach ($entries as $entry) {
+            $node->setValue($entry);
+            $refused = null;
+            foreach ($this->performValidation(true) as $message) {
+                if ($message->getField() == $ref) {
+                    $refused = (string)$message->getMessage();
+                    break;
+                }
+            }
+            if ($refused === null) {
+                $kept[] = $entry;
+            } else {
+                $left[] = sprintf(gettext('%s: %s: not imported. %s'), $label, $entry, $refused);
+            }
+        }
+        $node->setValue(implode(',', $kept));
+        return !empty($kept);
     }
 
     /**
@@ -558,6 +503,16 @@ class Blocky extends BaseModel
     }
 
     /**
+     * Does this database target leave files alone? MySQL's allowAllFiles lets the server read any file,
+     * and PostgreSQL reads the files these options name, as root; a file: value is root's own. Matched
+     * after URL decoding, as PostgreSQL decodes a URL's option names.
+     */
+    public static function isDatabaseTarget($target)
+    {
+        return self::secretFile($target) !== null || preg_match(self::FILE_OPTIONS, urldecode((string)$target)) !== 1;
+    }
+
+    /**
      * Is this a literal secret, or a file: value Blocky may read? Blocky cuts file:// first,
      * then file:, case-sensitively.
      */
@@ -581,8 +536,9 @@ class Blocky extends BaseModel
     }
 
     /**
-     * Is this source a URL or inline entry, or a file Blocky may read? Blocky reads a
-     * source as a file when it has a file:// prefix, or starts but does not end with a slash.
+     * Is this source a URL or inline entry, or a file Blocky may read? Blocky reads a source as a file
+     * when it has a file:// prefix, or starts but does not end with a slash; a FILE:// one, which the
+     * template writes inline, is refused all the same.
      */
     public static function isAllowedFile($source, $extra = [])
     {
@@ -607,9 +563,8 @@ class Blocky extends BaseModel
      * Host part of an upstream, or null when it cannot be determined (a DNS stamp
      * carries its own addresses).
      */
-    private function upstreamHost($value, &$port = null)
+    private function upstreamHost($value)
     {
-        $port = null;
         $value = trim($value);
         if ($value === '' || strpos($value, 'sdns://') === 0) {
             return null;
@@ -618,37 +573,16 @@ class Blocky extends BaseModel
         $rest = preg_replace('/^(tcp\+udp:|tcp-tls:|(https|quic):(\/\/)?)/', '', $value);
         $rest = preg_replace('/#.*$/', '', $rest);
         $rest = preg_replace('/\/.*$/', '', $rest);
-        if (preg_match('/^\[(.+)\](?::([0-9]+))?$/', $rest, $matches)) {
-            $port = $matches[2] ?? null;
+        if (preg_match('/^\[(.+)\](?::[0-9]+)?$/', $rest, $matches)) {
             return $matches[1];
         }
         if (substr_count($rest, ':') > 1) {
             return $rest; /* bare IPv6 */
         }
-        if (preg_match('/^(.*):([0-9]+)$/', $rest, $matches)) {
-            $port = $matches[2];
+        if (preg_match('/^(.*):[0-9]+$/', $rest, $matches)) {
             return $matches[1];
         }
         return $rest;
-    }
-
-    /**
-     * Does this parse as an upstream resolver? Blocky exits when one does not.
-     */
-    private function isUpstream($value)
-    {
-        $value = trim($value);
-        if ($value === '') {
-            return false;
-        }
-        if (strpos($value, 'sdns://') === 0) {
-            return $this->isStamp(substr($value, strlen('sdns://')));
-        }
-        $host = $this->upstreamHost($value, $port);
-        if (empty($host) || ($port !== null && ((int)$port < 1 || (int)$port > 65535))) {
-            return false;
-        }
-        return filter_var($host, FILTER_VALIDATE_IP) !== false || self::isHostName($host);
     }
 
     /**
@@ -663,6 +597,19 @@ class Blocky extends BaseModel
         }
         return strpos((string)$target, 'tcp://') === 0 &&
             preg_match('/^(\[[^\[\]]+\]|[^:\[\]]+):[^:\[\]]+$/D', substr((string)$target, strlen('tcp://'))) === 1;
+    }
+
+    /**
+     * Would Go's RE2 compile this pattern? It has no lookaround, backreferences, atomic groups,
+     * possessive quantifiers or recursion, which PCRE has; past those, PCRE's verdict stands in for it.
+     */
+    private static function isRegex($pattern)
+    {
+        if (preg_match('/\(\?(<?[=!]|>|R|\(|[0-9])|\\\\[1-9gkGZ]|[*+?}]\+/', $pattern)) {
+            return false;
+        }
+        /* a delimiter no setting can hold, as they refuse control characters */
+        return @preg_match("\x01{$pattern}\x01u", '') !== false;
     }
 
     /**

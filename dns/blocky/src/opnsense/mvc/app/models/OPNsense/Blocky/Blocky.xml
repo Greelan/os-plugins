@@ -13,14 +13,14 @@
                 <Required>Y</Required>
                 <AsList>Y</AsList>
                 <FieldSeparator>,</FieldSeparator>
-                <Mask>/^(\[[0-9A-Fa-f:]+\]:[0-9]{1,5}|[0-9A-Za-z._-]+:[0-9]{1,5}|:?[0-9]{1,5})$/</Mask>
+                <Mask>/^(\[[0-9A-Fa-f:]+\]:(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5]?[0-9]{1,4})|[0-9A-Za-z._-]+:(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5]?[0-9]{1,4})|:?(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5]?[0-9]{1,4}))$/</Mask>
                 <MaskPerItem>Y</MaskPerItem>
                 <ValidationMessage>Enter one or more listeners as port, :port, ip:port or [ipv6]:port. Examples: 53, :53, 127.0.0.1:53, [::1]:53.</ValidationMessage>
             </dnsPort>
             <httpPort type="CSVListField">
                 <AsList>Y</AsList>
                 <FieldSeparator>,</FieldSeparator>
-                <Mask>/^(\[[0-9A-Fa-f:]+\]:[0-9]{1,5}|[0-9A-Za-z._-]+:[0-9]{1,5}|:?[0-9]{1,5})$/</Mask>
+                <Mask>/^(\[[0-9A-Fa-f:]+\]:(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5]?[0-9]{1,4})|[0-9A-Za-z._-]+:(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5]?[0-9]{1,4})|:?(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5]?[0-9]{1,4}))$/</Mask>
                 <MaskPerItem>Y</MaskPerItem>
                 <ValidationMessage>Enter one or more listeners as port, :port, ip:port or [ipv6]:port. Examples: 4000, :4000, 127.0.0.1:4000, [::1]:4000. Leave empty to disable.</ValidationMessage>
             </httpPort>
@@ -51,22 +51,22 @@
             <tlsPort type="CSVListField">
                 <AsList>Y</AsList>
                 <FieldSeparator>,</FieldSeparator>
-                <Mask>/^(\[[0-9A-Fa-f:]+\]:[0-9]{1,5}|[0-9A-Za-z._-]+:[0-9]{1,5}|:?[0-9]{1,5})$/</Mask>
+                <Mask>/^(\[[0-9A-Fa-f:]+\]:(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5]?[0-9]{1,4})|[0-9A-Za-z._-]+:(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5]?[0-9]{1,4})|:?(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5]?[0-9]{1,4}))$/</Mask>
                 <MaskPerItem>Y</MaskPerItem>
                 <ValidationMessage>Enter one or more listeners as port, :port, ip:port or [ipv6]:port. Examples: 853, :853, 127.0.0.1:853, [::1]:853.</ValidationMessage>
             </tlsPort>
             <httpsPort type="CSVListField">
                 <AsList>Y</AsList>
                 <FieldSeparator>,</FieldSeparator>
-                <Mask>/^(\[[0-9A-Fa-f:]+\]:[0-9]{1,5}|[0-9A-Za-z._-]+:[0-9]{1,5}|:?[0-9]{1,5})$/</Mask>
+                <Mask>/^(\[[0-9A-Fa-f:]+\]:(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5]?[0-9]{1,4})|[0-9A-Za-z._-]+:(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5]?[0-9]{1,4})|:?(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5]?[0-9]{1,4}))$/</Mask>
                 <MaskPerItem>Y</MaskPerItem>
                 <ValidationMessage>Enter one or more listeners as port, :port, ip:port or [ipv6]:port. Examples: 443, :443, 127.0.0.1:443, [::1]:443.</ValidationMessage>
             </httpsPort>
             <dohPath type="TextField">
                 <Default>/dns-query</Default>
                 <Required>Y</Required>
-                <Mask>/^\/[\w\/.-]*$/</Mask>
-                <ValidationMessage>Enter a URL path beginning with a slash, e.g. /dns-query.</ValidationMessage>
+                <Mask>/^\/[^\s?#{*]*$/u</Mask>
+                <ValidationMessage>Enter a URL path beginning with a slash, without spaces, ?, #, { or *, e.g. /dns-query.</ValidationMessage>
             </dohPath>
             <minTlsServeVersion type="TextField">
                 <Mask>/^1\.[23]$/</Mask>
@@ -119,8 +119,6 @@
             <blockType type="TextField">
                 <Default>zeroIP</Default>
                 <Required>Y</Required>
-                <Mask>/^(zeroIP|nxDomain|refused|(([0-9]{1,3}\.){3}[0-9]{1,3}|[0-9A-Fa-f:]+)(\s*,\s*(([0-9]{1,3}\.){3}[0-9]{1,3}|[0-9A-Fa-f:]+))*)$/i</Mask>
-                <ValidationMessage>Enter zeroIP, nxDomain, refused, or a comma separated list of IPv4/IPv6 addresses.</ValidationMessage>
             </blockType>
             <blockTTL type="TextField">
                 <Default>6h</Default>
@@ -180,24 +178,24 @@
             <downloadReadHeaderTimeout type="TextField">
                 <Default>20s</Default>
                 <Required>Y</Required>
-                <Mask>/^(-1|([0-9]+(ns|us|ms|s|m|h))+)$/</Mask>
+                <Mask>/^(-1m?|([0-9]+(ns|us|ms|s|m|h))+)$/</Mask>
                 <ValidationMessage>Enter a duration such as 20s (-1 to disable). Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </downloadReadHeaderTimeout>
             <loadingConcurrency type="IntegerField">
                 <Default>4</Default>
-                <MinimumValue>1</MinimumValue>
+                <MinimumValue>0</MinimumValue>
                 <Required>Y</Required>
             </loadingConcurrency>
             <cacheMinTime type="TextField">
                 <Default>0</Default>
                 <Required>Y</Required>
-                <Mask>/^(0|-[0-9]+|([0-9]+(ns|us|ms|s|m|h))+)$/</Mask>
+                <Mask>/^(0|-[0-9]+m?|([0-9]+(ns|us|ms|s|m|h))+)$/</Mask>
                 <ValidationMessage>Enter a duration such as 5m or 1h, or 0 (and below) to fall back to the record TTL. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </cacheMinTime>
             <cacheMaxTime type="TextField">
                 <Default>0</Default>
                 <Required>Y</Required>
-                <Mask>/^(0|-[0-9]+|([0-9]+(ns|us|ms|s|m|h))+)$/</Mask>
+                <Mask>/^(0|-[0-9]+m?|([0-9]+(ns|us|ms|s|m|h))+)$/</Mask>
                 <ValidationMessage>Enter a duration such as 30m or 1h; 0 falls back to the record TTL, a negative value (e.g. -1) disables caching. Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </cacheMaxTime>
             <prefetching type="BooleanField">
@@ -207,7 +205,7 @@
             <cacheTimeNegative type="TextField">
                 <Default>30m</Default>
                 <Required>Y</Required>
-                <Mask>/^(-1|([0-9]+(ns|us|ms|s|m|h))+)$/</Mask>
+                <Mask>/^(-1m?|([0-9]+(ns|us|ms|s|m|h))+)$/</Mask>
                 <ValidationMessage>Enter a duration such as 30m (use -1 to disable negative caching). Valid units: ns, us, ms, s, m, h, combined as in 1h30m; days are not supported.</ValidationMessage>
             </cacheTimeNegative>
             <maxItemsCount type="IntegerField">
@@ -248,7 +246,11 @@
                 <Default>1</Default>
                 <Required>Y</Required>
             </filterUnmappedTypes>
-            <customZone type="TextField"/>
+            <customZone type="TextField">
+                <!-- Blocky reads what an $INCLUDE names, as root; Go uppercases the dotless ı (\xC4\xB1) to I -->
+                <Mask>/\A(?![\s\S]*^\s*\$(i|\xC4\xB1)nclude\b)[\s\S]*\z/mi</Mask>
+                <ValidationMessage>Enter the records themselves; Blocky would read an $INCLUDE file from disk.</ValidationMessage>
+            </customZone>
             <conditionalFallback type="BooleanField">
                 <Default>0</Default>
                 <Required>Y</Required>
@@ -256,7 +258,7 @@
             <clientLookupUpstream type="TextField"/>
             <clientLookupOrder type="CSVListField">
                 <AsList>Y</AsList>
-                <Mask>/^[1-9][0-9]*$/</Mask>
+                <Mask>/^[1-9][0-9]{0,2}$/</Mask>
                 <MaskPerItem>Y</MaskPerItem>
                 <ValidationMessage>Enter positions counting from 1, e.g. 2,1.</ValidationMessage>
             </clientLookupOrder>
@@ -267,8 +269,8 @@
             <prometheusPath type="TextField">
                 <Default>/metrics</Default>
                 <Required>Y</Required>
-                <Mask>/^\/[\w\/.-]*$/</Mask>
-                <ValidationMessage>Enter a URL path beginning with a slash, e.g. /metrics.</ValidationMessage>
+                <Mask>/^\/[^\s?#{*]*$/u</Mask>
+                <ValidationMessage>Enter a URL path beginning with a slash, without spaces, ?, #, { or *, e.g. /metrics.</ValidationMessage>
             </prometheusPath>
             <prometheusClientLabel type="BooleanField">
                 <Default>1</Default>
@@ -348,12 +350,12 @@
             <group type="TextField">
                 <Default>default</Default>
                 <Required>Y</Required>
-                <Mask>/^[0-9a-zA-Z_.-]{1,64}$/u</Mask>
-                <ValidationMessage>Group names may contain letters, digits, dot, dash and underscore.</ValidationMessage>
+                <Mask>/^[^\s,]{1,64}$/u</Mask>
+                <ValidationMessage>Enter a group name without spaces or commas.</ValidationMessage>
             </group>
             <source type="TextField">
                 <Required>Y</Required>
-                <Mask>/^[^\x00-\x1f]+$/</Mask>
+                <Mask>/^[^\p{Cc}]+$/u</Mask>
                 <ValidationMessage>Enter a URL, a local file path or an inline list entry.</ValidationMessage>
             </source>
             <description type="DescriptionField"/>
@@ -366,12 +368,12 @@
             <group type="TextField">
                 <Default>default</Default>
                 <Required>Y</Required>
-                <Mask>/^[0-9a-zA-Z_.-]{1,64}$/u</Mask>
-                <ValidationMessage>Group names may contain letters, digits, dot, dash and underscore.</ValidationMessage>
+                <Mask>/^[^\s,]{1,64}$/u</Mask>
+                <ValidationMessage>Enter a group name without spaces or commas.</ValidationMessage>
             </group>
             <source type="TextField">
                 <Required>Y</Required>
-                <Mask>/^[^\x00-\x1f]+$/</Mask>
+                <Mask>/^[^\p{Cc}]+$/u</Mask>
                 <ValidationMessage>Enter a URL, a local file path or an inline list entry.</ValidationMessage>
             </source>
             <description type="DescriptionField"/>
@@ -383,6 +385,7 @@
             </enabled>
             <domain type="HostnameField">
                 <Required>Y</Required>
+                <IsDNSName>Y</IsDNSName>
             </domain>
             <ip type="NetworkField">
                 <Required>Y</Required>
@@ -445,13 +448,13 @@
             </enabled>
             <client type="TextField">
                 <Required>Y</Required>
-                <Mask>/^[^\s'"]+$/</Mask>
+                <Mask>/^[^\s'"]{1,253}$/</Mask>
                 <ValidationMessage>Enter a client IP, CIDR, client name or wildcard (use "default" for clients that match no other entry).</ValidationMessage>
             </client>
             <groups type="TextField">
                 <Default>default</Default>
                 <Required>Y</Required>
-                <Mask>/^[0-9a-zA-Z_.-]+(,[0-9a-zA-Z_.-]+)*$/u</Mask>
+                <Mask>/^[^\s,]{1,64}(,[^\s,]{1,64})*$/u</Mask>
                 <ValidationMessage>Enter one or more group names, comma separated.</ValidationMessage>
             </groups>
             <description type="DescriptionField"/>
@@ -463,8 +466,8 @@
             </enabled>
             <name type="TextField">
                 <Required>Y</Required>
-                <Mask>/^[0-9a-zA-Z_.-]{1,255}$/u</Mask>
-                <ValidationMessage>Enter the client name to map, e.g. laptop.</ValidationMessage>
+                <Mask>/^[^\s'"]{1,253}$/u</Mask>
+                <ValidationMessage>Enter the client name to map, without spaces or quotes, e.g. laptop.</ValidationMessage>
             </name>
             <ips type="NetworkField">
                 <Required>Y</Required>
@@ -480,12 +483,12 @@
             </enabled>
             <name type="TextField">
                 <Required>Y</Required>
-                <Mask>/^[0-9a-zA-Z_.\- ]{1,64}$/</Mask>
-                <ValidationMessage>Enter a name (letters, numbers, spaces, . _ -).</ValidationMessage>
+                <Mask>/^.{1,64}$/u</Mask>
+                <ValidationMessage>Enter a name of up to 64 characters.</ValidationMessage>
             </name>
             <groups type="TextField">
                 <Required>Y</Required>
-                <Mask>/^[0-9a-zA-Z_.-]+(,[0-9a-zA-Z_.-]+)*$/u</Mask>
+                <Mask>/^[^\s,]{1,64}(,[^\s,]{1,64})*$/u</Mask>
                 <ValidationMessage>Enter one or more group names, comma separated.</ValidationMessage>
             </groups>
             <weekdays type="OptionField">
@@ -543,9 +546,9 @@
             </clockSkewToleranceSec>
             <trustAnchors type="CSVListField">
                 <AsList>Y</AsList>
-                <!-- Blocky exits on an anchor that is not a DNSKEY record with the SEP flag (odd flags):
-                     an owner, any TTL and class, then the record -->
-                <Mask>/^ *(\S+(\s+([0-9][0-9smhdw]*|IN))*\s+DNSKEY\s+[0-9]*[13579]\s.*)?$/is</Mask>
+                <!-- Blocky exits on an anchor that is not a DNSKEY record with the SEP flag (odd flags), or
+                     whose flags, protocol or algorithm are out of range: an owner, any TTL and class, then the record -->
+                <Mask>/^ *(\S+(\s+([0-9][0-9smhdw]*|IN))*\s+DNSKEY\s+(6553[135]|655[0-2][13579]|65[0-4][0-9][13579]|6[0-4][0-9]{2}[13579]|[1-5][0-9]{3}[13579]|[0-9]{0,3}[13579])\s+(25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})\s+(25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})\s.*)?$/is</Mask>
                 <MaskPerItem>Y</MaskPerItem>
                 <ValidationMessage>Enter key signing keys as DNSKEY records, e.g. ". 172800 IN DNSKEY 257 3 8 AwEAA".</ValidationMessage>
             </trustAnchors>
@@ -577,13 +580,13 @@
             </burst>
             <ipv4Prefix type="IntegerField">
                 <Default>32</Default>
-                <MinimumValue>1</MinimumValue>
+                <MinimumValue>0</MinimumValue>
                 <MaximumValue>32</MaximumValue>
                 <Required>Y</Required>
             </ipv4Prefix>
             <ipv6Prefix type="IntegerField">
                 <Default>64</Default>
-                <MinimumValue>1</MinimumValue>
+                <MinimumValue>0</MinimumValue>
                 <MaximumValue>128</MaximumValue>
                 <Required>Y</Required>
             </ipv6Prefix>
@@ -744,7 +747,7 @@
             </downloadCache>
             <concurrency type="IntegerField">
                 <Default>4</Default>
-                <MinimumValue>1</MinimumValue>
+                <MinimumValue>0</MinimumValue>
                 <Required>Y</Required>
             </concurrency>
             <loadingStrategy type="OptionField">
@@ -821,7 +824,7 @@
             </required>
             <connectionAttempts type="IntegerField">
                 <Default>3</Default>
-                <MinimumValue>1</MinimumValue>
+                <MinimumValue>-1</MinimumValue>
                 <Required>Y</Required>
             </connectionAttempts>
             <connectionCooldown type="TextField">
