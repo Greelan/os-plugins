@@ -160,18 +160,19 @@ class Renderer:
             return handle.read()
 
 
-RENDERER = None
+# one per process: a worker forked after the main process rendered must not share its folder
+RENDERERS = {}
 
 
 def rendered(xml):
     """(config.yml, None), or (None, why it did not render), in a worker process."""
-    global RENDERER
-    if RENDERER is None:
+    renderer = RENDERERS.get(os.getpid())
+    if renderer is None:
         target = tempfile.mkdtemp()
         atexit.register(shutil.rmtree, target, True)
-        RENDERER = Renderer(target)
+        renderer = RENDERERS[os.getpid()] = Renderer(target)
     try:
-        return RENDERER.render(xml), None
+        return renderer.render(xml), None
     except Exception as error:
         return None, str(error)
 
