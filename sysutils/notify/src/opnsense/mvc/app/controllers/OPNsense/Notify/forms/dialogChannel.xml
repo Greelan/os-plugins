@@ -38,7 +38,9 @@
         <label>Saved URL</label>
         <type>info</type>
         <help>The saved URL with its credentials masked.</help>
-        <grid_view/>
+        <grid_view>
+            <ignore>true</ignore>
+        </grid_view>
     </field>
     <field>
         <id>channel.events</id>

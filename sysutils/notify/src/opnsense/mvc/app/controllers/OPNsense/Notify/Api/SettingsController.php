@@ -31,7 +31,6 @@ namespace OPNsense\Notify\Api;
 use OPNsense\Base\ApiMutableModelControllerBase;
 use OPNsense\Core\AppConfig;
 use OPNsense\Core\Backend;
-use OPNsense\Notify\Notify;
 
 class SettingsController extends ApiMutableModelControllerBase
 {
@@ -56,7 +55,6 @@ class SettingsController extends ApiMutableModelControllerBase
         /* a grid row carries every field, and the URL holds the channel's credentials */
         foreach ($result['rows'] as &$row) {
             unset($row['url'], $row['%url'], $row['files'], $row['%files']);
-            $row['target'] = Notify::shownTarget($row['service'] ?? '', $row['target'] ?? '');
         }
 
         return $result;
@@ -65,13 +63,11 @@ class SettingsController extends ApiMutableModelControllerBase
     public function getChannelAction($uuid = null)
     {
         $result = $this->getBase('channel', 'channels', $uuid);
-        if (isset($result['channel']['target'])) {
-            $channel = $result['channel'];
-            $result['channel']['target'] = Notify::shownTarget($channel['service'], $channel['target']);
-        }
         /* service fields for the dialog, without secrets; a key no form element maps to */
         $describe = $uuid != null ? (new Backend())->configdpRun('notify describe', [$uuid]) : '';
         $result['notify_apprise'] = json_decode($describe, true) ?: ['service' => ''];
+        /* never stored: the backend masks it as it reads it */
+        $result['channel']['target'] = $result['notify_apprise']['target'] ?? '';
         return $result;
     }
 
@@ -146,7 +142,6 @@ class SettingsController extends ApiMutableModelControllerBase
         return [
             'url' => $result['url'],
             'service' => $result['service'],
-            'target' => $result['target'],
             /* an object even when empty, so a channel that stops using a file drops it */
             'files' => json_encode((object)($result['files'] ?? [])),
         ];

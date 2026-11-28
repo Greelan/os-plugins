@@ -1,7 +1,7 @@
 <model>
     <mount>//OPNsense/notify</mount>
     <description>Notify</description>
-    <version>1.0.1</version>
+    <version>1.0.2</version>
     <items>
         <general>
             <enabled type="BooleanField">
@@ -166,9 +166,8 @@
             </url>
             <!-- key and template files the URL uses, as JSON; set from the dialog on save -->
             <files type="UpdateOnlyTextField"/>
-            <!-- set from the URL on save, for display without the secrets -->
+            <!-- the service's name, set from the URL on save -->
             <service type="TextField"/>
-            <target type="TextField"/>
             <monitServices type="ModelRelationField">
                 <Model>
                     <services>

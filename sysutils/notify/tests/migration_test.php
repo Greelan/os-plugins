@@ -105,21 +105,6 @@ namespace {
     $kept = M1_0_1::rewrite("{$base}&pgppub=stored", ['pgppub' => 'PUB']);
     check('files kept when nothing changes', $kept, ["{$base}&pgppub=stored", ['pgppub' => 'PUB']]);
 
-/* a saved URL as the model shows it, also one saved earlier: no webhook path, Matrix token or Threema gateway ID */
-    $targets = [
-    ['JSON', 'json://hooks.example.com/api/webhook/abc123', 'json://hooks.example.com/...'],
-    ['Form', 'forms://u:****@hooks.example.com:8443/abc123', 'forms://u:****@hooks.example.com:8443/...'],
-    ['XML', 'xml://hooks.example.com/', 'xml://hooks.example.com/'],
-    ['Matrix', 'matrixs://syt_TOKEN@matrix.example.com/#ops', 'matrixs://****@matrix.example.com/#ops'],
-    ['Matrix', 'matrixs://user:****@matrix.example.com/#ops', 'matrixs://user:****@matrix.example.com/#ops'],
-    ['Matrix', 'matrix://a...a/', 'matrix://a...a/'],
-    ['Threema Gateway', 'threema://*ABCDEFG@****/user@example.com', 'threema://****@****/user@example.com'],
-    ['ntfy', 'ntfys://t...f@ntfy.example.com/alerts', 'ntfys://t...f@ntfy.example.com/alerts'],
-    ];
-    foreach ($targets as [$service, $target, $expected]) {
-        check("target {$target}", Notify::shownTarget($service, $target), $expected);
-    }
-
 /* the migration on a config saved by 1.5, its channels at model version 1.0.0 */
     $conf = sys_get_temp_dir() . '/notify-migration-' . getmypid();
     @mkdir($conf);
@@ -144,6 +129,25 @@ namespace {
         $channel = $model->getNodeByReference("channels.{$uuid}");
         check("migrated {$url}", [$channel->url->getValue(), $channel->files->getValue()], [$expected, $expectedFiles]);
     }
+    array_map('unlink', glob("{$conf}/*"));
+    @rmdir($conf);
+/* a config saved at 1.0.1, whose target can still show a secret, loses the target at 1.0.2: nothing
+ * stored holds it, so no search can read it */
+    $conf = sys_get_temp_dir() . '/notify-migration-' . getmypid() . '-2';
+    @mkdir($conf);
+    new AppConfig(['application' => ['configDir' => $conf, 'tempDir' => $conf], 'globals' => ['simulate_mode' => '1']]);
+    file_put_contents("{$conf}/config.xml", "<?xml version=\"1.0\"?>\n<opnsense><OPNsense><notify version=\"1.0.1\"><general/>" .
+    '<channels uuid="d1111111-2222-4333-8444-555555555555"><enabled>1</enabled><description>c</description>' .
+    '<url>json://hooks.example.com/s3cr3tpath</url><service>JSON</service>' .
+    '<target>json://hooks.example.com/s3cr3tpath</target></channels></notify></OPNsense></opnsense>' . "\n");
+    Config::getInstance()->forceReload();
+    $model = new Notify();
+    check('migrated to 1.0.2', $model->runMigrations(), true);
+    $keys = array_keys($model->channels->iterateItems()->current()->getFlatNodes());
+    check('no target field', preg_grep('/\.target$/', $keys), []);
+    $saved = Config::getInstance()->object()->OPNsense->notify->asXML();
+    check('no target stored', strpos($saved, '<target>'), false);
+    check('url kept', strpos($saved, '<url>json://hooks.example.com/s3cr3tpath</url>') !== false, true);
     array_map('unlink', glob("{$conf}/*"));
     @rmdir($conf);
 }

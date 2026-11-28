@@ -146,8 +146,10 @@
             $('#apprise\\.changed').val('1');
         }
 
-        function appriseRenderFields(serviceId, values, saved) {
+        function appriseRenderFields(serviceId, values, saved, used = {}) {
             let set = false;
+            /* left out, what Apprise uses for this channel where its declared default does not hold */
+            const notSet = key => $('<option value="">').text("{{ lang._('Not set') }}" + (used[key] !== undefined ? ' (' + used[key] + ')' : ''));
             $('#frm_' + dialogId + ' tr.apprise-field').remove();
             const service = (appriseServices || []).find(s => s.id === serviceId);
             $('#row_channel\\.url').toggle(serviceId === '__custom');
@@ -172,7 +174,7 @@
                     $control = $('<select class="form-control">').attr('id', id);
                     if (field.default === undefined) {
                         /* nothing to fall back on, so leaving it unset must stay possible */
-                        $control.append($('<option value="">').text("{{ lang._('Not set') }}"));
+                        $control.append(notSet(field.key));
                     }
                     field.values.forEach(v => $control.append($('<option>').val(v).text(v)));
                     /* a custom URL may spell a choice its own way, e.g. priority=High, which Apprise reads the same */
@@ -181,7 +183,7 @@
                 } else if (field.type === 'bool' && field.default === undefined) {
                     /* Apprise reads it left out apart from no, e.g. emojis, so a box cannot say which */
                     $control = $('<select class="form-control">').attr('id', id).append(
-                        $('<option value="">').text("{{ lang._('Not set') }}"),
+                        notSet(field.key),
                         $('<option value="yes">').text("{{ lang._('Yes') }}"),
                         $('<option value="no">').text("{{ lang._('No') }}"));
                     $control.val(['yes', 'no'].includes(String(value)) ? String(value) : '');
@@ -202,6 +204,8 @@
                         $control.attr('placeholder', '********');
                     } else if (field.type === 'list') {
                         $control.attr('placeholder', "{{ lang._('Separate entries with commas') }}");
+                    } else if (used[field.key] !== undefined) {
+                        $control.attr('placeholder', used[field.key]);
                     }
                     if (field.private) {
                         /* masked by default, but typing a webhook id blind is no fun */
@@ -309,7 +313,7 @@
             $('#apprise_note').text(apprise.error || '');
             /* the stored URL is never sent back, so show that one is saved */
             $('#channel\\.url').attr('placeholder', apprise.custom ? '********' : null);
-            appriseRenderFields(chosen, apprise.fields || {}, apprise.saved || []);
+            appriseRenderFields(chosen, apprise.fields || {}, apprise.saved || [], apprise.used || {});
 
             /* the saved URL, which an empty box keeps, or the one imported */
             appriseTextEmail = {url: apprise.url || '', textEmail: apprise.textEmail === true};

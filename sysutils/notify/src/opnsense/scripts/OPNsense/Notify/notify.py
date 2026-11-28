@@ -124,13 +124,13 @@ LOCK = "/var/run/notify.lock"
 # contents, which are stored with the channel and written under KEY_DIR at send time; the URL
 # then carries KEY_MARKER. Any other local path is refused, so a channel cannot make root read a
 # file of its choosing. Checked against this Apprise; the tests fail on another until it is again.
-# Before raising it, also confirm the Apprise internals this script uses still exist and behave
-# the same: plugins.url_to_dict and N_MGR, utils.parse's parse_qsd, parse_urls, VALID_URL_RE and
-# NOTIFY_CUSTOM_*_TOKENS (see apprise_view, check_url, query_pairs, custom_arg), email's
-# AppriseSMTPController.sendmail, its _socket and logger (see partly_sent) and PGP_MODES (see
-# apprise1_notes), and that Apprise.notify still applies emojis before convert_between (see
-# with_link); and that plugins still hold their settings as attributes, which an import compares
-# (see same_settings).
+# Before raising it, also read each plugin for NO_DEFAULT (os-plugins-notes/tools/notify-default-audit.py
+# lists the code that sets each option left out), and confirm the Apprise internals this script uses still exist and behave
+# the same: plugins.url_to_dict and N_MGR, utils.parse's parse_qsd, parse_urls and VALID_URL_RE
+# (see apprise_view, check_url, query_pairs), email's AppriseSMTPController.sendmail, its _socket
+# and logger (see partly_sent) and PGP_MODES (see apprise1_notes), and that Apprise.notify still
+# applies emojis before convert_between (see with_link); and that plugins still hold their settings
+# as attributes, which the dialog compares (see same_settings).
 FILE_ARGS_APPRISE = "2.3.0"
 FILE_ARGS = {
     "NotifyDiscord": ("template",), "NotifyTelegram": ("template",), "NotifySlack": ("template",),
@@ -149,9 +149,22 @@ PRIVATE_TOKENS = {
     "NotifyBulkVS": ("user",), "NotifySMSC": ("user",), "NotifySerwerSMS": ("user",), "NotifyRocketChat": ("webhook",),
     "NotifyPagerDuty": ("source", "component"), "NotifyVoipms": ("from_phone",),
 }
-# options Apprise reads as unset when left out, not as the default its details give, e.g. emojis:
-# Discord escapes :name: only for no
-UNSET_ARGS = ("emojis",)
+# option defaults Apprise declares but does not use with the option left out, shown as not set, for
+# Apprise to decide (by plugin class, subclasses included; None for every service). Some always
+# differ, e.g. emojis, which left out are unset rather than no; the tests find those. Others depend
+# on the rest of the channel, read from each plugin's own code: Email's mode is no encryption for
+# mailto:// and its pgp encrypt with wkd, ntfy's mode and auth follow the host and the user, Matrix's
+# mode and discovery the login, Slack's blocks a template, Office 365's mode the sender's domain,
+# FCM's mode the key file.
+# Checked against FILE_ARGS_APPRISE, as those are
+NO_DEFAULT = {
+    None: ("emojis",), "NotifyEmail": ("mode", "pgp"), "NotifyNtfy": ("mode", "auth"),
+    "NotifyMastodon": ("visibility",), "NotifyPushplus": ("channel",), "NotifyRevolt": ("format",),
+    "NotifyBark": ("archive",), "NotifyDot": ("border", "dither_type", "dither_kernel"), "NotifyJoin": ("image",),
+    "NotifyLametric": ("mode",), "NotifyTelegram": ("detect",), "NotifySNS": ("mode",),
+    "NotifyFluxer": ("mode", "format"), "NotifyMatrix": ("mode", "discovery"), "NotifySlack": ("blocks",),
+    "NotifyRocketChat": ("avatar",), "NotifyOffice365": ("mode",), "NotifyFCM": ("mode", "color"),
+}
 # files that may instead be fetched from an https address; private keys are never fetched
 REMOTE_FILE_ARGS = ("template", "pgppub")
 # what each file holds, as the dialog labels it and hints at it: (plugin class or None, argument)
@@ -1955,8 +1968,7 @@ def apprise_services():
         service_id = protocols[0]
         # several formats: the message's own is used unless one is chosen, from those it takes
         several = len(entry["details"]["args"].get("format", {}).get("supported") or ()) > 1
-        args = {str(k): v.get("default") for k, v in entry["details"]["args"].items()
-                if v.get("default") is not None and k not in UNSET_ARGS and not v.get("alias_of") and not (k == "format" and several)}
+        undeclared = {k for c in plugin_classes(protocols[0]) | {None} for k in NO_DEFAULT.get(c, ())}
         mapped = {t["map_to"] for t in tokens.values()}
         options = {}
         for key, arg in entry["details"]["args"].items():
@@ -1967,14 +1979,14 @@ def apprise_services():
                      "private": bool(arg.get("private")), "basic": False, "map_to": str(arg.get("map_to", key))}
             # an optional secret is never shown again, so the dialog offers to remove it instead
             field["clearable"] = field["private"]
+            if arg.get("default") is not None and not (key == "format" and several) and key not in undeclared:
+                field["default"] = default_text(arg["default"])
             if kind.startswith("choice"):
                 # Apprise hands some over as a set; numbers sort as numbers
                 field["values"] = sorted(
                     (str(v) for v in (arg["supported"] if key == "format" and several else arg.get("values", ()))),
                     key=lambda v: (not v.lstrip("-").isdigit(),
                                    int(v) if v.lstrip("-").isdigit() else v))
-            if arg.get("default") is not None and not (key == "format" and several) and key not in UNSET_ARGS:
-                field["default"] = default_text(arg["default"])
             if str(key).lower() in file_args(protocols[0]):
                 # pasted into the dialog and stored with the channel, never shown again
                 field.update(type="file", private=True)
@@ -1982,9 +1994,6 @@ def apprise_services():
                 if label:
                     field.update(label=label[0], hint=label[1])
             options[str(key)] = field
-        # free-form arguments such as +header or -param, which can carry credentials
-        prefixes = tuple(str(k["prefix"]) for k in (entry["details"].get("kwargs") or {}).values()
-                         if k.get("prefix"))
         # query names that carry a secret no option field masks: a private token or argument given
         # by name, or an alias of one, e.g. Slack's and ntfy's token= or Exotel's key=
         private = {str(k) for k, t in entry["details"]["tokens"].items() if t.get("private") or k in hidden}
@@ -2000,7 +2009,7 @@ def apprise_services():
         filled = {k.lower() for t in templates for k in re.findall(r"[?&](\w+)=\{", t)}
         services[service_id] = {"id": service_id, "name": str(entry["service_name"]),
                                 "setup": str(entry.get("setup_url") or ""), "templates": templates,
-                                "tokens": tokens, "args": args, "options": options, "prefixes": prefixes,
+                                "tokens": tokens, "options": options,
                                 "secrets": secrets, "filled": filled}
         for protocol in protocols:
             schemas.setdefault(protocol.lower(), service_id)
@@ -2045,16 +2054,6 @@ def url_query(url):
     return url_parts(url)[1]
 
 
-def custom_arg(text, prefixes):
-    """Whether a query part is a free-form argument of one of the prefixes a service declares
-    (+header, -param, :field), as Apprise's own patterns tell them apart; a leading space is +."""
-    from apprise.utils.parse import (NOTIFY_CUSTOM_ADD_TOKENS, NOTIFY_CUSTOM_COLON_TOKENS,
-                                     NOTIFY_CUSTOM_DEL_TOKENS)
-    key = urllib.parse.unquote(text.partition("=")[0])
-    patterns = {"+": NOTIFY_CUSTOM_ADD_TOKENS, "-": NOTIFY_CUSTOM_DEL_TOKENS, ":": NOTIFY_CUSTOM_COLON_TOKENS}
-    return any(patterns[p].match(key) for p in prefixes if p in patterns)
-
-
 def query_pairs(query):
     """[(text, key, value)] for each part of a query, split and read as Apprise's parse_qsd does:
     at & and ;, a + in a key after its first letter a space, decoded and trimmed, the key in
@@ -2075,16 +2074,6 @@ def url_args(url):
     return parse_qsd(url_query(url))["qsd"]
 
 
-def parse_saved(url, services, schemas):
-    """(service id, {map_to: value}, query) for a saved URL, or (None, {}, "")."""
-    service_id = schemas.get(url_schema(url))
-    if service_id is None:
-        return None, {}, ""
-    results = apprise_results(url)
-    query = url_query(url)
-    return (service_id, results, query) if isinstance(results, dict) else (None, {}, "")
-
-
 def saved_channel(uuid):
     if not uuid:
         return {}
@@ -2098,20 +2087,13 @@ def saved_url(uuid):
 
 def field_text(value):
     """A parsed URL value as field text; Apprise leaves e.g. passwords URL-encoded."""
+    value = getattr(value, "value", value)
+    if isinstance(value, bool):
+        return "yes" if value else "no"
     if isinstance(value, (list, tuple, set)):
-        return ", ".join(urllib.parse.unquote(str(v)) for v in value)
+        # split as compose splits a list field
+        return ", ".join(item for v in value for item in split_list(urllib.parse.unquote(str(v))))
     return "" if value is None else urllib.parse.unquote(str(value))
-
-
-def saved_values(service, results, keys):
-    """Field values for these token keys from a parsed saved URL."""
-    values = {}
-    for key in keys:
-        token = service["tokens"][key]
-        value = results.get(token["map_to"])
-        if value not in (None, "", [], ()):
-            values[key] = field_text(value)
-    return values
 
 
 def same_url(first, second):
@@ -2139,30 +2121,13 @@ def run_services():
 def run_describe(uuid):
     url = saved_url(uuid)
     described = describe_url(url)
-    if url and text_email(check_url(url)[0]):
-        described["textEmail"] = True
+    plugin = check_url(url)[0] if url else None
+    if plugin is not None:
+        # the saved URL as shown, masked as it is read: never stored, so no search can read it
+        described["target"] = shown_url(plugin, url)
+        if text_email(plugin):
+            described["textEmail"] = True
     return described
-
-
-def same_value(value, default):
-    """Does a URL parameter say the same as its default? A bool is read as Apprise reads it, e.g. t
-    or on as yes, and anything else as the default."""
-    from apprise.utils.parse import parse_bool
-    value = str(value).strip().lower()
-    if isinstance(default, bool):
-        return parse_bool(value, default) == default
-    return value == default_text(default).strip().lower()
-
-
-def split_query(service, query):
-    """A URL's query as (option field values, whatever no field covers), read as Apprise reads it."""
-    values, rest = {}, []
-    for text, key, value in query_pairs(query):
-        if key in service["options"]:
-            values[key] = value
-        else:
-            rest.append(text)
-    return values, "&".join(rest)
 
 
 def with_query(url, query):
@@ -2176,92 +2141,23 @@ def root_path(service):
     return service["tokens"].get("path", {}).get("default", "/") != "/"
 
 
-def query_from(service, values, base=None):
-    """The query for a service's option fields, leaving out anything at its default. Given the
-    URL it goes on, a default is only left out when Apprise reads the URL the same without it:
-    some hold for part of a service only, e.g. Email's STARTTLS for mailtos:// but not mailto://."""
+def query_from(service, values):
+    """The query for the option fields set, leaving out one at the default the dialog shows, which
+    is what Apprise uses (NO_DEFAULT keeps the others from being shown); one left empty is Apprise's
+    to decide."""
     from apprise.utils.parse import parse_bool
-    parts: list = []
-    defaults: list = []
+    parts = []
     for key, field in service["options"].items():
         value = str(values.get(key, "")).strip()
-        default = service["args"].get(key)
-        if field["type"] == "bool":
-            if value == "":
-                continue
-            value = "yes" if parse_bool(value, bool(default)) else "no"
-        if value == "":
-            continue
-        part = "%s=%s" % (urllib.parse.quote(key, safe=""), urllib.parse.quote(value, safe=""))
-        (defaults if default is not None and same_value(value, default) else parts).append(part)
+        if value and field["type"] == "bool":
+            value = "yes" if parse_bool(value, False) else "no"
+        if value and value.lower() != field.get("default", "").lower():
+            parts.append("%s=%s" % (urllib.parse.quote(key, safe=""), urllib.parse.quote(value, safe="")))
     path = str(values.get("path", "")).strip()
     if root_path(service) and path and not path.strip("/"):
         parts.append("path=/")
-    rest = str(values.get(QUERY_FIELD, "")).lstrip("?")
-    for part in defaults if base else []:
-        without = "&".join(p for p in parts + [rest] if p)
-        if not same_url(with_query(base, "&".join(p for p in parts + [part, rest] if p)),
-                        with_query(base, without)):
-            parts.append(part)
-    return "&".join([part for part in parts + [rest] if part])
-
-
-def normalize(url, plugin, services, schemas):
-    """A pasted URL in Apprise's own form, so each setting sits under the name the fields use,
-    e.g. ntfy's tags= as xtags=, Email's to= as its recipients, or a scheme the fields do not
-    know; kept as given unless Apprise sets up the rewritten one exactly as the pasted one."""
-    native = plugin.url(privacy=False)
-    service_id = schemas.get(url_schema(native))
-    if service_id is None:
-        return url
-    base, _, query = native.partition("?")
-    args = services[service_id]["args"]
-    # what the same URL renders with nothing set is the service's own defaults
-    plain, _ = one_plugin(base)
-    defaults = url_args(plain.url(privacy=False)) if plain is not None else {}
-    options = services[service_id]["options"]
-    # Apprise renders some files' addresses encoded twice, e.g. Discord's template: as pasted
-    files, given = apprise_view(url)
-    keep = []
-    for part, key, value in query_pairs(query):
-        if key in files and key in given:
-            keep.append(f"{key}={urllib.parse.quote(given[key], safe='')}")
-            continue
-        if key in defaults and value == defaults[key]:
-            continue
-        if key in args and same_value(value, args[key]):
-            continue
-        keep.append(part)  # only what differs from the service's own defaults
-
-    def rendered(candidate):
-        again, _ = one_plugin(candidate)
-        return again.url(privacy=False) if again is not None else None
-
-    def unmatched(parts):
-        return any(options.get(key, {}).get("type") == "choice" and value not in options[key]["values"]
-                   for _, key, value in query_pairs("&".join(parts)))
-
-    # Apprise renders some choices by name, e.g. Gotify's priority 8 as high: the field offers the
-    # choice Apprise reads the same
-    for i, (_, key, value) in enumerate(query_pairs("&".join(keep))):
-        field = options.get(key) or {}
-        if field.get("type") == "choice" and value not in field.get("values", []):
-            for choice in field["values"]:
-                tried = keep[:i] + [f"{key}={urllib.parse.quote(choice, safe='')}"] + keep[i + 1:]
-                if rendered(with_query(base, "&".join(tried))) == native:
-                    keep = tried
-                    break
-    # url() leaves some settings out, e.g. Email's from= or emojis=, so next the pasted URL's own
-    # where a field takes them; and some of the URL ahead of its query, e.g. a user name a service
-    # ignores, so next the pasted URL's own. The first Apprise sets up as it sets up the pasted one
-    taken = {key for _, key, _ in query_pairs("&".join(keep))}
-    pasted = [text for text, key, _ in query_pairs(url_query(url)) if key in options and key not in taken]
-    candidates = [(head, parts) for head in (base, url.partition("?")[0]) for parts in (keep, keep + pasted)]
-    for candidate in dict.fromkeys(with_query(head, "&".join(parts)) for head, parts in candidates if not unmatched(parts)):
-        if rendered(candidate) == native and same_settings(url, plugin, candidate):
-            return candidate
-    # else, e.g. a choice Apprise names in a way no field choice matches: the URL as given, as before
-    return url
+    parts.append(str(values.get(QUERY_FIELD, "")).lstrip("?"))
+    return "&".join(part for part in parts if part)
 
 
 def plugin_settings(plugin, names):
@@ -2366,8 +2262,6 @@ def run_parse(path):
     plugin, error = check_url(url, typed=True)
     if plugin is None:
         return {"error": " ".join(filter(None, [error] + notes))}
-    services, schemas = apprise_services()
-    url = normalize(url, plugin, services, schemas)
     described = describe_url(url, keep_secrets=True)
     if not described.get("service"):
         described["error"] = ("The fields cannot represent this URL exactly, so it is kept as it is. "
@@ -2421,77 +2315,100 @@ def masked(text, secrets):
     return standing(*forms).sub("****", text) if forms else text
 
 
-def read_into_field(service, url, results, key):
-    """Whether Apprise reads a query name into one of the service's fields, listed as an alias or
-    not: read again without it, the URL gives a field another value."""
-    without = "&".join(text for text, name, _ in query_pairs(url_query(url)) if name != key)
-    other = apprise_results(with_query(url.split("?", 1)[0], without))
-    return other is None or any(other.get(t["map_to"]) != results.get(t["map_to"]) for t in service["tokens"].values())
-
-
 def describe_url(url, keep_secrets=False):
+    """The dialog's fields for a URL, each setting in its field as Apprise reads it; what Apprise reads
+    that no field holds kept as it is (QUERY_FIELD), never shown, as it can be a header with a
+    credential; what it ignores dropped. keep_secrets: the user pasted it a moment ago."""
     from apprise.utils.parse import parse_bool
-    if not url:
-        return {"service": ""}
     services, schemas = apprise_services()
-    service_id, results, _ = parse_saved(url, services, schemas)
-    if service_id is None:
-        return {"service": "", "custom": True}
-    service = services[service_id]
-    tokens = service["tokens"]
-    lists = {t["map_to"] for t in tokens.values() if t["type"] == "list"}
-    shown = [k for k, t in tokens.items() if t["type"] == "list" or t["map_to"] not in lists]
-    fields = saved_values(service, results, [k for k in shown if not tokens[k]["private"]])
-    fields["schema"] = url_schema(url)
-    secrets = saved_values(service, results, [k for k in shown if tokens[k]["private"]])
-    hidden = secret_values(url, service, results)
-    pairs = query_pairs(url_query(url))
-    options = {key: value for _, key, value in pairs if key in service["options"]}
-    rest = [pair for pair in pairs if pair[1] not in service["options"] and pair[1] not in service["filled"]]
-    # the host root, which Apprise takes only as path=/, e.g. Fluxer's, shows as a Path of /
-    roots = [value for _, key, value in rest if key == "path"]
-    if root_path(service) and not fields.get("path", "").strip("/") and roots and roots[-1] and not roots[-1].strip("/"):
-        fields["path"] = "/"
-        rest = [pair for pair in rest if pair[1] != "path"]
-    # a secret by name or a free-form argument, which no field masks, or a name Apprise reads into a
-    # field, e.g. port= or Google Chat's threadkey=, where the query would win over the field
-    if any(custom_arg(text, service["prefixes"]) or key in service["secrets"] or read_into_field(service, url, results, key)
-           for text, key, _ in rest):
-        return {"service": "", "custom": True}
-    for key, value in options.items():
-        field = service["options"][key]
-        if field["type"] == "bool":
-            value = "yes" if parse_bool(value, bool(service["args"].get(key))) else "no"  # as Apprise reads e.g. t
-        (secrets if field["private"] else fields)[key] = value
-    # a choice the URL leaves out shows what Apprise will use, where that is not its default
-    plugin = check_url(url)[0]
-    for key, field in service["options"].items():
-        effective = getattr(plugin, field["map_to"], None) if plugin is not None and key not in options else None
-        if field["type"] == "choice" and effective in field.get("values", ()) and effective != field.get("default"):
-            fields[key] = effective
-    # Apprise copies some secrets into another field, e.g. ntfy's token into its user: that field is
-    # left to the private one, and the URL must rebuild without it
-    fields = {k: v for k, v in fields.items() if not hidden & {v, *v.split(", ")}}
-    if rest:
-        fields[QUERY_FIELD] = "&".join(text for text, _, _ in rest)
-    if keep_secrets:
-        fields.update(secrets)  # pasted by the user a moment ago, so no point hiding them
-
-    # a URL the fields cannot reproduce stays a plain URL, so saving never changes it
-    values = {**fields, **secrets}
+    plugin = check_url(url)[0] if url else None
+    service = services.get(schemas.get(url_schema(url), ""))
+    if plugin is None or service is None:
+        return {"service": "", "custom": True} if url else {"service": ""}
+    parsed = apprise_results(url) or {}
+    # a list and a single token Apprise fills from it, e.g. ntfy's targets and topic: the list
+    lists = {f["map_to"] for f in service["tokens"].values() if f["type"] == "list"}
+    values = {key: field_text(parsed.get(f["map_to"])) for key, f in service["tokens"].items()
+              if (f["type"] == "list" or f["map_to"] not in lists) and parsed.get(f["map_to"]) not in (None, "", [], ())}
+    values["schema"] = url_schema(url)
+    # options as Apprise renders them, under the names the fields use, less the defaults the bare
+    # URL renders; then the URL's own spelling
+    rendered = plugin.url(privacy=False)
+    head, _, query = rendered.partition("?")
+    # bare, but for what its form fills itself, e.g. Nextcloud Talk's ?secret=
+    plain = one_plugin(with_query(head, "&".join(t for t, k, _ in query_pairs(query) if k in service["filled"])))[0]
+    defaults = url_args(plain.url(privacy=False)) if plain is not None else {}
+    for source in (rendered, url):
+        for _, key, value in query_pairs(url_query(source)):
+            option = service["options"].get(key)
+            if option is None or source is rendered and defaults.get(key) == value:
+                continue
+            if option["type"] == "bool":
+                values[key] = "yes" if parse_bool(value, False) else "no"
+            elif option["type"] == "choice":
+                # in the field's own spelling, or as Apprise reads it, e.g. Pushover's high as 1; the
+                # last given counts, as in Apprise
+                read = {value.lower(), field_text(getattr(plugin, option["map_to"], None)).lower()}
+                values.pop(key, None)
+                values.update({key: v for v in option["values"] if v.lower() in read})
+            else:
+                values[key] = value
+    private = {key for key, field in {**service["tokens"], **service["options"]}.items() if field["private"]}
+    # a secret Apprise also copies into a plain field, e.g. ntfy's token into its user, stays out of it
+    secrets = secret_values(url, service, parsed)
+    values = {k: v for k, v in values.items() if k in private or not secrets & {v, *v.split(", ")}}
     rebuilt = compose(service, values)[0]
-    query = query_from(service, values, rebuilt)
-    if rebuilt is None or not same_url(with_query(rebuilt, query), url):
-        return {"service": "", "custom": True}  # a URL the fields cannot hold, kept as it is
-    return {"service": service_id, "fields": fields, "saved": sorted(secrets)}
+    rebuilt = with_query(rebuilt, query_from(service, values)) if rebuilt is not None else None
+    if rebuilt is None:
+        return {"service": "", "custom": True}
+    # each other part of the query, as Apprise reads the URL without it: read into a field, which then
+    # holds it; read otherwise, e.g. a json:// +header, so kept; or ignored, so dropped
+    head, pairs = url.split("?", 1)[0], query_pairs(url_query(url))
+    fields = {**service["tokens"], **service["options"]}
+    held = {fields[k]["map_to"] for k in values if k in fields}
+    kept = []
+    # by name, a repeat with it; an option's name is its field's, held there or dropped
+    for name in dict.fromkeys(key for _, key, _ in pairs if key not in fields and key not in service["filled"]):
+        without = with_query(head, "&".join(t for t, key, _ in pairs if key != name))
+        other = apprise_results(without) or {}
+        changed = {f["map_to"] for f in fields.values() if other.get(f["map_to"]) != parsed.get(f["map_to"])}
+        if not (changed and changed <= held) and not same_settings(url, plugin, without):
+            kept += [t for t, key, _ in pairs if key == name]
+    if not same_url(with_query(rebuilt, "&".join(kept)), url):
+        return {"service": "", "custom": True}  # a URL the fields cannot hold
+    if kept:
+        values[QUERY_FIELD] = "&".join(kept)
+    # left out, an option whose declared default Apprise does not use (NO_DEFAULT) is shown as it
+    # does use it for this channel, as it renders it or holds it, e.g. mailto:// mode as insecure;
+    # none where it has none, e.g. emojis
+    undeclared = {k for c in class_names(type(plugin)) | {None} for k in NO_DEFAULT.get(c, ())}
+    rendered_args, used = url_args(rendered), {}
+    for key in undeclared & set(service["options"]) - set(values):
+        option = service["options"][key]
+        setting = getattr(plugin, option["map_to"], None)
+        text = rendered_args.get(key) or (field_text(setting) if setting is not None else "")
+        if option["type"] == "choice":
+            text = next((v for v in option["values"] if v.lower() == text.lower()), "")
+        if text and not option["private"]:
+            used[key] = text
+    return {"service": service["id"], "saved": sorted(k for k in values if k in private), "used": used,
+            "fields": {k: v for k, v in values.items() if keep_secrets or k not in private | {QUERY_FIELD}}}
 
 
 def compose(service, values):
-    """Fill the fullest template the values allow; returns (url, fields still wanted)."""
-    lists = {t["map_to"]: k for k, t in service["tokens"].items() if t["type"] == "list"}
+    """Fill the fullest template that takes every value given; returns (url, fields still wanted),
+    so a value no template can take, e.g. a password without a user, is asked about, not dropped."""
+    tokens = service["tokens"]
+    lists = {t["map_to"]: k for k, t in tokens.items() if t["type"] == "list"}
+    # a path of / is the root, which needs no slot
+    given = {k for k in tokens if k != "schema" and str(values.get(k, "")).strip(" /" if k in ("path", "fullpath") else " ")}
     best, wanted = None, None
     for template in service["templates"]:
         keys = re.findall(r"{(\w+)}", template)
+        # a list and the single token it fills, e.g. targets and {topic}, are one value
+        taken = {tokens.get(k, {}).get("map_to", k) for k in keys}
+        if any(tokens[k]["map_to"] not in taken for k in given):
+            continue
         filled, missing = {}, []
         for key in keys:
             token = service["tokens"].get(key, {"type": "string", "map_to": key})
@@ -2581,6 +2498,12 @@ def refused(url):
             return f"Give an https:// address for {', '.join(plain)}, or paste its contents in the channel."
         return (f"The URL names a file in {', '.join(local)}; choose its service in the channel and paste its "
                 "contents instead.")
+    # the plugins decode a remote file's address once more than the query, so an escape in it could
+    # change what is fetched, e.g. %3Fverify%3Dno
+    args, values = apprise_view(url)
+    escaped = [k for k, v in values.items() if k in args and k in REMOTE_FILE_ARGS and urllib.parse.unquote(v) != v]
+    if escaped:
+        return f"Give the address for {', '.join(escaped)} without % escapes; Apprise decodes it a second time."
     # Apprise does not read every IPv6 address, e.g. not one in uppercase, with some zone IDs, or
     # (from 2.3) one outside brackets with a zone ID or a port: ntfy, Fluxer and LaMetric then take
     # it for no server and send to their cloud, unless told the mode, and email drops it
@@ -2592,8 +2515,8 @@ def refused(url):
     host = str(results.get("host") or "")
     told = "mode" in (results.get("qsd") or {})
     given = re.match(r"[^:]*:[/\\]*(?:[^/\\?]*@)?\[", url or "")
-    if (results.get("mode") == "cloud" and not told and (re.search(r"[\[\]:%]", host) or (not host and ipv6_server(url)))) \
-            or (given and results and not host and not (told and results.get("mode") == "cloud")):
+    # an IPv6 server given, bracketed or not, that Apprise read as none; unless cloud mode was asked for
+    if results and not host and (given or ipv6_server(url)) and not (told and results.get("mode") == "cloud"):
         return "Apprise cannot read this server address; give the server's name, or an address in lowercase without a zone ID."
     return ""
 
@@ -2620,24 +2543,19 @@ def check_url(url, typed=False):
 
 def from_service(service_id, fields, stored):
     """Compose a URL from the dialog's service fields; returns (url, pasted files, error text)."""
-    services, schemas = apprise_services()
-    service = services.get(service_id)
+    service = apprise_services()[0].get(service_id)
     if service is None:
         return "", {}, "Apprise does not know this service."
-    saved_id, results, _ = parse_saved(stored, services, schemas) if stored else (None, {}, "")
     known = set(service["tokens"]) | set(service["options"]) | {QUERY_FIELD}
     # optional secrets the dialog was told to remove, unless a new value was typed to replace them
     cleared = {k for k, f in service["options"].items()
                if f["private"] and fields.get(f"__clear_{k}") == "1" and fields.get(k, "") == ""}
     values = {k: v for k, v in fields.items() if k in known and v != "" and k not in cleared}
-    if saved_id == service_id:
-        private = [k for k, t in service["tokens"].items() if t["private"] and k not in values]
-        values.update(saved_values(service, results, private))
-        # secret options are masked too, so keep what was stored
-        stored_options, _ = split_query(service, url_query(stored))
-        for key, value in stored_options.items():
-            if service["options"][key]["private"] and key not in values and key not in cleared:
-                values[key] = value
+    # what the dialog never saw, its secrets and what no field holds, as the saved URL has it
+    saved = describe_url(stored, keep_secrets=True) if stored else {}
+    if saved.get("service") == service_id:
+        hidden = {k for k, f in {**service["tokens"], **service["options"]}.items() if f["private"]} | {QUERY_FIELD}
+        values.update({k: v for k, v in saved["fields"].items() if k in hidden and k not in values and k not in cleared})
     files = {}
     for key in [k for k, f in service["options"].items() if f["type"] == "file" and k in values]:
         value = values[key]
@@ -2646,10 +2564,7 @@ def from_service(service_id, fields, stored):
         if re.match(r"https?://\S+$", value, re.I):
             if key.lower() not in REMOTE_FILE_ARGS:
                 return "", {}, f"Paste the {service['options'][key]['label']} itself; a private key is not fetched."
-            if not re.match(r"https://", value, re.I):
-                # could be swapped in transit
-                return "", {}, f"Give an https:// address for the {service['options'][key]['label']}."
-            continue  # fetched from that address
+            continue  # fetched from that address, https only (refused)
         if len(value) > KEY_MAX:
             return "", {}, f"The {service['options'][key]['label']} is larger than a key or template should be."
         files[key.lower()] = value.replace("\r\n", "\n") + ("" if value.endswith("\n") else "\n")
@@ -2658,7 +2573,7 @@ def from_service(service_id, fields, stored):
     if url is None:
         needed = ", ".join(wanted) if wanted else "the fields this service needs"
         return "", {}, f"Fill in {needed}; see the setup guide if you are unsure."
-    query = query_from(service, values, url)
+    query = query_from(service, values)
     return with_query(url, query), files, ""
 
 
@@ -2702,7 +2617,6 @@ def run_build(path):
         # a URL written by hand may be one for Apprise 1.13, as an import says
         notes = apprise1_notes(url) if typed and target_field == "channel.url" else []
         return {"error": " ".join([error] + notes), "field": target_field}
-    masked = shown_url(plugin, url)
     # keep the stored files the URL still points at, with anything newly pasted on top
     stored_args = stored_file_args(url)
     kept = {key: value for key, value in (channel.get("files") or {}).items() if key in stored_args}
@@ -2710,7 +2624,7 @@ def run_build(path):
     missing = [key for key in stored_args if key not in kept]
     if missing:
         return {"error": f"Paste the file for {', '.join(missing)}.", "field": target_field}
-    return {"url": url, "service": str(plugin.service_name), "target": masked, "files": kept}
+    return {"url": url, "service": str(plugin.service_name), "files": kept}
 
 
 if __name__ == "__main__":

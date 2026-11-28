@@ -62,18 +62,16 @@ foreach ($monit->service->iterateItems() as $uuid => $service) {
 
 $channels = [];
 foreach ($model->channels->iterateItems() as $uuid => $channel) {
+    /* one deleted in Monit by its ID, which no alert names, so the filter still holds */
     $watched = [];
     foreach ($channel->monitServices->getValues() as $ref) {
-        if (isset($services[$ref])) {
-            $watched[] = $services[$ref];
-        }
+        $watched[] = $services[$ref] ?? $ref;
     }
     $channels[] = [
         'uuid' => $uuid,
         'enabled' => (string)$channel->enabled,
         'description' => (string)$channel->description,
         'service' => (string)$channel->service,
-        'target' => (string)$channel->target,
         /* write-only in the UI, but the backend has to send with them */
         'url' => $channel->url->getValue(),
         'files' => json_decode($channel->files->getValue(), true) ?: [],

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.10 - 2026-11-28
+
+- The channel dialog fills its fields from more URLs; an option Apprise decides per channel shows as not set.
+- Channels no longer store or list their saved URL.
+- Template addresses with % escapes and IPv6 email servers with a zone ID are refused.
+- A Monit filter whose services were all deleted no longer passes every alert.
+
 ## 1.9 - 2026-11-21
 
 - Apprise 2.3.0, adding AWS End User Messaging Social (WhatsApp), Azure Communication Services email, Bale, Instagram, Notify! and OpsiMate, with a security fix (GHSA-rmjg-h4cf-m74j). PyYAML 6.0.4.

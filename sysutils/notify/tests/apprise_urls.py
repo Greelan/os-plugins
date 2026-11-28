@@ -73,7 +73,8 @@ def token_values(key, token, candidates=CANDIDATES):
     then one derived from the rule itself."""
     fixed = {"port": ["8080"], "user": ["user"], "botname": ["user"], "password": ["pass", "12345"]}
     if key in fixed:
-        return fixed[key]
+        # a user or password that is a key, e.g. Session's public key and seed, in the late pass
+        return fixed[key] + ([c for c in candidates if c in LATE_CANDIDATES] if key in ("user", "password") else [])
     rule = token.get("regex") or [None]
     if key == "host":
         return [from_regex(rule[0])] if rule[0] else ["example.com"]

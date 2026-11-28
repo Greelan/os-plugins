@@ -134,28 +134,38 @@ class StoredFiles(Case):
 
     def test_the_saved_url_reads_as_typed(self):
         result = self.build("mailtos", user="fw", password="pw", host="example.com", targets="admin@example.com")
-        self.assertTrue(result["target"].endswith("/admin@example.com"), result["target"])
+        self.assertNotIn("target", result, "never stored: the dialog asks the backend for it")
+        self.assertTrue(self.shown(result["url"]).endswith("/admin@example.com"), self.shown(result["url"]))
 
-    def custom(self, url):
-        return handed_over(notify.run_build, {"uuid": CHANNEL, "service": "", "url": url, "fields": {}})
+    @staticmethod
+    def shown(url):
+        return notify.shown_url(notify.check_url(url)[0], url)
+
+    def test_the_saved_url_is_shown_as_masked_now(self):
+        saved = notify.saved_url
+        notify.saved_url = lambda uuid: "json://hooks.example.com/api/webhook/abc123"
+        try:
+            self.assertEqual(notify.run_describe(CHANNEL)["target"], "json://hooks.example.com/...")
+        finally:
+            notify.saved_url = saved
 
     def test_a_receivers_path_is_not_shown(self):
         # a webhook receiver's secret is often its path, which Apprise does not mask
-        self.assertEqual(self.custom("json://hooks.example.com/api/webhook/abc123")["target"],
+        self.assertEqual(self.shown("json://hooks.example.com/api/webhook/abc123"),
                          "json://hooks.example.com/...")
-        self.assertEqual(self.custom("forms://u:p@hooks.example.com:8443/abc123")["target"],
+        self.assertEqual(self.shown("forms://u:p@hooks.example.com:8443/abc123"),
                          "forms://u:****@hooks.example.com:8443/...")
-        self.assertEqual(self.custom("xml://hooks.example.com")["target"], "xml://hooks.example.com/")
-        self.assertEqual(self.custom("tgram://123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11/12345")["target"],
+        self.assertEqual(self.shown("xml://hooks.example.com"), "xml://hooks.example.com/")
+        self.assertEqual(self.shown("tgram://123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11/12345"),
                          "tgram://1...1/12345/", "elsewhere Apprise masks the secret itself")
         # Matrix's access token where its user would stand, which Apprise masks as well
-        self.assertEqual(self.custom("matrixs://syt_S3CRETaccessTOKEN@matrix.example.com/!room:example.com")["target"],
+        self.assertEqual(self.shown("matrixs://syt_S3CRETaccessTOKEN@matrix.example.com/!room:example.com"),
                          "matrixs://s...N@matrix.example.com/!room:example.com")
-        self.assertEqual(self.custom("sendgrid://abcd:fw@example.com/to@example.com")["target"].split("@")[0],
+        self.assertEqual(self.shown("sendgrid://abcd:fw@example.com/to@example.com").split("@")[0],
                          "sendgrid://a...d:fw", "a sender in the password slot is no secret")
         # a secret that is also a word, or also the user name, is not pointed out
-        self.assertEqual(self.custom("ntfys://bob:ntfy@ntfy.example.com/alerts")["target"], "ntfys://bob:****@ntfy.example.com/alerts")
-        self.assertEqual(self.custom("ntfys://ntfy.example.com/alerts?user=alerts&password=pw")["target"],
+        self.assertEqual(self.shown("ntfys://bob:ntfy@ntfy.example.com/alerts"), "ntfys://bob:****@ntfy.example.com/alerts")
+        self.assertEqual(self.shown("ntfys://ntfy.example.com/alerts?user=alerts&password=pw"),
                          "ntfys://alerts:****@ntfy.example.com/alerts")
 
     def test_a_choice_left_unselected_is_not_a_value(self):
@@ -227,7 +237,8 @@ class StoredFiles(Case):
         services, _ = notify.apprise_services()
         shown = {(service_id, key) for service_id, service in services.items() for key, token in service["tokens"].items()
                  if not token["private"] and re.search(r"token|key|secret|password|auth", token["label"], re.I)}
-        self.assertEqual(shown, {("splunk", "routing_key")}, "where alerts go in Splunk, not a credential")
+        # where alerts go in Splunk; Session's server public key (offered with cryptography), whose secret is the seed
+        self.assertEqual(shown - {("sessions", "user")}, {("splunk", "routing_key")}, "not a credential")
 
     def test_a_linked_or_waiting_handover_is_not_read(self):
         with tempfile.NamedTemporaryFile("w", dir=notify.TEMP_DIR, delete=False) as handle:
@@ -246,8 +257,8 @@ class StoredFiles(Case):
     def test_file_args_checked_for_this_apprise(self):
         import apprise
         self.assertEqual(apprise.__version__, notify.FILE_ARGS_APPRISE,
-                         "a new Apprise: check which arguments it opens as files and the internals the URL "
-                         "checks call (see FILE_ARGS_APPRISE), then update it")
+                         "a new Apprise: check which arguments it opens as files, the defaults it does not use "
+                         "(NO_DEFAULT) and the internals the URL checks call (see FILE_ARGS_APPRISE), then update it")
 
     def test_only_the_listed_arguments_open_a_file(self):
         # every service with each argument it lists, and the usual file names, set to a path: what
@@ -386,13 +397,12 @@ class StoredFiles(Case):
         self.assertEqual((found["fields"]["targets"], found["fields"].get("from")),
                          ("a@example.com, b@example.com", "fw@example.com"))
         found = self.imported("dingtalk://abcdefghij/?emojis=yes&rto=3")
-        self.assertEqual((found["fields"].get("emojis"), found["fields"].get("rto")), ("yes", "3.0"))
+        self.assertEqual((found["fields"].get("emojis"), found["fields"].get("rto")), ("yes", "3"))
 
     def test_a_bool_spelled_as_apprise_reads_it(self):
         # t, y or on are yes to Apprise (parse_bool), so they are yes in the field's box too
         self.assertEqual(self.imported("dingtalk://abcdefghij/?emojis=t")["fields"].get("emojis"), "yes")
         self.assertEqual(self.imported("apprises://example.com/token?emojis=on")["fields"].get("emojis"), "yes")
-        self.assertTrue(notify.same_value("t", True))
         self.assertIn("tts=yes", notify.query_from(notify.apprise_services()[0]["discord"], {"tts": "y"}))
 
     def test_emojis_unset_is_not_no(self):
@@ -402,7 +412,7 @@ class StoredFiles(Case):
                          [None, False])
         discord = notify.apprise_services()[0]["discord"]
         self.assertNotIn("default", discord["options"]["emojis"], "the dialog offers Not set")
-        self.assertEqual([notify.query_from(discord, {"emojis": v}, "discord://1/abc") for v in ("", "no", "yes")],
+        self.assertEqual([notify.query_from(discord, {"emojis": v}) for v in ("", "no", "yes")],
                          ["", "emojis=no", "emojis=yes"])
         self.assertEqual(self.imported("discord://1/abc?emojis=no")["fields"].get("emojis"), "no")
         self.assertNotIn("emojis", self.imported("discord://1/abc")["fields"])
@@ -428,16 +438,19 @@ class StoredFiles(Case):
                 continue
             join = "&" if "?" in base else "?"
             for key, field in services[service_id]["options"].items():
-                default = services[service_id]["args"].get(key)
-                values = {"choice": [v for v in field.get("values", []) if str(v) != str(default)][:3],
-                          "bool": ["no" if default else "yes"], "int": [str((field.get("min") or 0) + 3)],
+                values = {"choice": field.get("values", [])[:3],
+                          "bool": ["no", "yes"], "int": [str((field.get("min") or 0) + 3)],
                           "float": [str((field.get("min") or 0) + 3)], "file": []}.get(field["type"], ["abc"])
                 for value in values:
                     url = f"{base}{join}{key}={notify.urllib.parse.quote(value, safe='')}"
                     pasted, _ = notify.check_url(url)
                     if pasted is None:
                         continue
-                    imported, _ = notify.one_plugin(notify.normalize(url, pasted, services, schemas))
+                    found = notify.describe_url(url, keep_secrets=True)
+                    if not found.get("service"):
+                        continue  # kept as a custom URL, as pasted
+                    saved, _, error = notify.from_service(found["service"], found["fields"], "")
+                    imported = notify.one_plugin(saved)[0] if not error else None
                     # store= maps to a store object built anew each time; the setting is persistent_storage
                     attr = "persistent_storage" if key == "store" else field.get("map_to") or key
                     before = getattr(pasted, attr, missing)
@@ -516,17 +529,15 @@ class StoredFiles(Case):
         if not find_spec("cryptography"):
             self.assertIsNone(notify.check_url(f"nostr://{'ab' * 32}")[0])
 
-    def test_an_import_kept_as_given_unless_apprise_reads_it_the_same(self):
-        url = "discord://123456789/abcdefghijklmnop"
-        plugin, _ = notify.check_url(url)
-        services, schemas = notify.apprise_services()
-        saved = notify.one_plugin
-        # a rewrite Apprise would read differently is not taken
-        notify.one_plugin = lambda u: (None, "") if u != url else saved(u)
+    def test_a_url_the_fields_would_rebuild_otherwise_stays_custom(self):
+        url = "discord://123456789/abcdefghijklmnop?avatar=no"
+        self.assertEqual(notify.describe_url(url)["service"], "discord")
+        compose = notify.compose
+        notify.compose = lambda service, values: ("discord://123456789/other", [])
         try:
-            self.assertEqual(notify.normalize(url + "?avatar=no", plugin, services, schemas), url + "?avatar=no")
+            self.assertEqual(notify.describe_url(url), {"service": "", "custom": True})
         finally:
-            notify.one_plugin = saved
+            notify.compose = compose
 
     def test_a_remote_file_only_over_verified_https(self):
         # Apprise follows a redirect, which can lead to plain http, and takes verify=no from the file's URL
@@ -539,12 +550,31 @@ class StoredFiles(Case):
             fetched = [a for att in vars(plugin).values() if isinstance(att, apprise.AppriseAttachment) for a in att]
             self.assertEqual([(a.redirects, a.verify_certificate) for a in fetched], [(False, True)], nested)
 
+    def test_a_remote_file_address_decoded_again_is_refused(self):
+        # the plugin decodes the address once more than the query does, so %3F could smuggle in verify=no
+        for nested in ("https://example.com/t.json%3Fverify%3Dno", "https://example.com/t%20x.json"):
+            url = "discord://123456789/abcdefghijklmnop?template=" + notify.urllib.parse.quote(nested, safe="")
+            plugin, error = notify.check_url(url)
+            self.assertIsNone(plugin, nested)
+            self.assertIn("% escapes", error)
+        self.assertIsNotNone(notify.check_url("discord://123456789/abcdefghijklmnop?template=https://example.com/t.json")[0])
+
+    def test_an_email_server_by_ipv6_with_a_zone_id_is_refused(self):
+        # Apprise reads no server there, outside brackets as inside
+        for host in ("fe80::1%25igb1:587", "[fe80::1%25igb1]:587"):
+            self.assertIn("cannot read this server address",
+                          notify.refused(f"mailtos://u:p@{host}?to=a@example.com&from=b@example.com"), host)
+        self.assertEqual(notify.refused("mailtos://u:p@[fd00::5]:587?to=a@example.com&from=b@example.com"), "")
+
     def test_a_header_with_a_leading_space_stays_write_only(self):
-        # Apprise reads a leading space as +, a header that can carry a credential
-        self.assertTrue(notify.custom_arg("%20Authorization=secret", ("+",)))
-        self.assertTrue(notify.custom_arg("+Authorization=secret", ("+",)))
-        self.assertFalse(notify.custom_arg("format=text", ("+", "-", ":")))
-        self.assertFalse(notify.custom_arg("-x=1", ("+",)), "only the prefixes the service takes")
+        # Apprise reads a leading space as +, a header that can carry a credential: kept, never shown
+        for url in ("jsons://h/?%20Authorization=secret", "jsons://h/?+Authorization=secret", "jsons://h/?-x=secret"):
+            described = notify.describe_url(url)
+            self.assertEqual(described["service"], "jsons", url)
+            self.assertNotIn("secret", json.dumps(described["fields"]), url)
+            edited, _, error = notify.from_service("jsons", {**described["fields"], "port": "8443"}, url)
+            plugin = notify.check_url(edited)[0]
+            self.assertEqual((error, plugin.port, "secret" in plugin.url(privacy=False)), ("", 8443, True), edited)
 
     def test_one_path_from_url_to_plugin(self):
         # several URLs saved in one channel before are refused at delivery too, not sent to one mangled
@@ -566,17 +596,21 @@ class StoredFiles(Case):
                     "exotel://+15551234567:user@example.com@+15551234567?key=S3CRET",
                     "gchat://workspace/webhookkey/webhooktoken?threadkey=S3CRET"):
             described = notify.describe_url(url)
-            self.assertEqual(described.get("service"), "", url)
-            self.assertNotIn("fields", described, url)
+            fields = json.dumps(described.get("fields", {}))
+            secret = url.rpartition("=")[2]
+            self.assertNotIn(secret, fields if len(secret) > 1 else json.loads(fields).values(), url)
         # a token Apprise masks in its own URL without marking it private
         for url, key in (("mastodons://AbC123accessTOKEN@mastodon.example.com", "token"),
                          ("smseagles://AbC123accessTOKEN@sms.example.com/+15551234567", "token")):
             described = notify.describe_url(url)
             self.assertNotIn(key, described["fields"], url)
             self.assertIn(key, described["saved"], url)
-        described = notify.describe_url("ntfys://ntfy.sh/topic?foo=bar")
-        self.assertEqual((described["service"], described["fields"]["__query"]), ("ntfys", "foo=bar"),
-                         "what is no secret still rides along")
+        # what no field holds but Apprise reads is kept, out of the browser, and through an edit
+        url = "ntfys://ntfy.sh/topic?retry=2"
+        self.assertNotIn("__query", notify.describe_url(url)["fields"])
+        self.assertEqual(notify.describe_url(url, keep_secrets=True)["fields"]["__query"], "retry=2")
+        edited, _, _ = notify.from_service("ntfys", {**notify.describe_url(url)["fields"], "priority": "high"}, url)
+        self.assertEqual((notify.check_url(edited)[0].retry, notify.check_url(edited)[0].priority), (2, "high"))
         # a secret Apprise copies into another field, which is left to the private one
         for url, key in (("ntfys://tk_S3CRETaccessTOKEN@ntfy.example.com/alerts", "user"),
                          ("matrix://" + ("s3cret" * 11)[:64], "host")):
@@ -587,10 +621,10 @@ class StoredFiles(Case):
         # a value that is also the secret's but has a place of its own stays, e.g. a user named as the password
         described = notify.describe_url("ntfys://admin:admin@ntfy.example.com/alerts")
         self.assertEqual((described["service"], described["fields"]["user"]), ("ntfys", "admin"))
-        # a name Apprise does not read rides along; one it reads into a field keeps the URL as it is
-        self.assertEqual(notify.describe_url("ntfys://ntfy.example.com/alerts?topic=other")["fields"]["__query"], "topic=other")
-        self.assertEqual(notify.describe_url("gotifys://gotify.example.com/Atoken12345?host=x")["fields"]["__query"], "host=x")
-        self.assertEqual(notify.describe_url("ntfys://ntfy.example.com/alerts?port=8443")["service"], "")
+        # a name Apprise does not read is left out, one it reads into a field is held by the field
+        for url in ("ntfys://ntfy.example.com/alerts?topic=other", "gotifys://gotify.example.com/Atoken12345?host=x"):
+            self.assertNotIn("__query", notify.describe_url(url)["fields"], url)
+        self.assertEqual(notify.describe_url("ntfys://ntfy.example.com/alerts?port=8443")["fields"]["port"], "8443")
 
     def test_what_apprise_masks_is_private(self):
         # any token Apprise's own URL masks is kept out of the browser, whether or not it is marked private
@@ -609,10 +643,10 @@ class StoredFiles(Case):
                          ("revolt", None, True))
 
     def test_the_dialog_reads_options_as_apprise_does(self):
-        service = {"options": {"format": {}, "avatar": {}}}
-        self.assertEqual(notify.split_query(service, "format=markdown;avatar=no&x=a+b"),
-                         ({"format": "markdown", "avatar": "no"}, "x=a+b"), "; splits, and + stays a +")
-        self.assertEqual(notify.split_query(service, "FORMAT=%20text%20"), ({"format": "text"}, ""))
+        # ; splits as & does, a key is read in lowercase and a value trimmed
+        fields = notify.describe_url("discord://1/abc?format=markdown;avatar=no")["fields"]
+        self.assertEqual((fields["format"], fields["avatar"]), ("markdown", "no"))
+        self.assertEqual(notify.describe_url("discord://1/abc?FORMAT=%20text%20")["fields"]["format"], "text")
 
     def test_a_delivery_that_trips_fails_alone(self):
         saved = notify.deliver_once
@@ -697,14 +731,13 @@ class Defaults(Case):
         self.assertIn("mode=starttls", url)
         self.assertEqual((plugin.secure_mode, plugin.port), ("starttls", 587))
 
-    def test_a_real_default_is_still_left_out(self):
-        url, plugin = self.built(schema="mailtos", mode="starttls")
-        self.assertNotIn("mode=", url)
-        self.assertEqual(plugin.secure_mode, "starttls")
-
-    def test_the_dialog_shows_what_apprise_uses(self):
-        url, _ = self.built(schema="mailto")
-        self.assertEqual(notify.describe_url(url)["fields"]["mode"], "insecure")
+    def test_an_option_left_empty_is_apprises_to_decide(self):
+        for schema, mode in (("mailtos", "starttls"), ("mailto", "insecure")):
+            url, plugin = self.built(schema=schema)
+            self.assertNotIn("mode=", url)
+            self.assertEqual(plugin.secure_mode, mode)
+            self.assertNotIn("mode", notify.describe_url(url)["fields"], "the dialog shows it not set")
+        self.assertNotIn("default", notify.apprise_services()[0]["mailtos"]["options"]["mode"])
 
     def test_options_follow_a_template_that_has_a_query(self):
         # Nextcloud Talk's templates end in ?secret={secret}
@@ -722,12 +755,17 @@ class Defaults(Case):
         self.assertEqual((error, notify.check_url(url)[0].fullpath), ("", "/custom/api/"), url)
         self.assertTrue(url.startswith("fluxers://fluxer.example.com/custom/api/123456789012345678/"), url)
 
-    def test_a_field_also_in_the_query_keeps_the_url_custom(self):
-        # the query would win over the field, so the fields could not change it
-        for url in ["fluxers://fluxer.example.com/123456789012345678/abcdefABCDEF1234?path=/x",
-                    "mmosts://mm.example.com/abcdefghijklmnopqrstuvwxyz?botname=alerts",
-                    "gotifys://gotify.example.com/Atoken12345?port=8443"]:
-            self.assertEqual(notify.describe_url(url).get("service"), "", url)
+    def test_a_field_also_in_the_query_is_held_by_the_field(self):
+        # left in the query it would win over the field, so the field could not change it
+        for url, key, value, attribute, read in [
+                ("fluxers://fluxer.example.com/123456789012345678/abcdefABCDEF1234?path=/x", "path", "/y", "fullpath", "/y/"),
+                ("mmosts://mm.example.com/abcdefghijklmnopqrstuvwxyz?botname=alerts", "user", "other", "user", "other"),
+                ("gotifys://gotify.example.com/Atoken12345?port=8443", "port", "9443", "port", 9443)]:
+            described = notify.describe_url(url)
+            self.assertTrue(described["service"], url)
+            self.assertNotIn("__query", described["fields"], url)
+            edited, _, error = notify.from_service(described["service"], {**described["fields"], key: value}, url)
+            self.assertEqual(getattr(notify.check_url(edited)[0], attribute), read, edited)
 
     def test_a_template_query_is_read_as_fields(self):
         url, _, error = notify.from_service("nctalks", {"host": "cloud.example.com", "targets": "room1",
@@ -757,7 +795,6 @@ class Defaults(Case):
         import apprise
         services, schemas = notify.apprise_services()
         self.assertNotIn("default", services["mailtos"]["options"]["format"])
-        self.assertNotIn("format", services["mailtos"]["args"])
         # Apprise 2 sends anything else in a format it takes, so only those are offered
         self.assertEqual(services["mailtos"]["options"]["format"]["values"], ["html", "text"])
         self.assertEqual(services[schemas["tgram"]]["options"]["format"]["values"], ["html", "markdown"])
@@ -770,6 +807,59 @@ class Defaults(Case):
         self.assertEqual(plugin.resolve_format(apprise.NotifyFormat.TEXT), apprise.NotifyFormat.HTML)
         # one format only: the default is what it sends anyway
         self.assertEqual(services[schemas["gotify"]]["options"]["format"].get("default"), "text")
+
+    def test_a_default_apprise_does_not_declare_is_shown_as_it_uses_it(self):
+        # NO_DEFAULT options show no default; a saved channel's hint is what Apprise uses, per channel
+        cases = [("mailtos://u:p@example.com/a@example.com", "mode", "starttls"),
+                 ("mailto://u:p@example.com/a@example.com", "mode", "insecure"),
+                 ("ntfys://topic", "mode", "cloud"), ("ntfys://ntfy.sh/topic", "mode", "private"),
+                 ("barks://example.com/device1", "archive", None), ("discord://1/abc", "emojis", None),
+                 ("mailto://u:p@example.com/a@example.com?mode=ssl", "mode", None)]
+        for url, key, hint in cases:
+            described = notify.describe_url(url)
+            self.assertTrue(described["service"], url)
+            self.assertNotIn("default", notify.apprise_services()[0][described["service"]]["options"][key], url)
+            self.assertEqual(described.get("used", {}).get(key), hint, url)
+        self.assertEqual(notify.describe_url("mailto://u:p@example.com/a@example.com?mode=ssl")["fields"]["mode"], "ssl")
+
+    @staticmethod
+    def setting(plugin, key, field):
+        """The option's own setting in a plugin, as text where it is a plain value, and as Apprise renders it."""
+        value = getattr(plugin, field["map_to"], None)
+        value = getattr(value, "value", value)
+        plain = isinstance(value, (str, int, float, bool, type(None), list, tuple, set))
+        return notify.field_text(value).lower() if plain else None, notify.url_args(plugin.url(privacy=False)).get(key)
+
+    def test_no_default_is_what_apprise_finds(self):
+        # a default the dialog shows is what Apprise sets with the option left out, on each service's
+        # sample URL; one that depends on the rest of the channel is read from the plugin's code
+        # (see NO_DEFAULT), as no sample shows them all
+        import apprise
+        services, schemas = notify.apprise_services()
+        uncovered = set()
+        for entry in apprise.Apprise().details()["schemas"]:
+            base = apprise_urls.build(entry, lambda u: notify.one_plugin(u)[0])
+            service_id = schemas.get(notify.url_schema(base or ""))
+            if base is None or service_id is None:
+                continue
+            for scheme in dict.fromkeys(list(entry.get("secure_protocols") or []) + list(entry.get("protocols") or [])):
+                url = scheme + base[base.index("://"):]
+                plugin = notify.one_plugin(url)[0]
+                if plugin is None:
+                    continue
+                for key, field in services[service_id]["options"].items():
+                    if "default" not in field or field["type"] == "file":
+                        continue
+                    written = notify.one_plugin(notify.with_query(url, f"{key}={notify.urllib.parse.quote(field['default'], safe='')}"))[0]
+                    if written is not None and self.setting(plugin, key, field) != self.setting(written, key, field):
+                        uncovered.add((type(plugin).__name__, key))
+        self.assertEqual(sorted(uncovered), [], "defaults Apprise does not use: add them to NO_DEFAULT")
+        # each entry names an option of a service Apprise has, offered here or not (FCM needs cryptography)
+        from apprise.plugins import N_MGR
+        offered = {(c, k) for entry in apprise.Apprise().details(show_disabled=True)["schemas"]
+                   for c in notify.class_names(N_MGR[(entry.get("secure_protocols") or entry.get("protocols"))[0]]) | {None}
+                   for k in entry["details"]["args"]}
+        self.assertEqual([(c, k) for c, keys in notify.NO_DEFAULT.items() for k in keys if (c, k) not in offered], [])
 
 
 class Escaping(unittest.TestCase):
@@ -2482,6 +2572,17 @@ class LogMessages(unittest.TestCase):
         self.write("system", [self.LINE.format(pri=11, prog="unbound", text="error now")])
         _, messages = notify.check_syslog(config, state)
         self.assertEqual([m["type"] for m in messages], ["warning"])
+
+
+class MonitFilter(unittest.TestCase):
+    def test_a_deleted_service_matches_no_alert(self):
+        # settings.php names a service deleted in Monit by its ID, so the filter is kept, matching nothing
+        alert = {"event": "monit", "service": "nginx"}
+        self.assertFalse(notify.monit_allowed({"monit": ["a1111111-2222-4333-8444-555555555555"]}, alert))
+        self.assertTrue(notify.monit_allowed({"monit": ["nginx"]}, alert))
+        self.assertTrue(notify.monit_allowed({"monit": []}, alert), "no filter")
+        settings = open(os.path.join(SCRIPTS, "settings.php")).read()
+        self.assertIn("$services[$ref] ?? $ref", settings)
 
 
 class SummaryFacts(unittest.TestCase):
